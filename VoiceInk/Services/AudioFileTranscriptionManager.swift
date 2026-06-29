@@ -274,6 +274,17 @@ class AudioTranscriptionManager: ObservableObject {
             item.status = .completed
             lastCompletedItemId = item.id
 
+            // Recorder items: run the M2 post-processing pipeline (classify → route → summarize →
+            // enhance with category prompt → export). The raw transcript above is already persisted.
+            if case let .recorderImport(deviceId, _) = item.origin,
+               let enhancementService = engine.enhancementService,
+               let aiService = enhancementService.getAIService() {
+                let device = RecorderConfigStore.shared.device(byId: deviceId)
+                await RecorderPostProcessor.shared.process(
+                    transcription: transcription, rawText: cleanedText, device: device,
+                    modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
+            }
+
         } catch {
             if Task.isCancelled || error is CancellationError {
                 item.status = .pending

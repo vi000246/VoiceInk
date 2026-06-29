@@ -5,27 +5,65 @@ import os
 final class RecorderConfigStore: ObservableObject {
     static let shared = RecorderConfigStore()
     @Published private(set) var devices: [RecorderDevice] = []
+    @Published private(set) var categories: [RecorderCategory] = []
     private let devicesKey = "recorderDevicesV1"
+    private let categoriesKey = "recorderCategoriesV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
-    private init() { load() }
+    private init() { load(); seedFallbackIfNeeded() }
 
     func load() {
-        guard let data = UserDefaults.standard.data(forKey: devicesKey),
-              let decoded = try? JSONDecoder().decode([RecorderDevice].self, from: data) else { return }
-        devices = decoded
+        if let data = UserDefaults.standard.data(forKey: devicesKey),
+           let decoded = try? JSONDecoder().decode([RecorderDevice].self, from: data) {
+            devices = decoded
+        }
+        if let data = UserDefaults.standard.data(forKey: categoriesKey),
+           let decoded = try? JSONDecoder().decode([RecorderCategory].self, from: data) {
+            categories = decoded
+        }
     }
-    private func save() {
+    private func saveDevices() {
         if let data = try? JSONEncoder().encode(devices) { UserDefaults.standard.set(data, forKey: devicesKey) }
     }
+    private func saveCategories() {
+        if let data = try? JSONEncoder().encode(categories) { UserDefaults.standard.set(data, forKey: categoriesKey) }
+    }
+
+    // MARK: - Devices
     func upsert(_ device: RecorderDevice) {
         if let i = devices.firstIndex(where: { $0.id == device.id }) { devices[i] = device }
         else { devices.append(device) }
-        save()
+        saveDevices()
     }
-    func remove(_ id: UUID) { devices.removeAll { $0.id == id }; save() }
+    func remove(_ id: UUID) { devices.removeAll { $0.id == id }; saveDevices() }
 
     /// First auto-import-enabled device whose match string is contained in the mounted volume name.
     func device(forVolumeName name: String) -> RecorderDevice? {
         devices.first { $0.autoImportEnabled && $0.matches(volumeName: name) }
+    }
+    func device(byId id: UUID) -> RecorderDevice? { devices.first { $0.id == id } }
+
+    // MARK: - Categories
+    /// Ensure exactly one undeletable fallback category exists.
+    func seedFallbackIfNeeded() {
+        guard !categories.contains(where: { $0.isFallback }) else { return }
+        categories.append(.makeFallback())
+        saveCategories()
+    }
+
+    var fallbackCategory: RecorderCategory {
+        categories.first { $0.isFallback } ?? .makeFallback()
+    }
+    func category(byId id: UUID) -> RecorderCategory? { categories.first { $0.id == id } }
+
+    func upsertCategory(_ category: RecorderCategory) {
+        if let i = categories.firstIndex(where: { $0.id == category.id }) { categories[i] = category }
+        else { categories.append(category) }
+        saveCategories()
+    }
+    /// Remove a category. The fallback category is undeletable.
+    func removeCategory(_ id: UUID) {
+        guard let c = categories.first(where: { $0.id == id }), !c.isFallback else { return }
+        categories.removeAll { $0.id == id }
+        saveCategories()
     }
 }

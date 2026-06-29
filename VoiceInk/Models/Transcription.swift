@@ -32,6 +32,11 @@ final class Transcription {
     var transcriptionStatus: String?
     var recorderSourceDeviceId: UUID?
     var importFingerprint: String?
+    var recorderCategoryName: String?
+    var recorderCategoryId: UUID?
+    var classificationConfidence: Double?
+    var exportedFilePath: String?
+    var speakerLabeled: Bool = false
 
     init(text: String,
          duration: TimeInterval,

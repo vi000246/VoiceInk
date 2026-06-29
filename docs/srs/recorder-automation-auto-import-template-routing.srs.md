@@ -70,36 +70,42 @@ interfaces and the AI provider calls; they are specified in the Module Spec's *A
 
 ## Functional Requirements
 
-- [ ] **FR-1** Detect volume mount/unmount via `NSWorkspace.shared.notificationCenter`
+> **Status (2026-06-30):** FR-1–5 shipped in M1. FR-6–11, 13, 14 shipped in M2 (this pass);
+> code unit-tested (18/18 pure-seam tests green) but not yet manually verified on hardware.
+> FR-12 is **partial**: manual re-classification logic (`RecorderPostProcessor.reclassify`) is
+> implemented, but the History category **badge + re-tag UI** is deferred (needs visual iteration).
+> FR-15 (real diarization) remains M5 / out of v1.
+
+- [x] **FR-1** Detect volume mount/unmount via `NSWorkspace.shared.notificationCenter`
   (`didMountNotification` / `didUnmountNotification`) and match the mounted volume name against
   each configured `RecorderDevice.volumeNameMatch`.
-- [ ] **FR-2** On a match with `autoImportEnabled`, scan the device's configured source folder
+- [x] **FR-2** On a match with `autoImportEnabled`, scan the device's configured source folder
   for files whose type is in `SupportedMedia` (`Services/SupportedMedia.swift`).
-- [ ] **FR-3** Dedup each candidate against the import ledger using a two-stage key:
+- [x] **FR-3** Dedup each candidate against the import ledger using a two-stage key:
   fast `(filename, byteSize)` filter, then SHA-256 content-hash confirm on collisions.
-- [ ] **FR-4** Copy each new file into app-controlled storage (security-scoped access) and
+- [x] **FR-4** Copy each new file into app-controlled storage (security-scoped access) and
   enqueue it into `AudioTranscriptionManager` tagged `.recorderImport(deviceId:)`.
-- [ ] **FR-5** Transcribe recorder items **raw** (no active-Mode enhancement).
-- [ ] **FR-6** Classify each raw transcript with one lightweight cloud-AI call returning a
+- [x] **FR-5** Transcribe recorder items **raw** (no active-Mode enhancement).
+- [x] **FR-6** Classify each raw transcript with one lightweight cloud-AI call returning a
   category id **or** `uncertain`, plus a 0–1 confidence. Categories + their classifier
   descriptions are the prompt input.
-- [ ] **FR-7** Route to the matched `RecorderCategory`'s `CustomPrompt`; on `uncertain` route to
+- [x] **FR-7** Route to the matched `RecorderCategory`'s `CustomPrompt`; on `uncertain` route to
   the undeletable **general/fallback** category.
-- [ ] **FR-8** For transcripts whose estimated token count exceeds a threshold, run a map-reduce
+- [x] **FR-8** For transcripts whose estimated token count exceeds a threshold, run a map-reduce
   summarization pre-pass before final enhancement (long talk/seminar support).
-- [ ] **FR-9** Enhance the (possibly summarized) transcript via `AIEnhancementService.enhance()`
+- [x] **FR-9** Enhance the (possibly summarized) transcript via `AIEnhancementService.enhance()`
   using the category's prompt, persisting the result on the `Transcription` row with category
   metadata + confidence.
-- [ ] **FR-10** Export a Markdown file to `{vaultRoot}/{category.subfolder}/{filename}` containing
+- [x] **FR-10** Export a Markdown file to `{vaultRoot}/{category.subfolder}/{filename}` containing
   YAML frontmatter (date, source device, category, models) + the analysis + a collapsible raw
   transcript. Vault root is a security-scoped bookmark.
-- [ ] **FR-11** Post floating notifications via `NotificationManager` at import start
+- [x] **FR-11** Post floating notifications via `NotificationManager` at import start
   ("匯入 N 個新檔") and on completion ("完成").
-- [ ] **FR-12** Show a category badge on each queue/history item; allow manual re-classification
+- [~] **FR-12** Show a category badge on each queue/history item; allow manual re-classification
   which re-runs routing/enhancement/export for that item.
-- [ ] **FR-13** Provide a **Recorders** sidebar page (device cards + ~400pt slide-out form) and a
+- [x] **FR-13** Provide a **Recorders** sidebar page (device cards + ~400pt slide-out form) and a
   **Categories** sidebar page (category ↔ prompt ↔ sub-folder list, with an undeletable fallback).
-- [ ] **FR-14** Optional per-device `deleteAfterImport` (default **off**): delete the original
+- [x] **FR-14** Optional per-device `deleteAfterImport` (default **off**): delete the original
   file from the device only after successful import + transcription + export.
 - [ ] **FR-15** (M5, milestone-gated) Optional real speaker diarization via FluidAudio
   `OfflineDiarizerManager`, writing per-speaker segments used by the interview prompt.

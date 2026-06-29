@@ -9,6 +9,7 @@ final class RecorderImportService: NSObject, ObservableObject {
     static let shared = RecorderImportService()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private var inFlight = Set<String>()           // fingerprints enqueued this session
+    private var originalURLs: [String: URL] = [:]  // fingerprint → original on-device file (for delete-after-import)
     private weak var engine: VoiceInkEngine?
     private var modelContext: ModelContext?
 
@@ -55,6 +56,7 @@ final class RecorderImportService: NSObject, ObservableObject {
         for c in candidates {
             guard let copied = copyIntoAppStorage(c.url) else { continue }
             inFlight.insert(c.fingerprint)
+            originalURLs[c.fingerprint] = c.url
             enqueued.append(copied)
             AudioTranscriptionManager.shared.addToQueue(urls: [copied],
                 origin: .recorderImport(deviceId: device.id, fingerprint: c.fingerprint))
@@ -64,6 +66,19 @@ final class RecorderImportService: NSObject, ObservableObject {
         let mode = ModeManager.shared.activeConfiguration ?? ModeManager.shared.configurations.first
         if let mode {
             AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: mode)
+        }
+    }
+
+    /// Called by the post-processor once an item finishes. Deletes the on-device original only when
+    /// the device opts into `deleteAfterImport` AND every stage (import + transcribe + export) succeeded.
+    func finalizeImport(fingerprint: String, device: RecorderDevice, exported: Bool) {
+        defer { originalURLs[fingerprint] = nil }
+        guard device.deleteAfterImport, exported, let original = originalURLs[fingerprint] else { return }
+        do {
+            try FileManager.default.removeItem(at: original)
+            logger.notice("Deleted on-device original after successful import: \(original.lastPathComponent, privacy: .public)")
+        } catch {
+            logger.error("Delete-after-import failed: \(error, privacy: .public)")
         }
     }
 

@@ -10,6 +10,7 @@ enum ViewType: String, CaseIterable, Identifiable {
     case audio = "Audio"
     case dictionary = "Dictionary"
     case recorders = "Recorders"
+    case categories = "Categories"
     case settings = "Settings"
     case license = "VoiceInk Pro"
 
@@ -83,6 +84,8 @@ struct ContentView: View {
             ModeView()
         case .recorders:
             RecordersSettingsView()
+        case .categories:
+            CategoriesSettingsView()
         case .settings:
             SettingsView()
         case .license:
