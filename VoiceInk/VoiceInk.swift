@@ -47,6 +47,7 @@ struct VoiceInkApp: App {
         // Keep existing model order stable; append new models after synced entities.
         let schema = Schema([
             Transcription.self,
+            ImportLedgerEntry.self,
             VocabularyWord.self,
             WordReplacement.self,
             SessionMetric.self
@@ -119,6 +120,10 @@ struct VoiceInkApp: App {
         // 5. Configure circular deps
         recorderUIManager.configure(engine: engine, recorder: engine.recorder)
         engine.recorderUIManager = recorderUIManager
+
+        // 5a. Recorder automation: wire import service + start mount monitor
+        RecorderImportService.shared.configure(engine: engine, modelContext: resolvedContainer.mainContext)
+        RecorderDeviceMonitor.shared.start()
 
         // 6. Initialize model state
         // Migration and refreshAllAvailableModels must run before loadCurrentTranscriptionModel so renamed keys are remapped and imported models are present when restoring the saved selection.
@@ -205,7 +210,7 @@ struct VoiceInkApp: App {
         let dictionaryStoreURL = appSupportURL.appendingPathComponent("dictionary.store")
         let statsStoreURL = appSupportURL.appendingPathComponent("stats.store")
 
-        let transcriptSchema = Schema([Transcription.self])
+        let transcriptSchema = Schema([Transcription.self, ImportLedgerEntry.self])
         let transcriptConfig = ModelConfiguration(
             "default",
             schema: transcriptSchema,
@@ -243,7 +248,7 @@ struct VoiceInkApp: App {
     }
 
     private static func createInMemoryContainer(schema: Schema, logger: Logger) throws -> ModelContainer {
-        let transcriptSchema = Schema([Transcription.self])
+        let transcriptSchema = Schema([Transcription.self, ImportLedgerEntry.self])
         let transcriptConfig = ModelConfiguration("default", schema: transcriptSchema, isStoredInMemoryOnly: true)
 
         let dictionarySchema = Schema([VocabularyWord.self, WordReplacement.self])

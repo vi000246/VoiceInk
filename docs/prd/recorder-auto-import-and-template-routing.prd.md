@@ -30,6 +30,29 @@ Fork VoiceInk，新增兩個小元件並接進既有轉錄 pipeline：
 （分類→選範本）＋每類別的輸出資料夾對應。**結論：Fork 而非新建** — VoiceInk 已提供
 約 80% 能力（檔案批次轉錄、多家本地／雲端引擎、範本＋AI 改寫、歷史 DB、選單列、通知）。
 
+## Flagship Use Cases（v1 聚焦）
+
+使用者明確的兩大主場景，v1 以這兩個情境的品質為優先驗收目標：
+
+### A. 面試對談分析（Interview Analysis）
+- **內容形態**：雙人對談（面試官 ↔ 受訪者／使用者本人），通常 20–60 分鐘。
+- **想要的產出**：不只是逐字稿，而是**面試覆盤**——逐題拆解「被問了什麼 → 我怎麼答的 →
+  答得好不好 → 更好的答法」、整體表現亮點與弱點、可追問清單、後續準備建議。
+- **關鍵需求**：**講者區分**（誰是面試官、誰是我）對分析品質影響極大。VoiceInk 目前
+  只有 VAD 語音分段、**無講者分離（diarization）**，這是本案需評估的能力缺口。
+  - v1 退路：不做真 diarization，改在分類後的分析 prompt 中要求 AI 依語氣／問答結構
+    推測發言者並標記（成本低、品質夠用即可），真 diarization 留待後續里程碑評估。
+
+### B. 演講／座談會逐字稿（Talk / Panel Transcript）
+- **內容形態**：單人演講或多人座談，通常 30–90 分鐘的長音檔。
+- **想要的產出**：乾淨的**結構化逐字稿** + 重點摘要（主題段落、關鍵論點、名詞解釋、
+  行動／待查清單、金句）。重逐字稿保真度，分析為輔。
+- **關鍵需求**：長音檔轉錄（既有檔案佇列可處理）＋**長逐字稿的 AI 摘要**可能超出單次
+  context window，需評估分段摘要（map-reduce）策略；細節留 SRS。
+
+> 這兩個情境分別對應兩張 starter 範本（見 Core Capabilities Must 項），是 v1 出廠即附、
+> 也是分類器要能可靠分辨的兩個主類別（外加「通用」fallback）。
+
 ## Key Hypothesis
 
 我們相信「插入即自動轉錄＋自動辨別類別套範本＋自動匯出到 vault」能讓錄音筆使用者
@@ -54,7 +77,10 @@ Fork VoiceInk，新增兩個小元件並接進既有轉錄 pipeline：
 
 ## Open Questions
 
-- [ ] 分類正確率門檻？低於多少時應改為「先確認再套」而非全自動？（影響 M2 是否需信心分數 gate）
+- [x] ~~分類正確率門檻？低於多少時改「先確認再套」？~~ **已決定（2026-06-29）：v1 一律全自動，
+  分類錯誤事後在 History 用類別徽章手動更正；不做信心分數 gate（如實測正確率太低再追加）。**
+- [ ] 面試分析是否需要真 diarization？v1 先用 prompt 推測發言者驗證品質，再決定是否投入。
+- [ ] 長座談會逐字稿摘要的分段策略（map-reduce chunk 大小、是否保留全文＋摘要兩份）— 留 SRS。
 - [ ] 去重判定鍵（檔名＋修改時間？內容雜湊？）— 細節留 SRS。
 - [ ] 匯出檔名規則與檔內 metadata（日期、來源裝置、原始轉錄）格式 — 留 SRS。
 - [ ] 多支錄音筆／同一支換不同資料夾的邊界情況 — v1 是否需處理。
@@ -90,10 +116,14 @@ Fork VoiceInk，新增兩個小元件並接進既有轉錄 pipeline：
 | Must | 轉錄後雲端 AI 內容分類 → 自動選對應範本改寫 | 解決「自動辨別類別」核心訴求 |
 | Must | 「Categories」頁：類別↔範本↔子資料夾映射，可增刪改 | 使用者自訂類別與範本 |
 | Must | 通用範本 fallback（分類不確定時） | 確保永遠有可用結果 |
+| Must | 出廠附「面試覆盤」與「演講／座談會」兩張 starter 範本 | v1 兩大旗艦用途即裝即用 |
 | Must | 依類別子資料夾把成品匯出成檔案（vault 根 + 子資料夾） | 「轉入成我要的格式」最終交付 |
 | Must | 已匯入檔案去重 | 全自動下必要的安全網 |
 | Should | 插入／完成的浮動通知 | 全自動下的可見性 |
 | Should | 佇列／歷史每筆顯示「類別徽章」，可手動更正分類 | 修正錯誤分類 |
+| Should | 面試範本以 prompt 推測並標記發言者（面試官／我） | diarization 缺口的低成本退路 |
+| Should | 長逐字稿分段摘要（map-reduce）以容納 90 分鐘座談 | 超出單次 context window 時仍可摘要 |
+| Could | 真講者分離（diarization）標記每句發言者 | 提升面試分析品質，成本較高，後續評估 |
 | Could | 匯入成功後自動從裝置刪除原檔（選項，預設關） | 釋放錄音筆空間 |
 | Won't | 即時串流分類、雲端同步、新轉錄引擎 | 明確延後／不做 |
 
@@ -178,6 +208,9 @@ UI 模式。
 | 匯出分層 | 單一 vault 根＋子資料夾 | 每類別絕對路徑 | 最適合 Obsidian、換 vault 只改一處 |
 | Recorders UI | 每台裝置一張卡片 | 單一全域設定 | 多裝置／可重複辨識 |
 | Categories UI | 獨立側欄頁 | 併進 Enhancement 頁 | 清楚、好找 |
+| v1 聚焦用途 | 面試覆盤＋演講/座談會逐字稿 | 泛用會議紀錄 | 使用者主場景明確，先把這兩類做到可信任 |
+| 分類門檻 | 全自動、事後更正 | 低信心先確認 | 使用者要「插入就好」，校正成本低於每次確認 |
+| 講者區分 | v1 用 prompt 推測 | 真 diarization | VoiceInk 無 diarization，先低成本驗證品質再投入 |
 
 ---
 
@@ -193,11 +226,17 @@ UI 模式。
 - 範本＋AI 改寫：`CustomPrompt`、`AIEnhancementService`、`TranscriptionPipeline`。
 - UI 模式：`NavigationSplitView` 側欄、Power Mode 卡片＋400pt 滑出面板、`PromptEditorView`、
   `PromptSelectionGrid`、`NotificationManager`、`AudioFileRow` 狀態徽章。
-- **缺口（需新增）**：磁碟掛載監看（目前無 `didMount`/FSEvents）、內容分類路由（目前只有
-  spoken trigger words 與 app/URL Power Mode，無內容分類）。
+- **缺口（需新增）**：
+  - 磁碟掛載監看（目前無 `didMountNotification`/FSEvents/`mountedVolumeURLs`，已 grep 確認）。
+  - 內容分類路由（目前只有 spoken trigger words 與 app/URL Power Mode，無內容分類）。
+  - **講者分離（diarization）**：`FluidAudioTranscriptionService` 只有 VAD 語音分段
+    （`segmentSpeechAudio`），不標記發言者；面試分析的「誰說的」需另解（v1 prompt 推測）。
+  - **長逐字稿摘要**：既有 AI 改寫是單次 prompt，90 分鐘座談逐字稿可能超 context window，
+    需分段摘要策略。
 
 ---
 
 *Generated: 2026-06-13*
-*Status: DRAFT - needs validation*
+*Calibrated: 2026-06-29 — 聚焦面試分析＋演講/座談會逐字稿；確定全自動分類；標記 diarization 與長逐字稿摘要缺口*
+*Status: DRAFT - calibrated, ready for /prp-srs*
 *Source Linear Issue: N/A — standalone*

@@ -42,6 +42,21 @@ class AudioTranscriptionManager: ObservableObject {
         }
     }
 
+    /// Add audio file URLs tagged with their origin. Recorder imports bypass Mode enhancement.
+    func addToQueue(urls: [URL], origin: QueueItemOrigin) {
+        for url in urls {
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            guard SupportedMedia.isSupported(url: url) else { continue }
+
+            let path = url.standardizedFileURL.path
+            if queue.contains(where: { $0.url.standardizedFileURL.path == path && !$0.status.isTerminal }) {
+                continue
+            }
+
+            queue.append(AudioFileQueueItem(url: url, origin: origin))
+        }
+    }
+
     /// Remove a pending item from the queue.
     func removeFromQueue(id: UUID) {
         guard let index = queue.firstIndex(where: { $0.id == id }) else { return }
@@ -192,7 +207,8 @@ class AudioTranscriptionManager: ObservableObject {
                     }
                 }
 
-            if let enhancementService = engine.enhancementService,
+            if case .manual = item.origin,
+               let enhancementService = engine.enhancementService,
                let enhancementConfiguration,
                enhancementConfiguration.isEnabled,
                enhancementService.isConfigured(for: enhancementConfiguration) {
@@ -242,6 +258,11 @@ class AudioTranscriptionManager: ObservableObject {
                     modeName: modeMetadata.name,
                     modeEmoji: modeMetadata.emoji
                 )
+            }
+
+            if case let .recorderImport(deviceId, fingerprint) = item.origin {
+                transcription.recorderSourceDeviceId = deviceId
+                transcription.importFingerprint = fingerprint
             }
 
             modelContext.insert(transcription)

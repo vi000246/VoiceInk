@@ -22,17 +22,25 @@ enum QueueItemStatus: Equatable {
     }
 }
 
+/// Where a queue item came from. Recorder imports skip Mode enhancement (raw transcript).
+enum QueueItemOrigin: Equatable {
+    case manual
+    case recorderImport(deviceId: UUID, fingerprint: String)
+}
+
 @MainActor
 class AudioFileQueueItem: Identifiable, ObservableObject {
     let id = UUID()
     let url: URL
     let filename: String
+    let origin: QueueItemOrigin
 
     @Published var status: QueueItemStatus = .pending
     @Published var transcription: Transcription?
 
-    init(url: URL) {
+    init(url: URL, origin: QueueItemOrigin = .manual) {
         self.url = url
         self.filename = url.lastPathComponent
+        self.origin = origin
     }
 }

@@ -20,4 +20,5 @@ extension Notification.Name {
     static let sessionMetricsDidChange = Notification.Name("sessionMetricsDidChange")
     static let openFileForTranscription = Notification.Name("openFileForTranscription")
     static let audioDeviceSwitchRequired = Notification.Name("audioDeviceSwitchRequired")
+    static let recorderImportCompleted = Notification.Name("recorderImportCompleted")
 }

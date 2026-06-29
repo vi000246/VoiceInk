@@ -30,6 +30,8 @@ final class Transcription {
     @Attribute(originalName: "powerModeEmoji")
     var modeEmoji: String?
     var transcriptionStatus: String?
+    var recorderSourceDeviceId: UUID?
+    var importFingerprint: String?
 
     init(text: String,
          duration: TimeInterval,
@@ -44,7 +46,9 @@ final class Transcription {
          aiRequestUserMessage: String? = nil,
          modeName: String? = nil,
          modeEmoji: String? = nil,
-         transcriptionStatus: TranscriptionStatus = .pending) {
+         transcriptionStatus: TranscriptionStatus = .pending,
+         recorderSourceDeviceId: UUID? = nil,
+         importFingerprint: String? = nil) {
         self.id = UUID()
         self.text = text
         self.enhancedText = enhancedText
@@ -61,6 +65,8 @@ final class Transcription {
         self.modeName = modeName
         self.modeEmoji = modeEmoji
         self.transcriptionStatus = transcriptionStatus.rawValue
+        self.recorderSourceDeviceId = recorderSourceDeviceId
+        self.importFingerprint = importFingerprint
     }
 
     func markAsCanceledTranscription(
