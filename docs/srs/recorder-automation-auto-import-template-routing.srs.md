@@ -70,10 +70,12 @@ interfaces and the AI provider calls; they are specified in the Module Spec's *A
 
 ## Functional Requirements
 
-> **Status (2026-06-30):** FR-1–5 shipped in M1. FR-6–11, 13, 14 shipped in M2 (this pass);
+> **Status (2026-06-30):** FR-1–5 shipped in M1. FR-6–14 shipped in M2 (this pass);
 > code unit-tested (18/18 pure-seam tests green) but not yet manually verified on hardware.
-> FR-12 is **partial**: manual re-classification logic (`RecorderPostProcessor.reclassify`) is
-> implemented, but the History category **badge + re-tag UI** is deferred (needs visual iteration).
+> FR-12 is complete in the sidebar **History** page (`InlineHistoryView`): a category badge on each
+> row + a right-click **重新分類** submenu calling `RecorderPostProcessor.reclassify`. The separate
+> standalone history window (`TranscriptionHistoryView`, opened by `HistoryWindowController`) does
+> not yet show the badge — it lacks the injected `AIEnhancementService` env object.
 > FR-15 (real diarization) remains M5 / out of v1.
 
 - [x] **FR-1** Detect volume mount/unmount via `NSWorkspace.shared.notificationCenter`
@@ -101,7 +103,7 @@ interfaces and the AI provider calls; they are specified in the Module Spec's *A
   transcript. Vault root is a security-scoped bookmark.
 - [x] **FR-11** Post floating notifications via `NotificationManager` at import start
   ("匯入 N 個新檔") and on completion ("完成").
-- [~] **FR-12** Show a category badge on each queue/history item; allow manual re-classification
+- [x] **FR-12** Show a category badge on each queue/history item; allow manual re-classification
   which re-runs routing/enhancement/export for that item.
 - [x] **FR-13** Provide a **Recorders** sidebar page (device cards + ~400pt slide-out form) and a
   **Categories** sidebar page (category ↔ prompt ↔ sub-folder list, with an undeletable fallback).

@@ -3,6 +3,8 @@ import SwiftData
 
 struct InlineHistoryView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var enhancementService: AIEnhancementService
+    @StateObject private var recorderStore = RecorderConfigStore.shared
     @State private var searchText = ""
     @State private var expandedId: UUID?
     @State private var selectedTranscriptions: Set<Transcription> = []
@@ -250,6 +252,8 @@ struct InlineHistoryView: View {
                         transcription: transcription,
                         isExpanded: expandedId == transcription.id,
                         isChecked: selectedTranscriptions.contains(transcription),
+                        recorderCategories: recorderStore.categories,
+                        isRecorderItem: transcription.recorderSourceDeviceId != nil,
                         onToggleExpand: {
                             withAnimation(.easeInOut(duration: 0.2)) {
                                 expandedId = expandedId == transcription.id ? nil : transcription.id
@@ -258,7 +262,8 @@ struct InlineHistoryView: View {
                         onToggleCheck: { toggleSelection(transcription) },
                         onShowInfo: {
                             openPanel(mode: .info, transcriptionID: transcription.id)
-                        }
+                        },
+                        onReclassify: { category in reclassify(transcription, to: category) }
                     )
                 }
             }
@@ -361,6 +366,23 @@ struct InlineHistoryView: View {
         isLoading = false
     }
 
+    // MARK: - Recorder Re-classification (FR-12 / AC-7)
+
+    private func reclassify(_ transcription: Transcription, to category: RecorderCategory) {
+        guard let aiService = enhancementService.getAIService() else {
+            NotificationManager.shared.showNotification(title: "尚未設定 AI 供應商，無法重新分類", type: .warning, duration: 4)
+            return
+        }
+        let device = transcription.recorderSourceDeviceId.flatMap { recorderStore.device(byId: $0) }
+        NotificationManager.shared.showNotification(title: "重新分類中：\(category.name)…", type: .info, duration: 2)
+        Task {
+            await RecorderPostProcessor.shared.reclassify(
+                transcription: transcription, to: category, device: device,
+                modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
+            await loadInitialContent()
+        }
+    }
+
     // MARK: - Selection & Deletion
 
     private func toggleSelection(_ transcription: Transcription) {
@@ -448,9 +470,12 @@ private struct HistoryCardRow: View {
     let transcription: Transcription
     let isExpanded: Bool
     let isChecked: Bool
+    var recorderCategories: [RecorderCategory] = []
+    var isRecorderItem: Bool = false
     let onToggleExpand: () -> Void
     let onToggleCheck: () -> Void
     let onShowInfo: () -> Void
+    var onReclassify: (RecorderCategory) -> Void = { _ in }
 
     @State private var selectedTab: TranscriptionTab = .original
 
@@ -483,9 +508,14 @@ private struct HistoryCardRow: View {
                 .labelsHidden()
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(transcription.timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
+                    HStack(spacing: 6) {
+                        Text(transcription.timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
+                        if let category = transcription.recorderCategoryName {
+                            categoryBadge(category)
+                        }
+                    }
 
                     if !isExpanded {
                         Text(transcription.enhancedText ?? transcription.text)
@@ -511,6 +541,35 @@ private struct HistoryCardRow: View {
                     .padding(.top, 10)
             }
         }
+        .contextMenu {
+            if isRecorderItem && !recorderCategories.isEmpty {
+                Menu("重新分類") {
+                    ForEach(recorderCategories) { category in
+                        Button {
+                            onReclassify(category)
+                        } label: {
+                            if category.id == transcription.recorderCategoryId {
+                                Label(category.name, systemImage: "checkmark")
+                            } else {
+                                Text(category.name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func categoryBadge(_ name: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "tag.fill").font(.system(size: 8))
+            Text(name).font(.system(size: 10, weight: .medium))
+        }
+        .foregroundColor(AppTheme.Accent.primary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(AppTheme.Accent.primary.opacity(0.12)))
     }
 
     // MARK: - Expanded Content
