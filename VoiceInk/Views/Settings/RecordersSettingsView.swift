@@ -1,52 +1,104 @@
 import SwiftUI
 import AppKit
 
+/// Recorders page — device cards + a 400pt slide-out editor (mirrors ModeView), plus the single
+/// global Obsidian vault root. Plug in a configured device → zero-click import/transcribe/classify/export.
 struct RecordersSettingsView: View {
     @StateObject private var store = RecorderConfigStore.shared
+    @State private var editTarget: DeviceEditTarget?
+
+    enum DeviceEditTarget: Identifiable {
+        case add
+        case edit(RecorderDevice)
+        var id: String { switch self { case .add: return "add"; case .edit(let d): return d.id.uuidString } }
+    }
 
     var body: some View {
-        Form {
-            Section("已設定的錄音筆") {
-                if store.devices.isEmpty {
-                    Text("尚未設定。插入錄音筆後點下方新增。").foregroundStyle(.secondary)
-                }
-                ForEach(store.devices) { d in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(d.displayName).font(.headline)
-                                Text("符合磁碟名稱：\(d.volumeNameMatch)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button(role: .destructive) { store.remove(d.id) } label: { Image(systemName: "trash") }
-                        }
-                        Toggle("自動匯入", isOn: bindingAutoImport(d))
-                        Toggle("匯入後刪除裝置上的原始檔（成功匯入＋轉錄＋輸出後才刪）", isOn: bindingDeleteAfterImport(d))
-                        HStack {
-                            Text("Obsidian Vault：\(d.vaultRootBookmark == nil ? "未設定（不輸出）" : "已設定")")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            Button("選擇 Vault 根目錄…") { chooseVaultRoot(d) }
+        VStack(spacing: 0) {
+            AppScreenHeader(
+                title: "Recorders",
+                infoMessage: "插入已設定的錄音筆即自動匯入、轉錄、分類，並輸出到 Obsidian Vault。",
+                infoURL: nil
+            ) {
+                AppIconButton(systemName: "plus.circle.fill", help: "新增錄音筆") { editTarget = .add }
+            }
+
+            ScrollView {
+                VStack(spacing: 12) {
+                    VaultRootCard(store: store)
+
+                    if store.devices.isEmpty {
+                        emptyState
+                    } else {
+                        ForEach(store.devices) { device in
+                            RecorderDeviceCard(device: device) { editTarget = .edit(device) }
                         }
                     }
                 }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
             }
-            Section { Button("新增目前插入的裝置…") { addCurrentDevice() } }
         }
-        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sidePanel(isPresented: .init(
+            get: { editTarget != nil },
+            set: { if !$0 { editTarget = nil } }
+        ), dismissOnExitCommand: false) {
+            if let target = editTarget {
+                RecorderDeviceEditorPanel(target: target, store: store, onDismiss: { editTarget = nil })
+                    .id(target.id)
+            }
+        }
     }
 
-    private func bindingAutoImport(_ d: RecorderDevice) -> Binding<Bool> {
-        Binding(get: { d.autoImportEnabled },
-                set: { var x = d; x.autoImportEnabled = $0; store.upsert(x) })
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "recordingtape")
+                .font(.system(size: 40)).foregroundStyle(.secondary.opacity(0.6))
+            Text("尚未設定錄音筆").font(.system(size: 16, weight: .medium))
+            Text("插入錄音筆後點右上「+」新增，選擇裝置上存放錄音的資料夾。")
+                .font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 40)
+    }
+}
+
+// MARK: - Global Vault Root Card
+
+private struct VaultRootCard: View {
+    @ObservedObject var store: RecorderConfigStore
+
+    private var vaultName: String? {
+        guard let bookmark = store.vaultRootBookmark,
+              let url = VaultExportService.shared.resolveVaultRoot(bookmark) else { return nil }
+        return url.lastPathComponent
     }
 
-    private func bindingDeleteAfterImport(_ d: RecorderDevice) -> Binding<Bool> {
-        Binding(get: { d.deleteAfterImport },
-                set: { var x = d; x.deleteAfterImport = $0; store.upsert(x) })
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 18)).foregroundStyle(AppTheme.Accent.primary)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.Accent.primary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Obsidian Vault").font(.system(size: 14, weight: .semibold))
+                Text(vaultName.map { "根目錄：\($0)" } ?? "未設定 — 不會輸出 Markdown")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if store.vaultRootBookmark != nil {
+                Button("清除") { store.setVaultRoot(nil) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).font(.system(size: 12))
+            }
+            Button(store.vaultRootBookmark == nil ? "選擇 Vault…" : "更換…") { chooseVault() }
+                .controlSize(.small)
+        }
+        .padding(14)
+        .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
     }
 
-    private func chooseVaultRoot(_ d: RecorderDevice) {
+    private func chooseVault() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -57,21 +109,169 @@ struct RecordersSettingsView: View {
                                                     includingResourceValuesForKeys: nil, relativeTo: nil) else {
             NotificationManager.shared.showNotification(title: "無法建立 Vault 授權", type: .error, duration: 4); return
         }
-        var x = d; x.vaultRootBookmark = bookmark; store.upsert(x)
+        store.setVaultRoot(bookmark)
+    }
+}
+
+// MARK: - Device Card
+
+private struct RecorderDeviceCard: View {
+    let device: RecorderDevice
+    let onEdit: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "recordingtape")
+                .font(.system(size: 18)).foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.Sidebar.fallback, in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(device.displayName.isEmpty ? "未命名裝置" : device.displayName)
+                    .font(.system(size: 14, weight: .semibold))
+                Text("符合磁碟名稱：\(device.volumeNameMatch)")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    pill(device.autoImportEnabled ? "自動匯入" : "已停用", on: device.autoImportEnabled)
+                    if device.deleteAfterImport { pill("匯入後刪除", on: false) }
+                }
+            }
+            Spacer()
+            Button("編輯", action: onEdit).controlSize(.small)
+        }
+        .padding(14)
+        .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(isHovering ? AppTheme.Accent.primary.opacity(0.4) : AppTheme.Border.control, lineWidth: 0.5))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onEdit)
+        .onHover { isHovering = $0 }
     }
 
-    private func addCurrentDevice() {
+    private func pill(_ text: String, on: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(on ? AppTheme.Accent.primary : .secondary)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(Capsule().fill((on ? AppTheme.Accent.primary : Color.secondary).opacity(0.12)))
+    }
+}
+
+// MARK: - Device Editor (slide-out panel)
+
+private struct RecorderDeviceEditorPanel: View {
+    let target: RecordersSettingsView.DeviceEditTarget
+    @ObservedObject var store: RecorderConfigStore
+    let onDismiss: () -> Void
+
+    @State private var displayName: String
+    @State private var volumeNameMatch: String
+    @State private var sourceFolderBookmark: Data?
+    @State private var sourceFolderName: String?
+    @State private var autoImportEnabled: Bool
+    @State private var deleteAfterImport: Bool
+
+    private let existingId: UUID?
+    private let createdAt: Date
+
+    init(target: RecordersSettingsView.DeviceEditTarget, store: RecorderConfigStore, onDismiss: @escaping () -> Void) {
+        self.target = target
+        self.store = store
+        self.onDismiss = onDismiss
+        switch target {
+        case .add:
+            existingId = nil; createdAt = Date()
+            _displayName = State(initialValue: "")
+            _volumeNameMatch = State(initialValue: "")
+            _sourceFolderBookmark = State(initialValue: nil)
+            _sourceFolderName = State(initialValue: nil)
+            _autoImportEnabled = State(initialValue: true)
+            _deleteAfterImport = State(initialValue: false)
+        case .edit(let d):
+            existingId = d.id; createdAt = d.createdAt
+            _displayName = State(initialValue: d.displayName)
+            _volumeNameMatch = State(initialValue: d.volumeNameMatch)
+            _sourceFolderBookmark = State(initialValue: d.sourceFolderBookmark)
+            var stale = false
+            let url = try? URL(resolvingBookmarkData: d.sourceFolderBookmark, options: [.withSecurityScope],
+                               relativeTo: nil, bookmarkDataIsStale: &stale)
+            _sourceFolderName = State(initialValue: url?.lastPathComponent)
+            _autoImportEnabled = State(initialValue: d.autoImportEnabled)
+            _deleteAfterImport = State(initialValue: d.deleteAfterImport)
+        }
+    }
+
+    private var canSave: Bool {
+        sourceFolderBookmark != nil && !volumeNameMatch.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            AppPanelHeader(title: target.id == "add" ? "新增錄音筆" : "編輯錄音筆", onClose: onDismiss)
+            Form {
+                Section("辨識") {
+                    TextField("顯示名稱", text: $displayName)
+                    TextField("符合磁碟名稱（插入時比對，包含即符合）", text: $volumeNameMatch)
+                }
+                Section("來源資料夾（裝置上存放錄音的位置）") {
+                    HStack {
+                        Text(sourceFolderName ?? "尚未選擇")
+                            .foregroundStyle(sourceFolderName == nil ? .secondary : .primary)
+                        Spacer()
+                        Button("選擇…") { chooseSourceFolder() }
+                    }
+                }
+                Section("自動化") {
+                    Toggle("插入即自動匯入", isOn: $autoImportEnabled)
+                    Toggle("匯入後刪除裝置原始檔（成功匯入＋轉錄＋輸出後才刪）", isOn: $deleteAfterImport)
+                }
+                Section {
+                    Button("儲存", action: save).disabled(!canSave)
+                    if existingId != nil {
+                        Button("刪除此裝置", role: .destructive, action: deleteDevice)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private func chooseSourceFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.message = "選擇錄音筆上存放錄音的資料夾"
         guard panel.runModal() == .OK, let folder = panel.url else { return }
-        let volumeName = (try? folder.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? folder.lastPathComponent
         guard let bookmark = try? folder.bookmarkData(options: [.withSecurityScope],
                                                       includingResourceValuesForKeys: nil, relativeTo: nil) else {
             NotificationManager.shared.showNotification(title: "無法建立資料夾授權", type: .error, duration: 4); return
         }
-        store.upsert(RecorderDevice(displayName: volumeName, volumeNameMatch: volumeName, sourceFolderBookmark: bookmark))
+        sourceFolderBookmark = bookmark
+        sourceFolderName = folder.lastPathComponent
+        // Auto-fill the volume / display name from the folder's volume when blank.
+        let volumeName = (try? folder.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? folder.lastPathComponent
+        if volumeNameMatch.isEmpty { volumeNameMatch = volumeName }
+        if displayName.isEmpty { displayName = volumeName }
+    }
+
+    private func save() {
+        guard let bookmark = sourceFolderBookmark else { return }
+        let device = RecorderDevice(
+            id: existingId ?? UUID(),
+            displayName: displayName.isEmpty ? volumeNameMatch : displayName,
+            volumeNameMatch: volumeNameMatch,
+            sourceFolderBookmark: bookmark,
+            autoImportEnabled: autoImportEnabled,
+            deleteAfterImport: deleteAfterImport,
+            createdAt: createdAt)
+        store.upsert(device)
+        onDismiss()
+    }
+
+    private func deleteDevice() {
+        if let id = existingId { store.remove(id) }
+        onDismiss()
     }
 }

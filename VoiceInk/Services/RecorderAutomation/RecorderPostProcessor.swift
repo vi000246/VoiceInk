@@ -68,11 +68,11 @@ final class RecorderPostProcessor {
         transcription.classificationConfidence = result.confidence
         try? modelContext.save()
 
-        // 6. Export to vault (if configured for this device)
-        if let device, let bookmark = device.vaultRootBookmark,
+        // 6. Export to the global vault (if a vault root is configured)
+        if let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
            let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) {
             exportToVault(transcription: transcription, analysis: analysis, rawText: rawText,
-                          decision: decision, device: device, vaultRoot: vaultRoot,
+                          decision: decision, deviceName: device?.displayName, vaultRoot: vaultRoot,
                           modelContext: modelContext)
         }
 
@@ -122,10 +122,10 @@ final class RecorderPostProcessor {
             transcription.exportedFilePath = nil
         }
         let decision = RoutingDecision(category: category, prompt: prompt, usedFallback: category.isFallback)
-        if let device, let bookmark = device.vaultRootBookmark,
+        if let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
            let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) {
             exportToVault(transcription: transcription, analysis: analysis, rawText: rawText,
-                          decision: decision, device: device, vaultRoot: vaultRoot,
+                          decision: decision, deviceName: device?.displayName, vaultRoot: vaultRoot,
                           modelContext: modelContext)
         }
         try? modelContext.save()
@@ -134,19 +134,19 @@ final class RecorderPostProcessor {
 
     private func exportToVault(
         transcription: Transcription, analysis: String, rawText: String,
-        decision: RoutingDecision, device: RecorderDevice, vaultRoot: URL,
+        decision: RoutingDecision, deviceName: String?, vaultRoot: URL,
         modelContext: ModelContext
     ) {
         let input = VaultExportService.ExportInput(
             analysis: analysis, rawTranscript: rawText,
-            categoryName: decision.category.name, deviceName: device.displayName,
+            categoryName: decision.category.name, deviceName: deviceName,
             date: transcription.timestamp,
             transcriptionModel: transcription.transcriptionModelName,
             enhancementModel: transcription.aiEnhancementModelName,
             confidence: transcription.classificationConfidence)
         let markdown = VaultExportService.shared.buildMarkdown(input)
         let fileName = VaultExportService.shared.suggestedFileName(
-            date: transcription.timestamp, categoryName: decision.category.name, deviceName: device.displayName)
+            date: transcription.timestamp, categoryName: decision.category.name, deviceName: deviceName)
         do {
             let url = try VaultExportService.shared.export(
                 markdown: markdown, fileName: fileName, vaultRoot: vaultRoot,

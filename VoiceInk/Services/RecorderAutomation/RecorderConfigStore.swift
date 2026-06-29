@@ -6,8 +6,11 @@ final class RecorderConfigStore: ObservableObject {
     static let shared = RecorderConfigStore()
     @Published private(set) var devices: [RecorderDevice] = []
     @Published private(set) var categories: [RecorderCategory] = []
+    /// Global Obsidian vault root (single vault for all devices; per-category sub-folders live under it).
+    @Published private(set) var vaultRootBookmark: Data?
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
+    private let vaultRootKey = "recorderVaultRootV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -20,6 +23,14 @@ final class RecorderConfigStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([RecorderCategory].self, from: data) {
             categories = decoded
         }
+        vaultRootBookmark = UserDefaults.standard.data(forKey: vaultRootKey)
+    }
+
+    /// Set (or clear) the single global vault root bookmark.
+    func setVaultRoot(_ bookmark: Data?) {
+        vaultRootBookmark = bookmark
+        if let bookmark { UserDefaults.standard.set(bookmark, forKey: vaultRootKey) }
+        else { UserDefaults.standard.removeObject(forKey: vaultRootKey) }
     }
     private func saveDevices() {
         if let data = try? JSONEncoder().encode(devices) { UserDefaults.standard.set(data, forKey: devicesKey) }
