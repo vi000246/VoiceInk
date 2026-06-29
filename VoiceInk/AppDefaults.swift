@@ -1,5 +1,13 @@
 import Foundation
 
+enum CleanupSettingsKeys {
+    static let isTranscriptionCleanupEnabled = "IsTranscriptionCleanupEnabled"
+    static let transcriptionRetentionMinutes = "TranscriptionRetentionMinutes"
+    static let isAudioCleanupEnabled = "IsAudioCleanupEnabled"
+    static let audioRetentionPeriod = "AudioRetentionPeriod"
+    static let lastAutomaticAudioCleanupDate = "AudioCleanupLastAutomaticCleanupDate"
+}
+
 enum AppDefaults {
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -28,13 +36,15 @@ enum AppDefaults {
             "RecorderType": "mini",
 
             // Cleanup
-            "IsTranscriptionCleanupEnabled": false,
-            "TranscriptionRetentionMinutes": 1440,
-            "IsAudioCleanupEnabled": false,
-            "AudioRetentionPeriod": 7,
+            CleanupSettingsKeys.isTranscriptionCleanupEnabled: false,
+            CleanupSettingsKeys.transcriptionRetentionMinutes: 1440,
+            CleanupSettingsKeys.isAudioCleanupEnabled: false,
+            CleanupSettingsKeys.audioRetentionPeriod: 7,
 
             // UI & Behavior
             "IsMenuBarOnly": false,
+            AppAppearancePreference.userDefaultsKey: AppAppearancePreference.system.rawValue,
+            AppLanguagePreference.userDefaultsKey: AppLanguagePreference.systemValue,
             // Shortcuts
             "isMiddleClickToggleEnabled": false,
             "middleClickActivationDelay": 200,

@@ -10,7 +10,7 @@ struct InlineHistoryView: View {
     @State private var selectedTranscriptions: Set<Transcription> = []
     @State private var showDeleteConfirmation = false
     @State private var isPanelPresented = false
-    @State private var panelMode: PanelMode = .info
+    @State private var panelMode: InlineHistoryPanelMode = .info
     @State private var panelTranscriptionId: UUID?
     @State private var displayedTranscriptions: [Transcription] = []
     @State private var isLoading = false
@@ -68,7 +68,7 @@ struct InlineHistoryView: View {
         return displayedTranscriptions.first { $0.id == id }
     }
 
-    private func openPanel(mode: PanelMode, transcriptionID: UUID? = nil) {
+    private func openPanel(mode: InlineHistoryPanelMode, transcriptionID: UUID? = nil) {
         panelMode = mode
         panelTranscriptionId = transcriptionID
 
@@ -158,6 +158,16 @@ struct InlineHistoryView: View {
                     .fill(AppTheme.Surface.card)
             )
             .frame(maxWidth: .infinity)
+
+            AppIconButton(
+                systemName: "gearshape",
+                help: "History settings",
+                size: 30,
+                iconSize: 13,
+                cornerRadius: AppTheme.Radius.pill
+            ) {
+                openPanel(mode: .historySettings)
+            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
@@ -307,6 +317,8 @@ struct InlineHistoryView: View {
                 }
             )
             .id(selectedTranscriptions.count)
+        case .historySettings:
+            HistorySettingsPanel(onClose: closePanel)
         }
     }
 
@@ -464,6 +476,12 @@ struct InlineHistoryView: View {
     }
 }
 
+private enum InlineHistoryPanelMode {
+    case info
+    case analysis
+    case historySettings
+}
+
 // MARK: - History Card Row
 
 private struct HistoryCardRow: View {
@@ -609,10 +627,7 @@ private struct HistoryCardRow: View {
                 )
             }
             .frame(maxHeight: 350)
-            .overlay(alignment: .bottomTrailing) {
-                CopyIconButton(textToCopy: displayText)
-                    .padding(8)
-            }
+            .hoverCopyButton(textToCopy: displayText)
 
             if hasAudioFile, let urlString = transcription.audioFileURL,
                let url = URL(string: urlString) {

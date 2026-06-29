@@ -18,7 +18,10 @@ struct SettingsView: View {
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
+    @AppStorage(AppAppearancePreference.userDefaultsKey) private var appAppearancePreference = AppAppearancePreference.system
+    @AppStorage(AppLanguagePreference.userDefaultsKey) private var appLanguagePreference = AppLanguagePreference.systemValue
     @State private var showResetOnboardingAlert = false
+    @State private var showLanguageRestartAlert = false
     @State private var hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
     @State private var cancelRecordingShortcutRecorderResetID = 0
 
@@ -179,12 +182,39 @@ struct SettingsView: View {
             }
 
             Section("Interface") {
+                Picker("Appearance", selection: $appAppearancePreference) {
+                    ForEach(AppAppearancePreference.allCases) { preference in
+                        Text(preference.displayName).tag(preference)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: appAppearancePreference) { _, newValue in
+                    newValue.apply()
+                }
+
+                Picker("Language", selection: $appLanguagePreference) {
+                    ForEach(AppLanguagePreference.availableOptions) { option in
+                        Text(option.displayName).tag(option.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: appLanguagePreference) { oldValue, newValue in
+                    guard oldValue != newValue else { return }
+                    let normalizedValue = AppLanguagePreference.normalizedRawValue(newValue)
+                    if normalizedValue != newValue {
+                        appLanguagePreference = normalizedValue
+                        return
+                    }
+                    AppLanguagePreference.apply(rawValue: normalizedValue)
+                    showLanguageRestartAlert = true
+                }
+
                 Picker("Recorder Style", selection: $recorderUIManager.recorderPanelStyle) {
                     ForEach(RecorderPanelStyle.allCases) { style in
                         Text(style.displayName).tag(style)
                     }
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
 
             }
 
@@ -217,14 +247,6 @@ struct SettingsView: View {
                         showResetOnboardingAlert = true
                     }
                 }
-            }
-
-            Section {
-                AudioCleanupSettingsView()
-            } header: {
-                Text("Privacy")
-            } footer: {
-                Text("Control how VoiceInk handles your transcription data and audio recordings.")
             }
 
             Section {
@@ -277,6 +299,11 @@ struct SettingsView: View {
             }
         } message: {
             Text("You'll see the introduction screens again the next time you launch the app.")
+        }
+        .alert("Restart VoiceInk to Apply Language", isPresented: $showLanguageRestartAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Your language change will take full effect after you quit and reopen VoiceInk.")
         }
     }
 

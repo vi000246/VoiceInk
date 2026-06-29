@@ -41,6 +41,8 @@ struct VoiceInkApp: App {
         URLCache.shared = URLCache(memoryCapacity: 0, diskCapacity: 0)
 
         AppDefaults.registerDefaults()
+        AppLanguagePreference.applyStored()
+        AppAppearancePreference.applyStored()
         OnboardingV2Migration.prepareIfNeeded()
 
         let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "Initialization")
@@ -288,8 +290,12 @@ struct VoiceInkApp: App {
 
                             showAccessibilityReminderIfNeeded()
 
-                            // Start the automatic audio cleanup process only if transcript cleanup is not enabled
-                            if !UserDefaults.standard.bool(forKey: "IsTranscriptionCleanupEnabled") {
+                            // Run due audio-only cleanup and schedule future checks when transcript cleanup is not managing retention.
+                            if !UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled) &&
+                                UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isAudioCleanupEnabled) {
+                                Task {
+                                    await audioCleanupManager.runAutomaticCleanupIfNeeded(modelContext: container.mainContext)
+                                }
                                 audioCleanupManager.startAutomaticCleanup(modelContext: container.mainContext)
                             }
 
@@ -315,10 +321,11 @@ struct VoiceInkApp: App {
                 } else {
                     OnboardingView(hasCompletedOnboardingV2: $hasCompletedOnboardingV2)
                         .environmentObject(fluidAudioModelManager)
+                        .environmentObject(transcriptionModelManager)
                         .environmentObject(aiService)
                         .environmentObject(enhancementService)
-                        .frame(width: 950)
-                        .frame(minHeight: 730)
+                        .frame(width: AppWindowLayout.width)
+                        .frame(minHeight: AppWindowLayout.minimumHeight)
                         .background(WindowAccessor { window in
                             WindowManager.shared.configureWindow(window)
                         })
@@ -327,7 +334,7 @@ struct VoiceInkApp: App {
             .confettiCelebrationPresenter()
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 950, height: 730)
+        .defaultSize(width: AppWindowLayout.width, height: AppWindowLayout.minimumHeight)
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .newItem) { }

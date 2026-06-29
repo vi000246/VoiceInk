@@ -14,11 +14,6 @@ enum BackupImportError: LocalizedError {
 }
 
 enum BackupImporter {
-    private static let keyIsAudioCleanupEnabled = "IsAudioCleanupEnabled"
-    private static let keyIsTranscriptionCleanupEnabled = "IsTranscriptionCleanupEnabled"
-    private static let keyTranscriptionRetentionMinutes = "TranscriptionRetentionMinutes"
-    private static let keyAudioRetentionPeriod = "AudioRetentionPeriod"
-
     private static let keyIsTextFormattingEnabled = "IsTextFormattingEnabled"
 
     @MainActor
@@ -154,18 +149,28 @@ enum BackupImporter {
         if let recType = general.recorderType {
             recorderUIManager.recorderType = recType
         }
+        if let rawAppearancePreference = general.appAppearancePreference,
+           let appearancePreference = AppAppearancePreference(rawValue: rawAppearancePreference) {
+            UserDefaults.standard.set(appearancePreference.rawValue, forKey: AppAppearancePreference.userDefaultsKey)
+            appearancePreference.apply()
+        }
+        if let rawLanguagePreference = general.appLanguagePreference {
+            let languagePreference = AppLanguagePreference.normalizedRawValue(rawLanguagePreference)
+            UserDefaults.standard.set(languagePreference, forKey: AppLanguagePreference.userDefaultsKey)
+            AppLanguagePreference.apply(rawValue: languagePreference)
+        }
 
         if let transcriptionCleanup = general.isTranscriptionCleanupEnabled {
-            UserDefaults.standard.set(transcriptionCleanup, forKey: keyIsTranscriptionCleanupEnabled)
+            UserDefaults.standard.set(transcriptionCleanup, forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled)
         }
         if let transcriptionMinutes = general.transcriptionRetentionMinutes {
-            UserDefaults.standard.set(transcriptionMinutes, forKey: keyTranscriptionRetentionMinutes)
+            UserDefaults.standard.set(transcriptionMinutes, forKey: CleanupSettingsKeys.transcriptionRetentionMinutes)
         }
         if let audioCleanup = general.isAudioCleanupEnabled {
-            UserDefaults.standard.set(audioCleanup, forKey: keyIsAudioCleanupEnabled)
+            UserDefaults.standard.set(audioCleanup, forKey: CleanupSettingsKeys.isAudioCleanupEnabled)
         }
         if let audioRetention = general.audioRetentionPeriod {
-            UserDefaults.standard.set(audioRetention, forKey: keyAudioRetentionPeriod)
+            UserDefaults.standard.set(audioRetention, forKey: CleanupSettingsKeys.audioRetentionPeriod)
         }
 
         if let muteSystem = general.isSystemMuteEnabled {
