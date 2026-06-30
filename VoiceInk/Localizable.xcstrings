@@ -25597,6 +25597,38 @@
           }
         }
       }
+    },
+    "Recorder Mode" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "錄音筆模式"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音笔模式"
+          }
+        }
+      }
+    },
+    "Recording Management" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "錄音管理"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音管理"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

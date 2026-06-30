@@ -50,7 +50,6 @@ struct CategoriesSettingsView: View {
 
             ScrollView {
                 VStack(spacing: 12) {
-                    DefaultModelCard(store: store, aiService: aiService)
                     ForEach(store.categories) { category in
                         RecorderCategoryCard(
                             category: category,
@@ -78,48 +77,6 @@ struct CategoriesSettingsView: View {
     private func modelLabel(_ c: RecorderCategory) -> String? {
         guard let p = c.aiProviderName, let m = c.aiModelName else { return nil }
         return "\(p) · \(m)"
-    }
-}
-
-// MARK: - Default Analysis Model Card
-
-private struct DefaultModelCard: View {
-    @ObservedObject var store: RecorderConfigStore
-    let aiService: AIService
-
-    private var selection: Binding<RecorderModelChoice?> {
-        Binding(
-            get: {
-                guard let p = store.defaultAIProviderName, let m = store.defaultAIModelName else { return nil }
-                return RecorderModelChoice(provider: p, model: m)
-            },
-            set: { store.setDefaultModel(provider: $0?.provider, model: $0?.model) })
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 18)).foregroundStyle(AppTheme.Accent.primary)
-                .frame(width: 36, height: 36)
-                .background(AppTheme.Accent.primary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("預設分析模型").font(.system(size: 14, weight: .semibold))
-                Text("分類與套範本分析會用這個模型；個別類別可在下方各自覆寫。")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Picker("", selection: selection) {
-                Text("跟隨目前 Mode").tag(RecorderModelChoice?.none)
-                ForEach(recorderModelChoices(aiService), id: \.self) { c in
-                    Text(c.label).tag(RecorderModelChoice?.some(c))
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: 260)
-        }
-        .padding(14)
-        .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
     }
 }
 

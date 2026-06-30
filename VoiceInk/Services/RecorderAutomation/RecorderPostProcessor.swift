@@ -51,6 +51,8 @@ final class RecorderPostProcessor {
         return t.isEmpty ? nil : t
     }
 
+    /// Mount-path entry: always classify (suggest category). If auto-export is on, also apply the
+    /// matched template + export; otherwise stop and leave it for manual handling in Recording Management.
     func process(
         transcription: Transcription,
         rawText: String,
@@ -60,128 +62,132 @@ final class RecorderPostProcessor {
         aiService: AIService
     ) async {
         let store = RecorderConfigStore.shared
-        let categories = store.categories
+        await suggestCategory(transcription: transcription, rawText: rawText, modelContext: modelContext,
+                              enhancementService: enhancementService, aiService: aiService)
+
+        if store.recorderAutoExportEnabled {
+            let category = transcription.recorderCategoryId.flatMap { store.category(byId: $0) } ?? store.fallbackCategory
+            await applyTemplate(transcription: transcription, category: category, modelContext: modelContext,
+                                enhancementService: enhancementService, aiService: aiService)
+            await export(transcription: transcription, category: category, modelContext: modelContext,
+                         enhancementService: enhancementService, aiService: aiService)
+            if let device, let fp = transcription.importFingerprint {
+                RecorderImportService.shared.finalizeImport(fingerprint: fp, device: device,
+                                                            exported: transcription.exportedFilePath != nil)
+            }
+            NotificationManager.shared.showNotification(title: "完成：\(category.name)", type: .success, duration: 3)
+        } else {
+            NotificationManager.shared.showNotification(
+                title: "已轉錄（待處理）：\(transcription.recorderCategoryName ?? "")", type: .info, duration: 3)
+        }
+        NotificationCenter.default.post(name: .recorderImportCompleted, object: transcription)
+    }
+
+    /// Classify the raw transcript and set the SUGGESTED category metadata. No enhancement, no export.
+    func suggestCategory(
+        transcription: Transcription, rawText: String, modelContext: ModelContext,
+        enhancementService: AIEnhancementService, aiService: AIService
+    ) async {
+        let store = RecorderConfigStore.shared
         let baseConfig = ModeRuntimeResolver.currentEnhancementConfiguration(
             enhancementService: enhancementService, aiService: aiService)
-
         guard baseConfig.provider != nil else {
             logger.notice("No AI provider configured — leaving raw recorder transcript unclassified")
             return
         }
-
-        // Classification runs before routing, so it uses the default model (or active Mode).
         let classifyModel = resolvedAnalysisModel(categoryProvider: nil, categoryModel: nil,
                                                   baseConfig: baseConfig, aiService: aiService)
-
-        // 1. Classify
         let result = await TranscriptClassificationService.shared.classify(
-            rawText, categories: categories, aiService: aiService,
+            rawText, categories: store.categories, aiService: aiService,
             provider: classifyModel.provider, modelName: classifyModel.modelName)
-
-        // 2. Route
         let decision = TemplateRouter.route(
-            result: result, categories: categories,
+            result: result, categories: store.categories,
             prompts: store.recorderPrompts, confidenceFloor: confidenceFloor)
-
-        // Resolve the analysis model for this category: category override → default → active Mode.
-        let model = resolvedAnalysisModel(categoryProvider: decision.category.aiProviderName,
-                                          categoryModel: decision.category.aiModelName,
-                                          baseConfig: baseConfig, aiService: aiService)
-
-        // 3. (long?) summarize for the enhancement input
-        let analysisInput = await LongTranscriptSummarizer.shared.condense(
-            rawText, aiService: aiService, provider: model.provider, modelName: model.modelName)
-
-        // 4. Enhance with the category's prompt (if any) using the resolved model
-        var analysis = analysisInput
-        if let prompt = decision.prompt {
-            do {
-                let (enhanced, _, _) = try await enhancementService.enhance(
-                    analysisInput,
-                    configuration: baseConfig.replacing(prompt: prompt, provider: model.provider, modelName: model.modelName))
-                analysis = enhanced
-                transcription.enhancedText = enhanced
-            } catch {
-                logger.error("Category enhancement failed: \(error, privacy: .public)")
-            }
-        }
-
-        // 5. Persist classification metadata
         transcription.recorderCategoryId = decision.category.id
         transcription.recorderCategoryName = decision.category.name
         transcription.classificationConfidence = result.confidence
         try? modelContext.save()
-
-        // 6. Export to the global vault (if a vault root is configured)
-        if let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
-           let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) {
-            let title = await generateShortTitle(from: analysis, provider: model.provider,
-                                                 modelName: model.modelName, aiService: aiService)
-            exportToVault(transcription: transcription, analysis: analysis, rawText: rawText,
-                          decision: decision, deviceName: device?.displayName, title: title,
-                          vaultRoot: vaultRoot, modelContext: modelContext)
-        }
-
-        // 7. Delete-after-import (gated on full success of import + transcription + export)
-        if let device, let fp = transcription.importFingerprint {
-            RecorderImportService.shared.finalizeImport(fingerprint: fp, device: device,
-                                                        exported: transcription.exportedFilePath != nil)
-        }
-
-        NotificationManager.shared.showNotification(title: "完成：\(decision.category.name)", type: .success, duration: 3)
-        NotificationCenter.default.post(name: .recorderImportCompleted, object: transcription)
     }
 
-    /// Manual re-classification (AC-7): re-route/enhance/export against a user-chosen category,
-    /// superseding any previously exported file.
-    func reclassify(
-        transcription: Transcription,
-        to category: RecorderCategory,
-        device: RecorderDevice?,
-        modelContext: ModelContext,
-        enhancementService: AIEnhancementService,
-        aiService: AIService
-    ) async {
+    /// Apply a category's template to the raw transcript → `enhancedText` (raw `text` untouched).
+    /// Resolves the model: category override → Recorder Mode default → fallback. Returns success.
+    @discardableResult
+    func applyTemplate(
+        transcription: Transcription, category: RecorderCategory, modelContext: ModelContext,
+        enhancementService: AIEnhancementService, aiService: AIService
+    ) async -> Bool {
         let baseConfig = ModeRuntimeResolver.currentEnhancementConfiguration(
             enhancementService: enhancementService, aiService: aiService)
-        guard baseConfig.provider != nil else { return }
-        let rawText = transcription.text
+        guard baseConfig.provider != nil else { return false }
         let model = resolvedAnalysisModel(categoryProvider: category.aiProviderName,
                                           categoryModel: category.aiModelName,
                                           baseConfig: baseConfig, aiService: aiService)
-
         let analysisInput = await LongTranscriptSummarizer.shared.condense(
-            rawText, aiService: aiService, provider: model.provider, modelName: model.modelName)
-        let prompt = RecorderConfigStore.shared.recorderPrompt(byId: category.customPromptId)
-
-        var analysis = analysisInput
-        if let prompt {
-            if let (enhanced, _, _) = try? await enhancementService.enhance(
-                analysisInput,
-                configuration: baseConfig.replacing(prompt: prompt, provider: model.provider, modelName: model.modelName)) {
-                analysis = enhanced
-                transcription.enhancedText = enhanced
-            }
-        }
+            transcription.text, aiService: aiService, provider: model.provider, modelName: model.modelName)
         transcription.recorderCategoryId = category.id
         transcription.recorderCategoryName = category.name
 
-        // Supersede the old exported file.
+        guard let prompt = RecorderConfigStore.shared.recorderPrompt(byId: category.customPromptId) else {
+            transcription.enhancedText = analysisInput   // no template → applied result = (condensed) raw
+            try? modelContext.save()
+            return true
+        }
+        do {
+            let (enhanced, _, _) = try await enhancementService.enhance(
+                analysisInput,
+                configuration: baseConfig.replacing(prompt: prompt, provider: model.provider, modelName: model.modelName))
+            transcription.enhancedText = enhanced
+            try? modelContext.save()
+            return true
+        } catch {
+            logger.error("Apply template failed: \(error, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Export the applied result (`enhancedText`, else raw) to `{vault}/{category.subfolder}/`,
+    /// superseding any prior export. No-op (with a toast) if no vault root is configured.
+    func export(
+        transcription: Transcription, category: RecorderCategory, modelContext: ModelContext,
+        enhancementService: AIEnhancementService, aiService: AIService
+    ) async {
+        let store = RecorderConfigStore.shared
+        guard let bookmark = store.vaultRootBookmark,
+              let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) else {
+            NotificationManager.shared.showNotification(title: "尚未設定 Obsidian Vault 根目錄", type: .warning, duration: 4)
+            return
+        }
+        let analysis = transcription.enhancedText ?? transcription.text
         if let old = transcription.exportedFilePath {
             try? FileManager.default.removeItem(at: URL(fileURLWithPath: old))
             transcription.exportedFilePath = nil
         }
-        let decision = RoutingDecision(category: category, prompt: prompt, usedFallback: category.isFallback)
-        if let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
-           let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) {
-            let title = await generateShortTitle(from: analysis, provider: model.provider,
-                                                 modelName: model.modelName, aiService: aiService)
-            exportToVault(transcription: transcription, analysis: analysis, rawText: rawText,
-                          decision: decision, deviceName: device?.displayName, title: title,
-                          vaultRoot: vaultRoot, modelContext: modelContext)
-        }
-        try? modelContext.save()
-        NotificationCenter.default.post(name: .recorderImportCompleted, object: transcription)
+        let baseConfig = ModeRuntimeResolver.currentEnhancementConfiguration(
+            enhancementService: enhancementService, aiService: aiService)
+        let model = resolvedAnalysisModel(categoryProvider: category.aiProviderName,
+                                          categoryModel: category.aiModelName,
+                                          baseConfig: baseConfig, aiService: aiService)
+        let title = await generateShortTitle(from: analysis, provider: model.provider,
+                                             modelName: model.modelName, aiService: aiService)
+        let deviceName = transcription.recorderSourceDeviceId.flatMap { store.device(byId: $0)?.displayName }
+        let decision = RoutingDecision(category: category,
+                                       prompt: store.recorderPrompt(byId: category.customPromptId),
+                                       usedFallback: category.isFallback)
+        exportToVault(transcription: transcription, analysis: analysis, rawText: transcription.text,
+                      decision: decision, deviceName: deviceName, title: title,
+                      vaultRoot: vaultRoot, modelContext: modelContext)
+        NotificationManager.shared.showNotification(title: "已匯出：\(category.name)", type: .success, duration: 3)
+    }
+
+    /// Manual re-classify (History badge): apply the chosen category's template + re-export.
+    func reclassify(
+        transcription: Transcription, to category: RecorderCategory, device: RecorderDevice?,
+        modelContext: ModelContext, enhancementService: AIEnhancementService, aiService: AIService
+    ) async {
+        await applyTemplate(transcription: transcription, category: category, modelContext: modelContext,
+                            enhancementService: enhancementService, aiService: aiService)
+        await export(transcription: transcription, category: category, modelContext: modelContext,
+                     enhancementService: enhancementService, aiService: aiService)
     }
 
     private func exportToVault(

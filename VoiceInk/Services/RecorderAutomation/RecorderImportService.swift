@@ -65,10 +65,9 @@ final class RecorderImportService: NSObject, ObservableObject {
         }
         guard !enqueued.isEmpty else { return }
         NotificationManager.shared.showNotification(title: "匯入 \(enqueued.count) 個新檔", type: .info, duration: 3)
-        let mode = ModeManager.shared.activeConfiguration ?? ModeManager.shared.configurations.first
-        if let mode {
-            AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: mode)
-        }
+        // Recorder transcription uses Recorder Mode (its own model), NOT the active voice Mode.
+        let recorderMode = RecorderTranscriptionConfig.current()
+        AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
     }
 
     /// Called by the post-processor once an item finishes. Deletes the on-device original only when

@@ -15,12 +15,21 @@ final class RecorderConfigStore: ObservableObject {
     /// nil → fall back to the active Mode's AI model.
     @Published private(set) var defaultAIProviderName: String?
     @Published private(set) var defaultAIModelName: String?
+    // MARK: Recorder Mode (recorder's own transcription settings, independent of voice Modes)
+    @Published private(set) var recorderTranscriptionModelName: String?   // nil = auto (first usable)
+    @Published private(set) var recorderLanguage: String?                 // nil = auto
+    @Published private(set) var recorderTextFormattingEnabled: Bool = false
+    @Published private(set) var recorderAutoExportEnabled: Bool = false   // default manual
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let recorderPromptsKey = "recorderCategoryPromptsV1"
     private let vaultRootKey = "recorderVaultRootV1"
     private let defaultProviderKey = "recorderDefaultAIProviderV1"
     private let defaultModelKey = "recorderDefaultAIModelV1"
+    private let recTranscriptionKey = "recorderTranscriptionModelV1"
+    private let recLanguageKey = "recorderLanguageV1"
+    private let recFormattingKey = "recorderTextFormattingV1"
+    private let recAutoExportKey = "recorderAutoExportV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -40,6 +49,28 @@ final class RecorderConfigStore: ObservableObject {
         vaultRootBookmark = UserDefaults.standard.data(forKey: vaultRootKey)
         defaultAIProviderName = UserDefaults.standard.string(forKey: defaultProviderKey)
         defaultAIModelName = UserDefaults.standard.string(forKey: defaultModelKey)
+        recorderTranscriptionModelName = UserDefaults.standard.string(forKey: recTranscriptionKey)
+        recorderLanguage = UserDefaults.standard.string(forKey: recLanguageKey)
+        recorderTextFormattingEnabled = UserDefaults.standard.bool(forKey: recFormattingKey)
+        recorderAutoExportEnabled = UserDefaults.standard.bool(forKey: recAutoExportKey)
+    }
+
+    // MARK: - Recorder Mode setters
+    private func persistString(_ value: String?, _ key: String) {
+        if let value { UserDefaults.standard.set(value, forKey: key) }
+        else { UserDefaults.standard.removeObject(forKey: key) }
+    }
+    func setRecorderTranscriptionModel(_ name: String?) {
+        recorderTranscriptionModelName = name; persistString(name, recTranscriptionKey)
+    }
+    func setRecorderLanguage(_ code: String?) {
+        recorderLanguage = code; persistString(code, recLanguageKey)
+    }
+    func setRecorderTextFormatting(_ on: Bool) {
+        recorderTextFormattingEnabled = on; UserDefaults.standard.set(on, forKey: recFormattingKey)
+    }
+    func setRecorderAutoExport(_ on: Bool) {
+        recorderAutoExportEnabled = on; UserDefaults.standard.set(on, forKey: recAutoExportKey)
     }
 
     /// Set (or clear) the single global vault root bookmark.

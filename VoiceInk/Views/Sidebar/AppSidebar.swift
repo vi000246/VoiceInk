@@ -78,6 +78,7 @@ private extension ViewType {
         case .history: return "Input History"
         case .recorders: return "Recorder Devices"
         case .categories: return "Recorder Prompts"
+        case .recorderLog: return "Recording Management"
         case .models: return "Transcription & AI Models"
         case .transcribeAudio: return "Manual Transcribe"
         case .audio: return "Audio Devices"
@@ -89,7 +90,7 @@ private extension ViewType {
     static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
         (nil, [.dashboard]),
         ("Voice Input", [.modes, .prompts, .history]),
-        ("Recorder → Obsidian", [.recorders, .categories, .recorderLog]),
+        ("Recorder → Obsidian", [.recorders, .recorderMode, .categories, .recorderLog]),
         ("Shared & System", [.models, .dictionary, .transcribeAudio, .audio, .settings, .license]),
     ]
 
@@ -111,6 +112,7 @@ private extension ViewType {
         case .audio: return "mic.fill"
         case .dictionary: return "text.book.closed.fill"
         case .recorders: return "recordingtape"
+        case .recorderMode: return "slider.horizontal.3"
         case .categories: return "folder.fill.badge.gearshape"
         case .recorderLog: return "list.bullet.rectangle.fill"
         case .settings: return "gearshape.fill"
@@ -137,6 +139,8 @@ private extension ViewType {
         case .transcribeAudio:
             return .init(background: AppTheme.Sidebar.transcribeAudio)
         case .recorders:
+            return .init(background: AppTheme.Sidebar.fallback)
+        case .recorderMode:
             return .init(background: AppTheme.Sidebar.fallback)
         case .categories:
             return .init(background: AppTheme.Sidebar.fallback)
