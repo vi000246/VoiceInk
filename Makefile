@@ -4,7 +4,14 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local check healthcheck help dev run
+# Stable self-signed code-signing identity for local installs. Keeps macOS permissions
+# (Accessibility, Microphone, Screen Recording…) across rebuilds, unlike ad-hoc signing
+# whose signature changes every build. Create once via Keychain or the openssl+security
+# flow documented in docs/spec; then `make deploy` signs with it and installs to /Applications.
+SIGN_IDENTITY ?= VoiceInk Local
+APP_DEST ?= /Applications/VoiceInk.app
+
+.PHONY: all clean whisper setup build local deploy check healthcheck help dev run
 
 # Default target
 all: check build
@@ -75,6 +82,37 @@ local: check setup
 		echo "Error: Could not find built VoiceInk.app at $$APP_PATH"; \
 		exit 1; \
 	fi
+
+# Stable-signed deploy: build with the fixed identity, quit running app, install to
+# /Applications (replacing any old copy), clear quarantine, and launch. Permissions persist
+# across rebuilds because the code signature is stable.
+deploy: check setup
+	@command -v codesign >/dev/null || { echo "codesign not found"; exit 1; }
+	@if ! security find-identity -p codesigning | grep -q "$(SIGN_IDENTITY)"; then \
+		echo "ERROR: signing identity '$(SIGN_IDENTITY)' not found in keychain."; \
+		echo "Create it first (see Makefile header / docs)."; exit 1; \
+	fi
+	@echo "Building VoiceInk (signed as '$(SIGN_IDENTITY)') ..."
+	@rm -rf "$(LOCAL_DERIVED_DATA)"
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
+		CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)" \
+		CODE_SIGN_STYLE=Manual \
+		CODE_SIGNING_REQUIRED=YES \
+		CODE_SIGNING_ALLOWED=YES \
+		DEVELOPMENT_TEAM="" \
+		PROVISIONING_PROFILE_SPECIFIER="" \
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
+		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
+		build
+	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Debug/VoiceInk.app"; \
+	if [ ! -d "$$APP_PATH" ]; then echo "Error: build product missing at $$APP_PATH"; exit 1; fi; \
+	echo "Verifying signature ..."; codesign -dv "$$APP_PATH" 2>&1 | grep -i authority | head -1 || true; \
+	echo "Quitting running VoiceInk ..."; killall VoiceInk 2>/dev/null || true; sleep 1; \
+	echo "Installing to $(APP_DEST) ..."; rm -rf "$(APP_DEST)"; ditto "$$APP_PATH" "$(APP_DEST)"; \
+	xattr -cr "$(APP_DEST)"; \
+	echo "Launching ..."; open "$(APP_DEST)"; \
+	echo ""; echo "Deployed (stable-signed): $(APP_DEST)"
 
 # Run application
 run:
