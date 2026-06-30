@@ -16,8 +16,8 @@ struct PromptsManagementView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "Prompts",
-                infoMessage: "範本是給 AI 的指令，用來把語音逐字稿整理成你要的格式。這份清單由語音輸入的 Modes 與錄音筆的 Categories 共用。",
+                title: "Voice Prompts",
+                infoMessage: "語音範本是給「直接語音輸入（聽寫）」用的指令，把逐字稿整理成你要的格式。在語音模式裡選用它。（錄音筆的類別範本是另一套，在「類別」頁設定。）",
                 infoURL: nil
             ) {
                 AppIconButton(systemName: "plus.circle.fill", help: "新增範本") { editing = .add }

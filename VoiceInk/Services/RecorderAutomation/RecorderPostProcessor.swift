@@ -81,7 +81,7 @@ final class RecorderPostProcessor {
         // 2. Route
         let decision = TemplateRouter.route(
             result: result, categories: categories,
-            prompts: enhancementService.allPrompts, confidenceFloor: confidenceFloor)
+            prompts: store.recorderPrompts, confidenceFloor: confidenceFloor)
 
         // Resolve the analysis model for this category: category override → default → active Mode.
         let model = resolvedAnalysisModel(categoryProvider: decision.category.aiProviderName,
@@ -152,7 +152,7 @@ final class RecorderPostProcessor {
 
         let analysisInput = await LongTranscriptSummarizer.shared.condense(
             rawText, aiService: aiService, provider: model.provider, modelName: model.modelName)
-        let prompt = enhancementService.allPrompts.first { $0.id == category.customPromptId }
+        let prompt = RecorderConfigStore.shared.recorderPrompt(byId: category.customPromptId)
 
         var analysis = analysisInput
         if let prompt {

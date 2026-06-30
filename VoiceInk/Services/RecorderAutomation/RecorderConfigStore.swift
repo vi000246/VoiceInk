@@ -6,6 +6,9 @@ final class RecorderConfigStore: ObservableObject {
     static let shared = RecorderConfigStore()
     @Published private(set) var devices: [RecorderDevice] = []
     @Published private(set) var categories: [RecorderCategory] = []
+    /// Recorder category prompts — a SEPARATE library from the voice-input prompts
+    /// (`AIEnhancementService.customPrompts`). Categories bind into this list only.
+    @Published private(set) var recorderPrompts: [CustomPrompt] = []
     /// Global Obsidian vault root (single vault for all devices; per-category sub-folders live under it).
     @Published private(set) var vaultRootBookmark: Data?
     /// Default analysis model (provider + model) used when a category doesn't override it.
@@ -14,6 +17,7 @@ final class RecorderConfigStore: ObservableObject {
     @Published private(set) var defaultAIModelName: String?
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
+    private let recorderPromptsKey = "recorderCategoryPromptsV1"
     private let vaultRootKey = "recorderVaultRootV1"
     private let defaultProviderKey = "recorderDefaultAIProviderV1"
     private let defaultModelKey = "recorderDefaultAIModelV1"
@@ -28,6 +32,10 @@ final class RecorderConfigStore: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: categoriesKey),
            let decoded = try? JSONDecoder().decode([RecorderCategory].self, from: data) {
             categories = decoded
+        }
+        if let data = UserDefaults.standard.data(forKey: recorderPromptsKey),
+           let decoded = try? JSONDecoder().decode([CustomPrompt].self, from: data) {
+            recorderPrompts = decoded
         }
         vaultRootBookmark = UserDefaults.standard.data(forKey: vaultRootKey)
         defaultAIProviderName = UserDefaults.standard.string(forKey: defaultProviderKey)
@@ -55,6 +63,28 @@ final class RecorderConfigStore: ObservableObject {
     }
     private func saveCategories() {
         if let data = try? JSONEncoder().encode(categories) { UserDefaults.standard.set(data, forKey: categoriesKey) }
+    }
+    private func saveRecorderPrompts() {
+        if let data = try? JSONEncoder().encode(recorderPrompts) { UserDefaults.standard.set(data, forKey: recorderPromptsKey) }
+    }
+
+    // MARK: - Recorder category prompts (separate from voice prompts)
+    func recorderPrompt(byId id: UUID?) -> CustomPrompt? {
+        guard let id else { return nil }
+        return recorderPrompts.first { $0.id == id }
+    }
+    func upsertRecorderPrompt(_ prompt: CustomPrompt) {
+        if let i = recorderPrompts.firstIndex(where: { $0.id == prompt.id }) { recorderPrompts[i] = prompt }
+        else { recorderPrompts.append(prompt) }
+        saveRecorderPrompts()
+    }
+    func removeRecorderPrompt(_ id: UUID) {
+        recorderPrompts.removeAll { $0.id == id }
+        // Unbind any category that used it.
+        for i in categories.indices where categories[i].customPromptId == id {
+            categories[i].customPromptId = nil
+        }
+        saveRecorderPrompts(); saveCategories()
     }
 
     // MARK: - Devices
@@ -96,16 +126,13 @@ final class RecorderConfigStore: ObservableObject {
         saveCategories()
     }
 
-    /// Seed the built-in default categories (通用/會議/演講/面試) + their prompts, plus extra
-    /// prompts into the shared prompt library. Idempotent: matches existing prompts/categories by
-    /// title/name so it can be re-run safely from the Categories page.
-    func seedDefaultTemplates(using enhancementService: AIEnhancementService) {
+    /// Seed the built-in default categories (通用/會議/演講/面試) + their prompts into the
+    /// recorder-prompt library. Idempotent: matches by prompt title / category name.
+    func seedDefaultTemplates() {
         func promptId(title: String, text: String) -> UUID {
-            if let existing = enhancementService.allPrompts.first(where: { $0.title == title }) {
-                return existing.id
-            }
+            if let existing = recorderPrompts.first(where: { $0.title == title }) { return existing.id }
             let prompt = CustomPrompt(title: title, promptText: text, useSystemInstructions: true)
-            enhancementService.customPrompts.append(prompt)
+            recorderPrompts.append(prompt)
             return prompt.id
         }
 
@@ -124,9 +151,24 @@ final class RecorderConfigStore: ObservableObject {
                     customPromptId: pid, subfolderName: t.subfolder, isFallback: false))
             }
         }
-        // Extra prompts into the library (unbound).
         for p in RecorderDefaultTemplates.extraPrompts {
             _ = promptId(title: p.title, text: p.text)
         }
+        saveRecorderPrompts()
+    }
+
+    /// One-time migration: move recorder-default prompts that were previously seeded into the
+    /// shared voice library back out into the recorder-prompt store (preserving ids so existing
+    /// category bindings keep resolving), then remove them from the voice list.
+    func migrateRecorderPromptsOut(from enhancementService: AIEnhancementService) {
+        let recorderTitles = Set(RecorderDefaultTemplates.all.map { $0.promptTitle }
+                                 + RecorderDefaultTemplates.extraPrompts.map { $0.title })
+        let toMove = enhancementService.allPrompts.filter { recorderTitles.contains($0.title) }
+        guard !toMove.isEmpty else { return }
+        for p in toMove {
+            if !recorderPrompts.contains(where: { $0.id == p.id }) { recorderPrompts.append(p) }
+            enhancementService.deletePrompt(p)
+        }
+        saveRecorderPrompts()
     }
 }

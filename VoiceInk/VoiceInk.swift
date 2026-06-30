@@ -126,10 +126,16 @@ struct VoiceInkApp: App {
         // 5a. Recorder automation: wire import service + start mount monitor
         RecorderImportService.shared.configure(engine: engine, modelContext: resolvedContainer.mainContext)
         RecorderDeviceMonitor.shared.start()
-        // Seed default categories + prompt templates once.
+        // Seed default categories + recorder prompts once; migrate any previously-shared
+        // recorder prompts out of the voice library so the two stay separate.
         if !UserDefaults.standard.bool(forKey: "recorderDefaultsSeededV1") {
-            RecorderConfigStore.shared.seedDefaultTemplates(using: enhancementService)
+            RecorderConfigStore.shared.seedDefaultTemplates()
             UserDefaults.standard.set(true, forKey: "recorderDefaultsSeededV1")
+        }
+        if !UserDefaults.standard.bool(forKey: "recorderPromptsSplitV1") {
+            RecorderConfigStore.shared.migrateRecorderPromptsOut(from: enhancementService)
+            RecorderConfigStore.shared.seedDefaultTemplates()
+            UserDefaults.standard.set(true, forKey: "recorderPromptsSplitV1")
         }
 
         // 6. Initialize model state

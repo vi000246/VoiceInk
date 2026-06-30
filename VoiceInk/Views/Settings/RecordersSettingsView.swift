@@ -16,7 +16,7 @@ struct RecordersSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "Recorders",
+                title: "Recorder Devices",
                 infoMessage: "插入已設定的錄音筆即自動匯入、轉錄、分類，並輸出到 Obsidian Vault。",
                 infoURL: nil
             ) {

@@ -43,7 +43,7 @@ struct CategoriesSettingsView: View {
                 infoURL: nil
             ) {
                 AppIconButton(systemName: "square.and.arrow.down.on.square", help: "載入預設類別與範本") {
-                    store.seedDefaultTemplates(using: enhancementService)
+                    store.seedDefaultTemplates()
                 }
                 AppIconButton(systemName: "plus.circle.fill", help: "新增類別") { editTarget = .add }
             }
@@ -54,7 +54,7 @@ struct CategoriesSettingsView: View {
                     ForEach(store.categories) { category in
                         RecorderCategoryCard(
                             category: category,
-                            promptTitle: enhancementService.allPrompts.first { $0.id == category.customPromptId }?.title,
+                            promptTitle: store.recorderPrompt(byId: category.customPromptId)?.title,
                             modelLabel: modelLabel(category)
                         ) { editTarget = .edit(category) }
                     }
@@ -212,7 +212,7 @@ private struct CategoryEditorPanel: View {
     }
 
     private var boundPrompt: CustomPrompt? {
-        enhancementService.allPrompts.first { $0.id == customPromptId }
+        store.recorderPrompt(byId: customPromptId)
     }
 
     private var canSave: Bool {
@@ -263,7 +263,7 @@ private struct CategoryEditorPanel: View {
                     }
                     if boundPrompt != nil {
                         Button("刪除範本", role: .destructive) {
-                            if let p = boundPrompt { enhancementService.deletePrompt(p) }
+                            if let p = boundPrompt { store.removeRecorderPrompt(p.id) }
                             customPromptId = nil
                         }
                     }
@@ -283,11 +283,7 @@ private struct CategoryEditorPanel: View {
                 mode: boundPrompt.map { .edit($0) } ?? .add,
                 onDismiss: { showingPromptEditor = false },
                 onSave: { prompt in
-                    if enhancementService.allPrompts.contains(where: { $0.id == prompt.id }) {
-                        enhancementService.updatePrompt(prompt)
-                    } else {
-                        enhancementService.customPrompts.append(prompt)
-                    }
+                    store.upsertRecorderPrompt(prompt)
                     customPromptId = prompt.id
                     showingPromptEditor = false
                 }

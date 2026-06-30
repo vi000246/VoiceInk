@@ -17,16 +17,30 @@ struct AppSidebar: View {
     }
 
     private var sidebarContent: some View {
-        VStack(spacing: 0) {
-            sidebarSection(ViewType.primaryItems)
-                .padding(.top, 10)
-
-            Spacer(minLength: 16)
-
-            sidebarSection(ViewType.secondaryItems)
-                .padding(.bottom, 14)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(ViewType.sidebarSections.enumerated()), id: \.offset) { _, section in
+                    if let header = section.title {
+                        sectionHeader(header)
+                    }
+                    sidebarSection(section.items)
+                }
+            }
+            .padding(.top, 10)
+            .padding(.bottom, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .scrollIndicators(.never)
+    }
+
+    private func sectionHeader(_ title: LocalizedStringKey) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 5)
     }
 
     private var sidebarBackground: some View {
@@ -59,35 +73,28 @@ struct AppSidebar: View {
 private extension ViewType {
     var title: LocalizedStringKey {
         switch self {
-        case .transcribeAudio:
-            return "Transcribe"
-        default:
-            return LocalizedStringKey(rawValue)
+        case .modes: return "Voice Modes"
+        case .prompts: return "Voice Prompts"
+        case .history: return "Input History"
+        case .recorders: return "Recorder Devices"
+        case .models: return "Transcription & AI Models"
+        case .transcribeAudio: return "Manual Transcribe"
+        case .audio: return "Audio Devices"
+        default: return LocalizedStringKey(rawValue)
         }
     }
 
-    static let primaryItems: [ViewType] = [
-        .dashboard,
-        .modes,
-        .prompts,
-        .transcribeAudio,
-        .history,
-        .dictionary,
-        .models,
-        .audio
-    ]
-
-    static let secondaryItems: [ViewType] = [
-        .recorders,
-        .categories,
-        .recorderLog,
-        .settings,
-        .license
+    /// Sidebar grouped by the two pipelines (voice input vs recorder→Obsidian) + shared/system.
+    static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
+        (nil, [.dashboard]),
+        ("Voice Input", [.modes, .prompts, .history]),
+        ("Recorder → Obsidian", [.recorders, .categories, .recorderLog]),
+        ("Shared & System", [.models, .dictionary, .transcribeAudio, .audio, .settings, .license]),
     ]
 
     static func assertSidebarItemsCoverAllCases() {
         #if DEBUG
-        let sidebarItems = primaryItems + secondaryItems
+        let sidebarItems = sidebarSections.flatMap { $0.items }
         assert(Set(sidebarItems) == Set(allCases) && sidebarItems.count == allCases.count)
         #endif
     }
