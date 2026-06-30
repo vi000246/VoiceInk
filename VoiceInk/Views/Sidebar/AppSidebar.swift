@@ -77,6 +77,7 @@ private extension ViewType {
         case .prompts: return "Voice Prompts"
         case .history: return "Input History"
         case .recorders: return "Recorder Devices"
+        case .categories: return "Recorder Prompts"
         case .models: return "Transcription & AI Models"
         case .transcribeAudio: return "Manual Transcribe"
         case .audio: return "Audio Devices"

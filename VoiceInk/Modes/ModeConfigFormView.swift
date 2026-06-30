@@ -286,8 +286,8 @@ struct ModeConfigFormView: View {
     }
 
     private var aiEnhancementSection: some View {
-        Section("AI Enhancement") {
-            Toggle("AI Enhancement", isOn: $draft.isAIEnhancementEnabled)
+        Section("Voice Prompt") {
+            Toggle("Apply Voice Prompt (AI Enhancement)", isOn: $draft.isAIEnhancementEnabled)
                 .onChange(of: draft.isAIEnhancementEnabled) { _, newValue in
                     if newValue {
                         if configuredSelectedAIProvider == nil {

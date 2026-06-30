@@ -25549,6 +25549,54 @@
           }
         }
       }
+    },
+    "Voice Prompt" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "語音範本"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "语音模板"
+          }
+        }
+      }
+    },
+    "Apply Voice Prompt (AI Enhancement)" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "套用語音範本（AI 潤色）"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "套用语音模板（AI 润色）"
+          }
+        }
+      }
+    },
+    "Recorder Prompts" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "錄音筆範本"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音笔模板"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

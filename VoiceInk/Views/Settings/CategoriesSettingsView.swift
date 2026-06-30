@@ -38,8 +38,8 @@ struct CategoriesSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "Categories",
-                infoMessage: "匯入的逐字稿會被分類到其中一個類別，套用該類別綁定的提示詞做分析，並輸出到 Vault 對應子資料夾。「通用」為無法分類時的預設，不可刪除。",
+                title: "Recorder Prompts",
+                infoMessage: "錄音筆匯入後，會自動分類到下列其中一類，套用該類別的範本做分析，並輸出到 Vault 對應子資料夾。「通用」為無法分類時的預設，不可刪除。",
                 infoURL: nil
             ) {
                 AppIconButton(systemName: "square.and.arrow.down.on.square", help: "載入預設類別與範本") {
