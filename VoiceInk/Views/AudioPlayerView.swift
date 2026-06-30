@@ -349,6 +349,9 @@ struct AudioPlayerView: View {
     let url: URL
     let transcription: Transcription?
     var onInfoTap: (() -> Void)?
+    /// Voice-input controls (mode selector, retranscribe, re-enhance-with-prompt). Hidden in the
+    /// recorder Recording Management context, which uses recorder templates, not voice prompts/modes.
+    var showsEnhancementControls: Bool = true
     @StateObject private var playerManager = AudioPlayerManager()
     @State private var isHovering = false
     @State private var isRetranscribing = false
@@ -419,7 +422,9 @@ struct AudioPlayerView: View {
                     .buttonStyle(.plain)
                     .help("Playback speed")
 
-                    modeSelectorButton
+                    if showsEnhancementControls {
+                        modeSelectorButton
+                    }
 
                     CircleIconButton(
                         icon: playerManager.isPlaying ? "pause.fill" : "play.fill",
@@ -432,16 +437,18 @@ struct AudioPlayerView: View {
                         }
                     }
 
-                    AsyncCircleButton(
-                        defaultIcon: "arrow.clockwise",
-                        isLoading: isRetranscribing,
-                        showSuccess: operationFeedback == .retranscribeSuccess,
-                        action: retranscribeAudio
-                    )
-                    .disabled(isOperationInProgress)
-                    .help("Retranscribe this audio")
+                    if showsEnhancementControls {
+                        AsyncCircleButton(
+                            defaultIcon: "arrow.clockwise",
+                            isLoading: isRetranscribing,
+                            showSuccess: operationFeedback == .retranscribeSuccess,
+                            action: retranscribeAudio
+                        )
+                        .disabled(isOperationInProgress)
+                        .help("Retranscribe this audio")
+                    }
 
-                    if transcription != nil {
+                    if showsEnhancementControls, transcription != nil {
                         AsyncCircleButton(
                             defaultIcon: "wand.and.stars",
                             isLoading: isReEnhancing,

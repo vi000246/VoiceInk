@@ -4,7 +4,7 @@ import AppKit
 
 /// Recording Management — the hub for imported recordings. Each card keeps the audio + raw transcript,
 /// lets the user pick a 錄音筆範本 (category), apply it (preview), export to Obsidian, and delete the
-/// audio or the whole record. Nothing is bound to Obsidian until the user exports.
+/// audio or the whole record. Supports search + multi-select batch delete.
 struct RecorderHistoryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(filter: #Predicate<Transcription> { $0.importFingerprint != nil },
@@ -12,6 +12,26 @@ struct RecorderHistoryView: View {
     private var items: [Transcription]
     @State private var fileNameByFingerprint: [String: String] = [:]
     @State private var expandedId: UUID?
+    @State private var searchText = ""
+    @State private var selectedIds: Set<UUID> = []
+    @State private var confirmBatchDelete = false
+
+    private static let dateSearchFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+
+    private var filteredItems: [Transcription] {
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return items }
+        return items.filter { t in
+            let name = t.importFingerprint.flatMap { fileNameByFingerprint[$0] } ?? ""
+            let haystack = [
+                name, t.text, t.enhancedText ?? "", t.recorderCategoryName ?? "",
+                Self.dateSearchFormatter.string(from: t.timestamp)
+            ].joined(separator: "\n").lowercased()
+            return haystack.contains(q)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,16 +41,21 @@ struct RecorderHistoryView: View {
                 infoURL: nil
             ) { EmptyView() }
 
-            if items.isEmpty {
+            searchBar
+            Divider()
+
+            if filteredItems.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     LazyVStack(spacing: 10) {
-                        ForEach(items) { t in
+                        ForEach(filteredItems) { t in
                             RecordingCard(
                                 transcription: t,
                                 fileName: t.importFingerprint.flatMap { fileNameByFingerprint[$0] },
                                 isExpanded: expandedId == t.id,
+                                isChecked: selectedIds.contains(t.id),
+                                onToggleCheck: { toggle(t.id) },
                                 onToggle: {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         expandedId = expandedId == t.id ? nil : t.id
@@ -43,10 +68,66 @@ struct RecorderHistoryView: View {
                     .padding(.vertical, 20)
                 }
             }
+
+            if !selectedIds.isEmpty {
+                Divider()
+                selectionBar
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: loadFileNames)
         .onChange(of: items.count) { _, _ in loadFileNames() }
+        .confirmationDialog("刪除所選 \(selectedIds.count) 筆？音檔與逐字稿都會移除。", isPresented: $confirmBatchDelete) {
+            Button("刪除所選", role: .destructive) { batchDelete() }
+        }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.system(size: 12))
+            TextField("搜尋逐字稿、檔名、分類、日期(yyyy-MM-dd)…", text: $searchText)
+                .textFieldStyle(.plain).font(.system(size: 13))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Capsule().fill(AppTheme.Surface.card))
+        .padding(.horizontal, 24).padding(.vertical, 10)
+    }
+
+    private var selectionBar: some View {
+        HStack(spacing: 16) {
+            Text("已選 \(selectedIds.count) 筆").font(.system(size: 13, weight: .medium)).foregroundColor(.secondary)
+            Spacer()
+            Button(allSelected ? "取消全選" : "全選") {
+                if allSelected { selectedIds.removeAll() }
+                else { selectedIds = Set(filteredItems.map { $0.id }) }
+            }
+            .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
+            Button { confirmBatchDelete = true } label: {
+                Label("刪除所選", systemImage: "trash").font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.plain).foregroundColor(AppTheme.Status.error.opacity(0.85))
+        }
+        .padding(.horizontal, 24).padding(.vertical, 10)
+        .background(AppTheme.Surface.window.shadow(color: .black.opacity(0.1), radius: 3, y: -2))
+    }
+
+    private var allSelected: Bool {
+        !filteredItems.isEmpty && filteredItems.allSatisfy { selectedIds.contains($0.id) }
+    }
+
+    private func toggle(_ id: UUID) {
+        if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
+    }
+
+    private func batchDelete() {
+        let targets = items.filter { selectedIds.contains($0.id) }
+        for t in targets {
+            if let s = t.audioFileURL, let u = URL(string: s) { try? FileManager.default.removeItem(at: u) }
+            modelContext.delete(t)
+        }
+        try? modelContext.save()
+        selectedIds.removeAll()
+        NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
     }
 
     private func loadFileNames() {
@@ -57,10 +138,10 @@ struct RecorderHistoryView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "tray.full")
+            Image(systemName: searchText.isEmpty ? "tray.full" : "doc.text.magnifyingglass")
                 .font(.system(size: 40)).foregroundStyle(.secondary.opacity(0.6))
-            Text("尚無錄音匯入紀錄").font(.system(size: 16, weight: .medium))
-            Text("插入已設定的錄音筆後，匯入的檔案會列在這裡。")
+            Text(searchText.isEmpty ? "尚無錄音匯入紀錄" : "查無符合").font(.system(size: 16, weight: .medium))
+            Text(searchText.isEmpty ? "插入已設定的錄音筆後，匯入的檔案會列在這裡。" : "換個關鍵字試試。")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,6 +152,8 @@ private struct RecordingCard: View {
     let transcription: Transcription
     let fileName: String?
     let isExpanded: Bool
+    let isChecked: Bool
+    let onToggleCheck: () -> Void
     let onToggle: () -> Void
 
     @Environment(\.modelContext) private var modelContext
@@ -104,7 +187,8 @@ private struct RecordingCard: View {
         }
         .padding(14)
         .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(
+            isChecked ? AppTheme.Accent.primary.opacity(0.5) : AppTheme.Border.control, lineWidth: isChecked ? 1 : 0.5))
         .onAppear { if selectedCategoryId == nil { selectedCategoryId = transcription.recorderCategoryId } }
         .confirmationDialog("刪除整筆紀錄？音檔與逐字稿都會移除。", isPresented: $confirmDeleteRecord) {
             Button("刪除整筆", role: .destructive) { deleteRecord() }
@@ -116,6 +200,11 @@ private struct RecordingCard: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            Button(action: onToggleCheck) {
+                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 16)).foregroundStyle(isChecked ? AppTheme.Accent.primary : .secondary)
+            }
+            .buttonStyle(.plain)
             Image(systemName: "waveform")
                 .font(.system(size: 14)).foregroundStyle(.white)
                 .frame(width: 32, height: 32)
@@ -140,7 +229,6 @@ private struct RecordingCard: View {
 
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Template (category) picker + Apply
             HStack(spacing: 8) {
                 Picker("套用範本", selection: $selectedCategoryId) {
                     ForEach(store.categories) { c in Text(c.name).tag(UUID?.some(c.id)) }
@@ -151,7 +239,6 @@ private struct RecordingCard: View {
                 Spacer()
             }
 
-            // raw / applied tabs
             HStack(spacing: 4) {
                 tab("原始逐字稿", active: !showAnalysis) { showAnalysis = false }
                 if hasAnalysis { tab("套用後", active: showAnalysis) { showAnalysis = true } }
@@ -165,7 +252,8 @@ private struct RecordingCard: View {
 
             if let url = audioURL {
                 Divider()
-                AudioPlayerView(url: url, transcription: transcription, onInfoTap: {}).padding(.vertical, 4)
+                AudioPlayerView(url: url, transcription: transcription, showsEnhancementControls: false)
+                    .padding(.vertical, 4)
             }
 
             Divider()
