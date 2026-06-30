@@ -25373,6 +25373,22 @@
           }
         }
       }
+    },
+    "Prompts" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "範本"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模板"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

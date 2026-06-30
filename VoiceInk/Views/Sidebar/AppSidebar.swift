@@ -69,6 +69,7 @@ private extension ViewType {
     static let primaryItems: [ViewType] = [
         .dashboard,
         .modes,
+        .prompts,
         .transcribeAudio,
         .history,
         .dictionary,
@@ -98,6 +99,7 @@ private extension ViewType {
         case .history: return "doc.text.fill"
         case .models: return "cpu"
         case .modes: return "sparkles.square.fill.on.square"
+        case .prompts: return "text.alignleft"
         case .audio: return "mic.fill"
         case .dictionary: return "text.book.closed.fill"
         case .recorders: return "recordingtape"
@@ -113,6 +115,8 @@ private extension ViewType {
         case .dashboard:
             return .init(background: AppTheme.Sidebar.dashboard)
         case .modes:
+            return .init(background: AppTheme.Sidebar.modes)
+        case .prompts:
             return .init(background: AppTheme.Sidebar.modes)
         case .models:
             return .init(background: AppTheme.Sidebar.models)
