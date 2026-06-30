@@ -126,6 +126,11 @@ struct VoiceInkApp: App {
         // 5a. Recorder automation: wire import service + start mount monitor
         RecorderImportService.shared.configure(engine: engine, modelContext: resolvedContainer.mainContext)
         RecorderDeviceMonitor.shared.start()
+        // Seed default categories + prompt templates once.
+        if !UserDefaults.standard.bool(forKey: "recorderDefaultsSeededV1") {
+            RecorderConfigStore.shared.seedDefaultTemplates(using: enhancementService)
+            UserDefaults.standard.set(true, forKey: "recorderDefaultsSeededV1")
+        }
 
         // 6. Initialize model state
         // Migration and refreshAllAvailableModels must run before loadCurrentTranscriptionModel so renamed keys are remapped and imported models are present when restoring the saved selection.

@@ -77,4 +77,38 @@ final class RecorderConfigStore: ObservableObject {
         categories.removeAll { $0.id == id }
         saveCategories()
     }
+
+    /// Seed the built-in default categories (通用/會議/演講/面試) + their prompts, plus extra
+    /// prompts into the shared prompt library. Idempotent: matches existing prompts/categories by
+    /// title/name so it can be re-run safely from the Categories page.
+    func seedDefaultTemplates(using enhancementService: AIEnhancementService) {
+        func promptId(title: String, text: String) -> UUID {
+            if let existing = enhancementService.allPrompts.first(where: { $0.title == title }) {
+                return existing.id
+            }
+            let prompt = CustomPrompt(title: title, promptText: text, useSystemInstructions: true)
+            enhancementService.customPrompts.append(prompt)
+            return prompt.id
+        }
+
+        for t in RecorderDefaultTemplates.all {
+            let pid = promptId(title: t.promptTitle, text: t.promptText)
+            if t.isFallback {
+                if var fb = categories.first(where: { $0.isFallback }) {
+                    fb.customPromptId = pid
+                    fb.classifierDescription = t.classifierDescription
+                    if fb.subfolderName.isEmpty { fb.subfolderName = t.subfolder }
+                    upsertCategory(fb)
+                }
+            } else if !categories.contains(where: { $0.name == t.categoryName }) {
+                upsertCategory(RecorderCategory(
+                    name: t.categoryName, classifierDescription: t.classifierDescription,
+                    customPromptId: pid, subfolderName: t.subfolder, isFallback: false))
+            }
+        }
+        // Extra prompts into the library (unbound).
+        for p in RecorderDefaultTemplates.extraPrompts {
+            _ = promptId(title: p.title, text: p.text)
+        }
+    }
 }

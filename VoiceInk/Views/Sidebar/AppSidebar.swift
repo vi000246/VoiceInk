@@ -79,6 +79,7 @@ private extension ViewType {
     static let secondaryItems: [ViewType] = [
         .recorders,
         .categories,
+        .recorderLog,
         .settings,
         .license
     ]
@@ -101,6 +102,7 @@ private extension ViewType {
         case .dictionary: return "text.book.closed.fill"
         case .recorders: return "recordingtape"
         case .categories: return "folder.fill.badge.gearshape"
+        case .recorderLog: return "list.bullet.rectangle.fill"
         case .settings: return "gearshape.fill"
         case .license: return "checkmark.seal.fill"
         }
@@ -126,6 +128,8 @@ private extension ViewType {
             return .init(background: AppTheme.Sidebar.fallback)
         case .categories:
             return .init(background: AppTheme.Sidebar.fallback)
+        case .recorderLog:
+            return .init(background: AppTheme.Sidebar.audio)
         case .settings:
             return .init(background: AppTheme.Sidebar.fallback)
         case .license:

@@ -20,6 +20,9 @@ struct CategoriesSettingsView: View {
                 infoMessage: "匯入的逐字稿會被分類到其中一個類別，套用該類別綁定的提示詞做分析，並輸出到 Vault 對應子資料夾。「通用」為無法分類時的預設，不可刪除。",
                 infoURL: nil
             ) {
+                AppIconButton(systemName: "square.and.arrow.down.on.square", help: "載入預設類別與範本") {
+                    store.seedDefaultTemplates(using: enhancementService)
+                }
                 AppIconButton(systemName: "plus.circle.fill", help: "新增類別") { editTarget = .add }
             }
 

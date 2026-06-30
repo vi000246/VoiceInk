@@ -118,34 +118,114 @@ private struct VaultRootCard: View {
 private struct RecorderDeviceCard: View {
     let device: RecorderDevice
     let onEdit: () -> Void
+    @Environment(\.modelContext) private var modelContext
     @State private var isHovering = false
+    @State private var expanded = false
+    @State private var files: [RecorderImportService.DeviceFileStatus]?
+    @State private var connected = false
+    @State private var scanning = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "recordingtape")
-                .font(.system(size: 18)).foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(AppTheme.Sidebar.fallback, in: RoundedRectangle(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(device.displayName.isEmpty ? "未命名裝置" : device.displayName)
-                    .font(.system(size: 14, weight: .semibold))
-                Text("符合磁碟名稱：\(device.volumeNameMatch)")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    pill(device.autoImportEnabled ? "自動匯入" : "已停用", on: device.autoImportEnabled)
-                    if device.deleteAfterImport { pill("匯入後刪除", on: false) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "recordingtape")
+                    .font(.system(size: 18)).foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(AppTheme.Sidebar.fallback, in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(device.displayName.isEmpty ? "未命名裝置" : device.displayName)
+                            .font(.system(size: 14, weight: .semibold))
+                        connectionDot
+                    }
+                    Text("符合磁碟名稱：\(device.volumeNameMatch)")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        pill(device.autoImportEnabled ? "自動匯入" : "已停用", on: device.autoImportEnabled)
+                        if device.deleteAfterImport { pill("匯入後刪除", on: false) }
+                    }
                 }
+                Spacer()
+                Button("編輯", action: onEdit).controlSize(.small)
             }
-            Spacer()
-            Button("編輯", action: onEdit).controlSize(.small)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onEdit)
+
+            Button {
+                expanded.toggle()
+                if expanded { scan() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                    Text(expanded ? "裝置檔案" : "顯示裝置檔案").font(.system(size: 12, weight: .medium))
+                    if scanning { ProgressView().controlSize(.mini).padding(.leading, 2) }
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
+
+            if expanded { fileList.padding(.top, 8) }
         }
         .padding(14)
         .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12)
             .strokeBorder(isHovering ? AppTheme.Accent.primary.opacity(0.4) : AppTheme.Border.control, lineWidth: 0.5))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onEdit)
         .onHover { isHovering = $0 }
+        .onAppear { connected = RecorderImportService.shared.isDeviceConnected(device) }
+    }
+
+    @ViewBuilder private var connectionDot: some View {
+        HStack(spacing: 3) {
+            Circle().fill(connected ? AppTheme.Status.success : Color.secondary.opacity(0.5)).frame(width: 7, height: 7)
+            Text(connected ? "已連接" : "未連接").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var fileList: some View {
+        if !connected {
+            Text("裝置未連接，插入後可在此查看檔案。").font(.system(size: 12)).foregroundStyle(.secondary)
+        } else if let files {
+            if files.isEmpty {
+                Text("來源資料夾沒有支援的音訊檔。").font(.system(size: 12)).foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 4) {
+                    let done = files.filter { $0.processed }.count
+                    HStack {
+                        Text("共 \(files.count) 檔・已處理 \(done)・未處理 \(files.count - done)")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("重新整理") { scan() }.controlSize(.mini)
+                    }
+                    ForEach(files) { f in
+                        HStack(spacing: 8) {
+                            Image(systemName: f.processed ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 12))
+                                .foregroundStyle(f.processed ? AppTheme.Status.success : Color.secondary)
+                            Text(f.fileName).font(.system(size: 12)).lineLimit(1)
+                            Spacer()
+                            if let m = f.modified {
+                                Text(m, format: .dateTime.month(.abbreviated).day().hour().minute())
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            Text(f.processed ? "已處理" : "未處理")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(f.processed ? AppTheme.Status.success : .secondary)
+                        }
+                        .padding(.vertical, 3).padding(.horizontal, 8)
+                        .background(AppTheme.Surface.control.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+        }
+    }
+
+    private func scan() {
+        scanning = true
+        connected = RecorderImportService.shared.isDeviceConnected(device)
+        files = RecorderImportService.shared.deviceFiles(for: device, context: modelContext)
+        scanning = false
     }
 
     private func pill(_ text: String, on: Bool) -> some View {
