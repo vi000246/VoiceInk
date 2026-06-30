@@ -137,6 +137,10 @@ struct VoiceInkApp: App {
             RecorderConfigStore.shared.seedDefaultTemplates()
             UserDefaults.standard.set(true, forKey: "recorderPromptsSplitV1")
         }
+        if !UserDefaults.standard.bool(forKey: "recorderPromptsNoSystemTemplateV1") {
+            RecorderConfigStore.shared.disableSystemTemplateForRecorderPrompts()
+            UserDefaults.standard.set(true, forKey: "recorderPromptsNoSystemTemplateV1")
+        }
 
         // 6. Initialize model state
         // Migration and refreshAllAvailableModels must run before loadCurrentTranscriptionModel so renamed keys are remapped and imported models are present when restoring the saved selection.

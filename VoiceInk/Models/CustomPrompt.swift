@@ -41,7 +41,8 @@ struct CustomPrompt: Identifiable, Codable, Equatable {
     
     var finalPromptText: String {
         if useSystemInstructions {
-            return String(format: AIPrompts.enhancementSystemTemplate, self.promptText)
+            // Token-replace (not String(format:)) so a user-edited template with stray % is safe.
+            return AIPrompts.enhancementSystemTemplate.replacingOccurrences(of: "%@", with: self.promptText)
         } else {
             return self.promptText
         }

@@ -118,6 +118,15 @@ final class RecorderConfigStore: ObservableObject {
         saveRecorderPrompts(); saveCategories()
     }
 
+    /// One-time migration: recorder prompts must never use the dictation system template.
+    func disableSystemTemplateForRecorderPrompts() {
+        guard recorderPrompts.contains(where: { $0.useSystemInstructions }) else { return }
+        recorderPrompts = recorderPrompts.map {
+            CustomPrompt(id: $0.id, title: $0.title, promptText: $0.promptText, useSystemInstructions: false)
+        }
+        saveRecorderPrompts()
+    }
+
     // MARK: - Devices
     func upsert(_ device: RecorderDevice) {
         if let i = devices.firstIndex(where: { $0.id == device.id }) { devices[i] = device }
@@ -162,7 +171,8 @@ final class RecorderConfigStore: ObservableObject {
     func seedDefaultTemplates() {
         func promptId(title: String, text: String) -> UUID {
             if let existing = recorderPrompts.first(where: { $0.title == title }) { return existing.id }
-            let prompt = CustomPrompt(title: title, promptText: text, useSystemInstructions: true)
+            // Recorder prompts run raw (analysis tasks) — never wrapped in the dictation system template.
+            let prompt = CustomPrompt(title: title, promptText: text, useSystemInstructions: false)
             recorderPrompts.append(prompt)
             return prompt.id
         }

@@ -25629,6 +25629,22 @@
           }
         }
       }
+    },
+    "System Template" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系統模板"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "系统模板"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

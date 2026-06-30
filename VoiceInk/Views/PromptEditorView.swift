@@ -18,6 +18,9 @@ struct PromptEditorView: View {
     }
     
     let mode: Mode
+    /// Voice prompts may wrap their text in the system template (toggle shown). Recorder prompts
+    /// always run raw (analysis tasks), so the toggle + starter-template menu are hidden.
+    var allowsSystemTemplateToggle: Bool = true
     @EnvironmentObject private var enhancementService: AIEnhancementService
     let onDismiss: () -> Void
     let onSave: (CustomPrompt) -> Void
@@ -49,11 +52,13 @@ struct PromptEditorView: View {
     
     init(
         mode: Mode,
+        allowsSystemTemplateToggle: Bool = true,
         onDismiss: @escaping () -> Void,
         onSave: @escaping (CustomPrompt) -> Void,
         onDelete: ((CustomPrompt) -> Void)? = nil
     ) {
         self.mode = mode
+        self.allowsSystemTemplateToggle = allowsSystemTemplateToggle
         self.onDismiss = onDismiss
         self.onSave = onSave
         self.onDelete = onDelete
@@ -61,11 +66,11 @@ struct PromptEditorView: View {
         case .add:
             _title = State(initialValue: "")
             _promptText = State(initialValue: "")
-            _useSystemInstructions = State(initialValue: true)
+            _useSystemInstructions = State(initialValue: allowsSystemTemplateToggle)
         case .edit(let prompt):
             _title = State(initialValue: prompt.title)
             _promptText = State(initialValue: prompt.promptText)
-            _useSystemInstructions = State(initialValue: prompt.useSystemInstructions)
+            _useSystemInstructions = State(initialValue: allowsSystemTemplateToggle ? prompt.useSystemInstructions : false)
         }
     }
     
@@ -79,12 +84,14 @@ struct PromptEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if case .add = mode {
+                    if case .add = mode, allowsSystemTemplateToggle {
                         templateMenu
                     }
 
                     instructionsEditor
-                    systemTemplateToggle
+                    if allowsSystemTemplateToggle {
+                        systemTemplateToggle
+                    }
                 }
                 .padding(20)
             }

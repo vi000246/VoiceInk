@@ -238,6 +238,7 @@ private struct CategoryEditorPanel: View {
         .sheet(isPresented: $showingPromptEditor) {
             PromptEditorView(
                 mode: boundPrompt.map { .edit($0) } ?? .add,
+                allowsSystemTemplateToggle: false,
                 onDismiss: { showingPromptEditor = false },
                 onSave: { prompt in
                     store.upsertRecorderPrompt(prompt)

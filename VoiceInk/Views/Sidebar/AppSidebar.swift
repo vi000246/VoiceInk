@@ -91,7 +91,7 @@ private extension ViewType {
         (nil, [.dashboard]),
         ("Voice Input", [.modes, .prompts, .history]),
         ("Recorder → Obsidian", [.recorders, .recorderMode, .categories, .recorderLog]),
-        ("Shared & System", [.models, .dictionary, .transcribeAudio, .audio, .settings, .license]),
+        ("Shared & System", [.models, .systemTemplate, .dictionary, .transcribeAudio, .audio, .settings, .license]),
     ]
 
     static func assertSidebarItemsCoverAllCases() {
@@ -115,6 +115,7 @@ private extension ViewType {
         case .recorderMode: return "slider.horizontal.3"
         case .categories: return "folder.fill.badge.gearshape"
         case .recorderLog: return "list.bullet.rectangle.fill"
+        case .systemTemplate: return "doc.badge.gearshape"
         case .settings: return "gearshape.fill"
         case .license: return "checkmark.seal.fill"
         }
@@ -146,6 +147,8 @@ private extension ViewType {
             return .init(background: AppTheme.Sidebar.fallback)
         case .recorderLog:
             return .init(background: AppTheme.Sidebar.audio)
+        case .systemTemplate:
+            return .init(background: AppTheme.Sidebar.fallback)
         case .settings:
             return .init(background: AppTheme.Sidebar.fallback)
         case .license:
