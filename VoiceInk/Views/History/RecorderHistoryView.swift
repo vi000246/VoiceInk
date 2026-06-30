@@ -13,6 +13,7 @@ struct RecorderHistoryView: View {
     @State private var fileNameByFingerprint: [String: String] = [:]
     @State private var expandedId: UUID?
     @State private var searchText = ""
+    @State private var categoryFilter: String?   // nil = 全部
     @State private var selectedIds: Set<UUID> = []
     @State private var confirmBatchDelete = false
 
@@ -20,10 +21,16 @@ struct RecorderHistoryView: View {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
     }()
 
+    /// Distinct categories actually present in the imported recordings (for the filter dropdown).
+    private var availableCategories: [String] {
+        Array(Set(items.compactMap { $0.recorderCategoryName })).sorted()
+    }
+
     private var filteredItems: [Transcription] {
         let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return items }
         return items.filter { t in
+            if let categoryFilter, t.recorderCategoryName != categoryFilter { return false }
+            guard !q.isEmpty else { return true }
             let name = t.importFingerprint.flatMap { fileNameByFingerprint[$0] } ?? ""
             let haystack = [
                 name, t.text, t.enhancedText ?? "", t.recorderCategoryName ?? "",
@@ -83,13 +90,23 @@ struct RecorderHistoryView: View {
     }
 
     private var searchBar: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.system(size: 12))
-            TextField("搜尋逐字稿、檔名、分類、日期(yyyy-MM-dd)…", text: $searchText)
-                .textFieldStyle(.plain).font(.system(size: 13))
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundColor(.secondary).font(.system(size: 12))
+                TextField("搜尋逐字稿、檔名、日期(yyyy-MM-dd)…", text: $searchText)
+                    .textFieldStyle(.plain).font(.system(size: 13))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Capsule().fill(AppTheme.Surface.card))
+            .frame(maxWidth: .infinity)
+
+            Picker("分類", selection: $categoryFilter) {
+                Text("全部分類").tag(String?.none)
+                ForEach(availableCategories, id: \.self) { c in Text(c).tag(String?.some(c)) }
+            }
+            .labelsHidden()
+            .frame(width: 150)
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Capsule().fill(AppTheme.Surface.card))
         .padding(.horizontal, 24).padding(.vertical, 10)
     }
 
