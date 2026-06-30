@@ -33,7 +33,17 @@ struct RecorderModeSettingsView: View {
                             Text(c.label).tag(RecorderModelChoice?.some(c))
                         }
                     }
-                    Text("沒選時用此模型;個別類別可在「錄音筆範本」各自覆寫。")
+                    Text("套範本分析用的模型;個別類別可在「錄音筆範本」各自覆寫。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("分類") {
+                    Picker("分類模型", selection: classifierBinding) {
+                        Text("跟隨分析模型").tag(RecorderModelChoice?.none)
+                        ForEach(recorderModelChoices(aiService), id: \.self) { c in
+                            Text(c.label).tag(RecorderModelChoice?.some(c))
+                        }
+                    }
+                    Text("判斷逐字稿屬於哪一類用的模型。每個匯入都會跑一次,選本地 Ollama 可省 token。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("自動化") {
@@ -68,5 +78,13 @@ struct RecorderModeSettingsView: View {
                 return RecorderModelChoice(provider: p, model: m)
             },
             set: { store.setDefaultModel(provider: $0?.provider, model: $0?.model) })
+    }
+    private var classifierBinding: Binding<RecorderModelChoice?> {
+        Binding(
+            get: {
+                guard let p = store.recorderClassifierProviderName, let m = store.recorderClassifierModelName else { return nil }
+                return RecorderModelChoice(provider: p, model: m)
+            },
+            set: { store.setClassifierModel(provider: $0?.provider, model: $0?.model) })
     }
 }

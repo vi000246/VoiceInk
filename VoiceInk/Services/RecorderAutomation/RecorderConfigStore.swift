@@ -20,6 +20,9 @@ final class RecorderConfigStore: ObservableObject {
     @Published private(set) var recorderLanguage: String?                 // nil = auto
     @Published private(set) var recorderTextFormattingEnabled: Bool = false
     @Published private(set) var recorderAutoExportEnabled: Bool = false   // default manual
+    /// Classifier model (e.g. a cheap local Ollama). nil → use the default analysis model.
+    @Published private(set) var recorderClassifierProviderName: String?
+    @Published private(set) var recorderClassifierModelName: String?
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let recorderPromptsKey = "recorderCategoryPromptsV1"
@@ -30,6 +33,8 @@ final class RecorderConfigStore: ObservableObject {
     private let recLanguageKey = "recorderLanguageV1"
     private let recFormattingKey = "recorderTextFormattingV1"
     private let recAutoExportKey = "recorderAutoExportV1"
+    private let recClassifierProviderKey = "recorderClassifierProviderV1"
+    private let recClassifierModelKey = "recorderClassifierModelV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -53,6 +58,15 @@ final class RecorderConfigStore: ObservableObject {
         recorderLanguage = UserDefaults.standard.string(forKey: recLanguageKey)
         recorderTextFormattingEnabled = UserDefaults.standard.bool(forKey: recFormattingKey)
         recorderAutoExportEnabled = UserDefaults.standard.bool(forKey: recAutoExportKey)
+        recorderClassifierProviderName = UserDefaults.standard.string(forKey: recClassifierProviderKey)
+        recorderClassifierModelName = UserDefaults.standard.string(forKey: recClassifierModelKey)
+    }
+
+    func setClassifierModel(provider: String?, model: String?) {
+        recorderClassifierProviderName = provider
+        recorderClassifierModelName = model
+        persistString(provider, recClassifierProviderKey)
+        persistString(model, recClassifierModelKey)
     }
 
     // MARK: - Recorder Mode setters

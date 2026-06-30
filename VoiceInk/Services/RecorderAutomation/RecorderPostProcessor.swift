@@ -35,6 +35,19 @@ final class RecorderPostProcessor {
         return (fallback, baseConfig.modelName)
     }
 
+    /// Classifier model: dedicated classifier override (e.g. local Ollama) → default analysis model.
+    private func resolvedClassifierModel(
+        baseConfig: EnhancementRuntimeConfiguration, aiService: AIService
+    ) -> (provider: AIProvider, modelName: String?) {
+        let store = RecorderConfigStore.shared
+        if let name = store.recorderClassifierProviderName, let p = AIProvider(rawValue: name),
+           aiService.connectedProviders.contains(p) {
+            return (p, store.recorderClassifierModelName)
+        }
+        return resolvedAnalysisModel(categoryProvider: nil, categoryModel: nil,
+                                     baseConfig: baseConfig, aiService: aiService)
+    }
+
     /// One lightweight AI call → a ≤10-char content title for the export file name. nil on failure.
     private func generateShortTitle(
         from text: String, provider: AIProvider, modelName: String?, aiService: AIService
@@ -95,8 +108,7 @@ final class RecorderPostProcessor {
             logger.notice("No AI provider configured — leaving raw recorder transcript unclassified")
             return
         }
-        let classifyModel = resolvedAnalysisModel(categoryProvider: nil, categoryModel: nil,
-                                                  baseConfig: baseConfig, aiService: aiService)
+        let classifyModel = resolvedClassifierModel(baseConfig: baseConfig, aiService: aiService)
         let result = await TranscriptClassificationService.shared.classify(
             rawText, categories: store.categories, aiService: aiService,
             provider: classifyModel.provider, modelName: classifyModel.modelName)
