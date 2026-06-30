@@ -101,7 +101,7 @@ final class RecorderPipelineTests: XCTestCase {
 
     func testSuggestedFileNameSanitizes() {
         let name = VaultExportService.shared.suggestedFileName(
-            date: Date(timeIntervalSince1970: 0), categoryName: "a/b", deviceName: "x:y")
+            date: Date(timeIntervalSince1970: 0), categoryName: "a/b", title: "x:y")
         XCTAssertFalse(name.contains("/"))
         XCTAssertFalse(name.contains(":"))
         XCTAssertTrue(name.hasSuffix(".md"))

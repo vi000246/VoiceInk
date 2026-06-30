@@ -1,10 +1,32 @@
 import SwiftUI
 
-/// Categories page — category cards + a 400pt slide-out editor that embeds the reusable
-/// `PromptEditorView` for the bound analysis prompt. The fallback category is undeletable.
+/// A concrete (provider, model) choice for the analysis-model pickers.
+struct RecorderModelChoice: Hashable {
+    let provider: String
+    let model: String
+    var label: String { "\(provider) · \(model)" }
+}
+
+/// Flat list of selectable analysis models across the user's connected providers.
+@MainActor func recorderModelChoices(_ aiService: AIService) -> [RecorderModelChoice] {
+    var out: [RecorderModelChoice] = []
+    for p in aiService.connectedProviders {
+        let models = aiService.availableModels(for: p)
+        if models.isEmpty {
+            out.append(RecorderModelChoice(provider: p.rawValue, model: p.defaultModel))
+        } else {
+            for m in models { out.append(RecorderModelChoice(provider: p.rawValue, model: m)) }
+        }
+    }
+    return out
+}
+
+/// Categories page — a default-analysis-model card + category cards + a slide-out editor that
+/// opens the reusable `PromptEditorView` (in a wide sheet) for the bound analysis prompt.
 struct CategoriesSettingsView: View {
     @StateObject private var store = RecorderConfigStore.shared
     @EnvironmentObject private var enhancementService: AIEnhancementService
+    @EnvironmentObject private var aiService: AIService
     @State private var editTarget: CategoryEditTarget?
 
     enum CategoryEditTarget: Identifiable {
@@ -28,10 +50,12 @@ struct CategoriesSettingsView: View {
 
             ScrollView {
                 VStack(spacing: 12) {
+                    DefaultModelCard(store: store, aiService: aiService)
                     ForEach(store.categories) { category in
                         RecorderCategoryCard(
                             category: category,
-                            promptTitle: enhancementService.allPrompts.first { $0.id == category.customPromptId }?.title
+                            promptTitle: enhancementService.allPrompts.first { $0.id == category.customPromptId }?.title,
+                            modelLabel: modelLabel(category)
                         ) { editTarget = .edit(category) }
                     }
                 }
@@ -50,6 +74,53 @@ struct CategoriesSettingsView: View {
             }
         }
     }
+
+    private func modelLabel(_ c: RecorderCategory) -> String? {
+        guard let p = c.aiProviderName, let m = c.aiModelName else { return nil }
+        return "\(p) · \(m)"
+    }
+}
+
+// MARK: - Default Analysis Model Card
+
+private struct DefaultModelCard: View {
+    @ObservedObject var store: RecorderConfigStore
+    let aiService: AIService
+
+    private var selection: Binding<RecorderModelChoice?> {
+        Binding(
+            get: {
+                guard let p = store.defaultAIProviderName, let m = store.defaultAIModelName else { return nil }
+                return RecorderModelChoice(provider: p, model: m)
+            },
+            set: { store.setDefaultModel(provider: $0?.provider, model: $0?.model) })
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 18)).foregroundStyle(AppTheme.Accent.primary)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.Accent.primary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("預設分析模型").font(.system(size: 14, weight: .semibold))
+                Text("分類與套範本分析會用這個模型；個別類別可在下方各自覆寫。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Picker("", selection: selection) {
+                Text("跟隨目前 Mode").tag(RecorderModelChoice?.none)
+                ForEach(recorderModelChoices(aiService), id: \.self) { c in
+                    Text(c.label).tag(RecorderModelChoice?.some(c))
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 260)
+        }
+        .padding(14)
+        .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
+    }
 }
 
 // MARK: - Category Card
@@ -57,6 +128,7 @@ struct CategoriesSettingsView: View {
 private struct RecorderCategoryCard: View {
     let category: RecorderCategory
     let promptTitle: String?
+    let modelLabel: String?
     let onEdit: () -> Void
     @State private var isHovering = false
 
@@ -79,6 +151,8 @@ private struct RecorderCategoryCard: View {
                 }
                 Text("範本：\(promptTitle ?? "未綁定（輸出原始逐字稿）")   ·   子資料夾：\(category.subfolderName)")
                     .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                Text("模型：\(modelLabel ?? "預設")")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
             Button("編輯", action: onEdit).controlSize(.small)
@@ -93,18 +167,21 @@ private struct RecorderCategoryCard: View {
     }
 }
 
-// MARK: - Category Editor (slide-out panel; embeds PromptEditorView)
+// MARK: - Category Editor (slide-out panel; prompt editor in a wide sheet)
 
 private struct CategoryEditorPanel: View {
     let target: CategoriesSettingsView.CategoryEditTarget
     @ObservedObject var store: RecorderConfigStore
     @EnvironmentObject private var enhancementService: AIEnhancementService
+    @EnvironmentObject private var aiService: AIService
     let onDismiss: () -> Void
 
     @State private var name: String
     @State private var classifierDescription: String
     @State private var subfolderName: String
     @State private var customPromptId: UUID?
+    @State private var aiProviderName: String?
+    @State private var aiModelName: String?
     @State private var showingPromptEditor = false
 
     private let existingId: UUID?
@@ -121,12 +198,16 @@ private struct CategoryEditorPanel: View {
             _classifierDescription = State(initialValue: "")
             _subfolderName = State(initialValue: "")
             _customPromptId = State(initialValue: nil)
+            _aiProviderName = State(initialValue: nil)
+            _aiModelName = State(initialValue: nil)
         case .edit(let c):
             existingId = c.id; isFallback = c.isFallback
             _name = State(initialValue: c.name)
             _classifierDescription = State(initialValue: c.classifierDescription)
             _subfolderName = State(initialValue: c.subfolderName)
             _customPromptId = State(initialValue: c.customPromptId)
+            _aiProviderName = State(initialValue: c.aiProviderName)
+            _aiModelName = State(initialValue: c.aiModelName)
         }
     }
 
@@ -139,30 +220,16 @@ private struct CategoryEditorPanel: View {
         !subfolderName.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    var body: some View {
-        Group {
-            if showingPromptEditor {
-                PromptEditorView(
-                    mode: boundPrompt.map { .edit($0) } ?? .add,
-                    onDismiss: { showingPromptEditor = false },
-                    onSave: { prompt in
-                        if enhancementService.allPrompts.contains(where: { $0.id == prompt.id }) {
-                            enhancementService.updatePrompt(prompt)
-                        } else {
-                            enhancementService.customPrompts.append(prompt)
-                        }
-                        customPromptId = prompt.id
-                        showingPromptEditor = false
-                    }
-                )
-            } else {
-                editorForm
-            }
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
+    private var modelSelection: Binding<RecorderModelChoice?> {
+        Binding(
+            get: {
+                guard let p = aiProviderName, let m = aiModelName else { return nil }
+                return RecorderModelChoice(provider: p, model: m)
+            },
+            set: { aiProviderName = $0?.provider; aiModelName = $0?.model })
     }
 
-    private var editorForm: some View {
+    var body: some View {
         VStack(spacing: 0) {
             AppPanelHeader(title: target.id == "add" ? "新增類別" : "編輯類別", onClose: onDismiss)
             Form {
@@ -173,6 +240,14 @@ private struct CategoryEditorPanel: View {
                 }
                 Section("Vault 子資料夾") {
                     TextField("子資料夾名稱", text: $subfolderName)
+                }
+                Section("分析模型") {
+                    Picker("模型", selection: modelSelection) {
+                        Text("預設（用上方全域預設）").tag(RecorderModelChoice?.none)
+                        ForEach(recorderModelChoices(aiService), id: \.self) { c in
+                            Text(c.label).tag(RecorderModelChoice?.some(c))
+                        }
+                    }
                 }
                 Section("分析範本") {
                     HStack {
@@ -187,8 +262,10 @@ private struct CategoryEditorPanel: View {
                         Button(boundPrompt == nil ? "建立範本…" : "編輯範本…") { showingPromptEditor = true }
                     }
                     if boundPrompt != nil {
-                        Button("解除綁定") { customPromptId = nil }
-                            .foregroundStyle(.secondary)
+                        Button("刪除範本", role: .destructive) {
+                            if let p = boundPrompt { enhancementService.deletePrompt(p) }
+                            customPromptId = nil
+                        }
                     }
                 }
                 Section {
@@ -200,6 +277,24 @@ private struct CategoryEditorPanel: View {
             }
             .formStyle(.grouped)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .sheet(isPresented: $showingPromptEditor) {
+            PromptEditorView(
+                mode: boundPrompt.map { .edit($0) } ?? .add,
+                onDismiss: { showingPromptEditor = false },
+                onSave: { prompt in
+                    if enhancementService.allPrompts.contains(where: { $0.id == prompt.id }) {
+                        enhancementService.updatePrompt(prompt)
+                    } else {
+                        enhancementService.customPrompts.append(prompt)
+                    }
+                    customPromptId = prompt.id
+                    showingPromptEditor = false
+                }
+            )
+            .environmentObject(enhancementService)
+            .frame(width: 820, height: 680)
+        }
     }
 
     private func save() {
@@ -209,7 +304,9 @@ private struct CategoryEditorPanel: View {
             classifierDescription: classifierDescription,
             customPromptId: customPromptId,
             subfolderName: subfolderName,
-            isFallback: isFallback)
+            isFallback: isFallback,
+            aiProviderName: aiProviderName,
+            aiModelName: aiModelName)
         store.upsertCategory(category)
         onDismiss()
     }

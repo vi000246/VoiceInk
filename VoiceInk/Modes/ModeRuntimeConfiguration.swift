@@ -48,6 +48,21 @@ struct EnhancementRuntimeConfiguration {
             useScreenCaptureContext: useScreenCaptureContext
         )
     }
+
+    /// Override prompt + provider + model together (used by the recorder pipeline to apply a
+    /// category's analysis-model choice).
+    func replacing(prompt: CustomPrompt?, provider: AIProvider?, modelName: String?) -> EnhancementRuntimeConfiguration {
+        EnhancementRuntimeConfiguration(
+            mode: mode,
+            isEnabled: true,
+            prompt: prompt,
+            provider: provider,
+            modelName: modelName,
+            useClipboardContext: useClipboardContext,
+            useSelectedTextContext: useSelectedTextContext,
+            useScreenCaptureContext: useScreenCaptureContext
+        )
+    }
 }
 
 struct OutputRuntimeConfiguration {

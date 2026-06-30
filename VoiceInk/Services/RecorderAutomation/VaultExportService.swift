@@ -43,12 +43,13 @@ final class VaultExportService {
         """
     }
 
-    /// Sanitized, collision-resistant file name: `YYYY-MM-DD HHmm <category> <device>.md`.
-    func suggestedFileName(date: Date, categoryName: String, deviceName: String?) -> String {
+    /// Sanitized, collision-resistant file name: `YYYY-MM-DD HHmm <category> <short title>.md`.
+    /// `title` is an AI-generated ≤10-char content summary.
+    func suggestedFileName(date: Date, categoryName: String, title: String?) -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HHmm"
         let stamp = f.string(from: date)
-        let parts = [stamp, categoryName, deviceName].compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [stamp, categoryName, title].compactMap { $0 }.filter { !$0.isEmpty }
         let base = parts.joined(separator: " ")
         let safe = base.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|")).joined(separator: "-")
         return safe + ".md"

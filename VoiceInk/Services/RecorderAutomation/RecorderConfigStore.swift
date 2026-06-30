@@ -8,9 +8,15 @@ final class RecorderConfigStore: ObservableObject {
     @Published private(set) var categories: [RecorderCategory] = []
     /// Global Obsidian vault root (single vault for all devices; per-category sub-folders live under it).
     @Published private(set) var vaultRootBookmark: Data?
+    /// Default analysis model (provider + model) used when a category doesn't override it.
+    /// nil → fall back to the active Mode's AI model.
+    @Published private(set) var defaultAIProviderName: String?
+    @Published private(set) var defaultAIModelName: String?
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let vaultRootKey = "recorderVaultRootV1"
+    private let defaultProviderKey = "recorderDefaultAIProviderV1"
+    private let defaultModelKey = "recorderDefaultAIModelV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -24,6 +30,8 @@ final class RecorderConfigStore: ObservableObject {
             categories = decoded
         }
         vaultRootBookmark = UserDefaults.standard.data(forKey: vaultRootKey)
+        defaultAIProviderName = UserDefaults.standard.string(forKey: defaultProviderKey)
+        defaultAIModelName = UserDefaults.standard.string(forKey: defaultModelKey)
     }
 
     /// Set (or clear) the single global vault root bookmark.
@@ -31,6 +39,16 @@ final class RecorderConfigStore: ObservableObject {
         vaultRootBookmark = bookmark
         if let bookmark { UserDefaults.standard.set(bookmark, forKey: vaultRootKey) }
         else { UserDefaults.standard.removeObject(forKey: vaultRootKey) }
+    }
+
+    /// Set (or clear) the default analysis model. Pass nil/nil to follow the active Mode.
+    func setDefaultModel(provider: String?, model: String?) {
+        defaultAIProviderName = provider
+        defaultAIModelName = model
+        if let provider { UserDefaults.standard.set(provider, forKey: defaultProviderKey) }
+        else { UserDefaults.standard.removeObject(forKey: defaultProviderKey) }
+        if let model { UserDefaults.standard.set(model, forKey: defaultModelKey) }
+        else { UserDefaults.standard.removeObject(forKey: defaultModelKey) }
     }
     private func saveDevices() {
         if let data = try? JSONEncoder().encode(devices) { UserDefaults.standard.set(data, forKey: devicesKey) }
