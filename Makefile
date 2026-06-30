@@ -92,20 +92,24 @@ deploy: check setup
 		echo "ERROR: signing identity '$(SIGN_IDENTITY)' not found in keychain."; \
 		echo "Create it first (see Makefile header / docs)."; exit 1; \
 	fi
-	@echo "Building VoiceInk (signed as '$(SIGN_IDENTITY)') ..."
+	@echo "Building VoiceInk (Release, signed as '$(SIGN_IDENTITY)') ..."
 	@rm -rf "$(LOCAL_DERIVED_DATA)"
-	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+	# Release (not Debug): Debug builds split into a separate VoiceInk.debug.dylib whose
+	# signature/rpath breaks when the bundle is moved out of DerivedData or signed with a
+	# non-ad-hoc identity (dyld "different Team IDs" at launch). Release is a single binary.
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
 		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
 		CODE_SIGN_IDENTITY="$(SIGN_IDENTITY)" \
 		CODE_SIGN_STYLE=Manual \
 		CODE_SIGNING_REQUIRED=YES \
 		CODE_SIGNING_ALLOWED=YES \
+		ENABLE_HARDENED_RUNTIME=NO \
 		DEVELOPMENT_TEAM="" \
 		PROVISIONING_PROFILE_SPECIFIER="" \
 		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
 		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
 		build
-	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Debug/VoiceInk.app"; \
+	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Release/VoiceInk.app"; \
 	if [ ! -d "$$APP_PATH" ]; then echo "Error: build product missing at $$APP_PATH"; exit 1; fi; \
 	echo "Verifying signature ..."; codesign -dv "$$APP_PATH" 2>&1 | grep -i authority | head -1 || true; \
 	echo "Quitting running VoiceInk ..."; killall VoiceInk 2>/dev/null || true; sleep 1; \

@@ -84,3 +84,9 @@ likewise persist; if any were granted under the old ad-hoc build, they need this
   and wins over command-line settings, so `make deploy` does **not** use it (it passes `LOCAL_BUILD`
   and the empty team directly instead).
 - **Lost the key?** Recreate it (new hash) and re-grant permissions once.
+- **Why Release, not Debug?** Debug builds split the app into a thin launcher + a separate
+  `VoiceInk.debug.dylib` (Xcode preview/debug-dylib mechanism). That dylib bakes in absolute
+  rpaths to the build dir and is signed separately — when the bundle is moved to /Applications
+  or signed with a non-ad-hoc identity, dyld fails at launch with `Library not loaded:
+  @rpath/VoiceInk.debug.dylib … different Team IDs`. `make deploy` builds **Release** (single
+  self-contained binary) to avoid this. (`make local` stays Debug + ad-hoc, runs from ~/Downloads.)
