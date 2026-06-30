@@ -10,7 +10,7 @@
 - **Owner**: TBD (personal fork — vi000246/VoiceInk)
 - **Status**: ACTIVE — living document
 - **Created**: 2026-06-29
-- **Last Updated**: 2026-06-29
+- **Last Updated**: 2026-06-30
 
 ## Change History
 
@@ -19,6 +19,7 @@
 | 2026-06-29 | `docs/prd/recorder-auto-import-and-template-routing.prd.md` | `docs/srs/recorder-automation-auto-import-template-routing.srs.md` | Created from brownfield analysis — new module that watches recorder volume mounts, auto-imports audio into the existing transcription queue, classifies each transcript, routes to a category's CustomPrompt, and exports analysis Markdown to an Obsidian vault. |
 | 2026-06-29 | same | same | **M1 implemented** — mount monitor, import ledger (SHA-256 dedup), device config/store, queue origin tag + raw-transcription bypass, minimal Recorders page. Build green; 5 unit tests. |
 | 2026-06-30 | same | same | **M2 implemented** (FR-6–11,13,14) — `TranscriptClassificationService` (classify→id/uncertain+confidence), `TemplateRouter` (fallback on uncertain/below-floor), `LongTranscriptSummarizer` (map-reduce), `VaultExportService` (frontmatter+collapsible raw md), `RecorderPostProcessor` (orchestrator wired into `processItem`), `RecorderCategory` + store w/ undeletable fallback, Categories page, vault-root capture, delete-after-import. FR-12 partial: `reclassify` logic done, History badge UI deferred. 18 unit tests green. Manual/hardware AC pending. |
+| 2026-06-30 | extends | `docs/srs/recorder-automation-recorder-mode-and-recording-management.srs.md` | **M3 spec'd** — two pipelines fully separated: recorder prompts split from voice prompts (`recorderPrompts` store, implemented); new **Recorder Mode** (own transcription model + default analysis model + language, decoupled from active Voice Mode); export shifts to **manual** by default (import = transcribe + suggest category only); new **Recording Management** page (replaces Import Log) with raw audio/transcript preservation, manual template apply→preview→export, delete-audio / delete-record; recorder audio exempt from auto-cleanup. Implemented so far: prompt split, sectioned sidebar + renames, rich recorder log, cleanup exemption. Pending: Recorder Mode page, manual apply/export flow, auto-export toggle. |
 
 ## Summary
 

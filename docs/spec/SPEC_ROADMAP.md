@@ -1,6 +1,6 @@
 # Spec Roadmap
 
-> Auto-updated index. Last updated: 2026-06-29
+> Auto-updated index. Last updated: 2026-06-30
 >
 > **AI Agents**: Read this file first to decide which specs to load. Load only what's relevant to
 > your task to avoid context bloat.
@@ -23,4 +23,5 @@
 
 | Date | Module | Feature SRS | One-line Summary |
 |------|--------|-------------|-----------------|
+| 2026-06-30 | recorder-automation | [recorder-mode-and-recording-management.srs.md](../srs/recorder-automation-recorder-mode-and-recording-management.srs.md) | Separate recorder pipeline from voice input (own Recorder Mode model settings), make template apply + Obsidian export a manual, reviewable flow in a new Recording Management page; always preserve raw audio + transcript. |
 | 2026-06-29 | recorder-automation | [auto-import-template-routing.srs.md](../srs/recorder-automation-auto-import-template-routing.srs.md) | Plug in a recorder → auto-import, transcribe, classify, apply the category's template, and export an analysis note to the vault. |
