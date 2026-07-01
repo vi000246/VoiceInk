@@ -23,6 +23,11 @@ final class RecorderConfigStore: ObservableObject {
     /// Append the full raw transcript to the exported Obsidian note (below a divider). Default off —
     /// the note carries only the analysis.
     @Published private(set) var recorderExportIncludeRawTranscript: Bool = false
+    /// Speaker diarization for recorder transcripts. Default off. Only native-capable models
+    /// (e.g. ElevenLabs Scribe) produce labels in M1; others keep a plain transcript.
+    @Published private(set) var recorderDiarizationEnabled: Bool = false
+    /// Expected number of speakers, forwarded to the diarizer. nil → let the model decide.
+    @Published private(set) var recorderExpectedSpeakerCount: Int?
     /// Classifier model (e.g. a cheap local Ollama). nil → use the default analysis model.
     @Published private(set) var recorderClassifierProviderName: String?
     @Published private(set) var recorderClassifierModelName: String?
@@ -40,6 +45,8 @@ final class RecorderConfigStore: ObservableObject {
     private let recFormattingKey = "recorderTextFormattingV1"
     private let recAutoExportKey = "recorderAutoExportV1"
     private let recExportRawKey = "recorderExportIncludeRawV1"
+    private let recDiarizationKey = "recorderDiarizationEnabledV1"
+    private let recExpectedSpeakersKey = "recorderExpectedSpeakerCountV1"
     private let recClassifierProviderKey = "recorderClassifierProviderV1"
     private let recClassifierModelKey = "recorderClassifierModelV1"
     private let recAnalysisTimeoutKey = "recorderAnalysisTimeoutV1"
@@ -67,6 +74,9 @@ final class RecorderConfigStore: ObservableObject {
         recorderTextFormattingEnabled = UserDefaults.standard.bool(forKey: recFormattingKey)
         recorderAutoExportEnabled = UserDefaults.standard.bool(forKey: recAutoExportKey)
         recorderExportIncludeRawTranscript = UserDefaults.standard.bool(forKey: recExportRawKey)
+        recorderDiarizationEnabled = UserDefaults.standard.bool(forKey: recDiarizationKey)
+        let storedSpeakers = UserDefaults.standard.integer(forKey: recExpectedSpeakersKey)
+        recorderExpectedSpeakerCount = storedSpeakers > 0 ? storedSpeakers : nil
         recorderClassifierProviderName = UserDefaults.standard.string(forKey: recClassifierProviderKey)
         recorderClassifierModelName = UserDefaults.standard.string(forKey: recClassifierModelKey)
         let storedTimeout = UserDefaults.standard.integer(forKey: recAnalysisTimeoutKey)
@@ -106,6 +116,13 @@ final class RecorderConfigStore: ObservableObject {
     }
     func setRecorderExportIncludeRawTranscript(_ on: Bool) {
         recorderExportIncludeRawTranscript = on; UserDefaults.standard.set(on, forKey: recExportRawKey)
+    }
+    func setRecorderDiarizationEnabled(_ on: Bool) {
+        recorderDiarizationEnabled = on; UserDefaults.standard.set(on, forKey: recDiarizationKey)
+    }
+    func setRecorderExpectedSpeakerCount(_ n: Int?) {
+        recorderExpectedSpeakerCount = n
+        UserDefaults.standard.set(n ?? 0, forKey: recExpectedSpeakersKey)
     }
 
     /// Set (or clear) the single global vault root bookmark.

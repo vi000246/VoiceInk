@@ -49,6 +49,58 @@ final class Transcription {
         return raw.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
     }
 
+    // MARK: - Speaker diarization
+
+    /// JSON-encoded `[SpeakerSegment]` when the transcript was diarized; nil otherwise.
+    var speakerSegmentsRaw: String?
+    /// JSON-encoded `[speakerId: displayName]` rename map; nil = all anonymous.
+    var speakerNamesRaw: String?
+
+    /// Per-speaker segments. Setting a non-empty value flips `speakerLabeled` to true.
+    var speakerSegments: [SpeakerSegment] {
+        get {
+            guard let raw = speakerSegmentsRaw, let data = raw.data(using: .utf8) else { return [] }
+            return (try? JSONDecoder().decode([SpeakerSegment].self, from: data)) ?? []
+        }
+        set {
+            speakerSegmentsRaw = (try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) }
+            speakerLabeled = !newValue.isEmpty
+        }
+    }
+
+    /// Rename map: speaker id → user-chosen display name.
+    var speakerNames: [String: String] {
+        get {
+            guard let raw = speakerNamesRaw, let data = raw.data(using: .utf8) else { return [:] }
+            return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+        }
+        set {
+            speakerNamesRaw = (try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) }
+        }
+    }
+
+    /// Distinct speaker ids in first-appearance order — drives the "講者N" fallback label.
+    var orderedSpeakerIds: [String] {
+        var seen: [String] = []
+        for s in speakerSegments where !seen.contains(s.speaker) { seen.append(s.speaker) }
+        return seen
+    }
+
+    /// Display name for a speaker id: the rename map wins; otherwise "講者N" by first-appearance order.
+    func displayName(for speakerId: String) -> String {
+        if let name = speakerNames[speakerId], !name.isEmpty { return name }
+        let idx = orderedSpeakerIds.firstIndex(of: speakerId) ?? 0
+        return "講者\(idx + 1)"
+    }
+
+    /// Rename a speaker; a blank name removes the override (falls back to 講者N).
+    func renameSpeaker(_ speakerId: String, to name: String) {
+        var map = speakerNames
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { map.removeValue(forKey: speakerId) } else { map[speakerId] = trimmed }
+        speakerNames = map
+    }
+
     init(text: String,
          duration: TimeInterval,
          enhancedText: String? = nil,

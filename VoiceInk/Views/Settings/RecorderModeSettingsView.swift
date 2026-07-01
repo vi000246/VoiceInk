@@ -30,6 +30,14 @@ struct RecorderModeSettingsView: View {
                             InfoTip("開啟後用智慧格式化自動判斷斷句，把大段文字分成段落。與語音模式的「Paragraph breaks」是同一套機制。")
                         }
                     }
+                    Toggle("啟用語者辨識", isOn: diarizationBinding)
+                    if store.recorderDiarizationEnabled {
+                        Stepper(value: expectedSpeakersBinding, in: 0...12) {
+                            Text(store.recorderExpectedSpeakerCount.map { "預期人數：\($0)" } ?? "預期人數：自動")
+                        }
+                        Text("辨識會議中的說話者並分段標記（講者1／講者2…，可事後改名）。僅 ElevenLabs 等原生支援的雲端模型有效；其他模型維持純文字（本地補齊為後續版本）。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section("分析") {
                     Picker("預設分析模型", selection: analysisBinding) {
@@ -92,6 +100,14 @@ struct RecorderModeSettingsView: View {
     private var includeRawBinding: Binding<Bool> {
         Binding(get: { store.recorderExportIncludeRawTranscript },
                 set: { store.setRecorderExportIncludeRawTranscript($0) })
+    }
+    private var diarizationBinding: Binding<Bool> {
+        Binding(get: { store.recorderDiarizationEnabled },
+                set: { store.setRecorderDiarizationEnabled($0) })
+    }
+    private var expectedSpeakersBinding: Binding<Int> {
+        Binding(get: { store.recorderExpectedSpeakerCount ?? 0 },
+                set: { store.setRecorderExpectedSpeakerCount($0 == 0 ? nil : $0) })
     }
     private var analysisBinding: Binding<RecorderModelChoice?> {
         Binding(

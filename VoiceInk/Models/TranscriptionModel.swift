@@ -56,6 +56,9 @@ protocol TranscriptionModel: Identifiable, Hashable {
     var supportedLanguages: [String: String] { get }
 
     var supportsStreaming: Bool { get }
+
+    /// True when the model's own transcription API returns per-speaker labels (diarization).
+    var supportsNativeDiarization: Bool { get }
 }
 
 extension TranscriptionModel {
@@ -68,6 +71,8 @@ extension TranscriptionModel {
     }
 
     var supportsStreaming: Bool { false }
+
+    var supportsNativeDiarization: Bool { false }
 }
 
 // A new struct for Apple's native models
@@ -122,9 +127,10 @@ struct CloudModel: TranscriptionModel {
     let accuracy: Double
     let isMultilingualModel: Bool
     let supportsStreaming: Bool
+    let supportsNativeDiarization: Bool
     let supportedLanguages: [String: String]
 
-    init(id: UUID = UUID(), name: String, displayName: String, description: String, provider: ModelProvider, speed: Double, accuracy: Double, isMultilingual: Bool, supportsStreaming: Bool = false, supportedLanguages: [String: String]) {
+    init(id: UUID = UUID(), name: String, displayName: String, description: String, provider: ModelProvider, speed: Double, accuracy: Double, isMultilingual: Bool, supportsStreaming: Bool = false, supportsNativeDiarization: Bool = false, supportedLanguages: [String: String]) {
         self.id = id
         self.name = name
         self.displayName = displayName
@@ -134,6 +140,7 @@ struct CloudModel: TranscriptionModel {
         self.accuracy = accuracy
         self.isMultilingualModel = isMultilingual
         self.supportsStreaming = supportsStreaming
+        self.supportsNativeDiarization = supportsNativeDiarization
         self.supportedLanguages = supportedLanguages
     }
 }

@@ -84,6 +84,24 @@ final class RecorderPostProcessor {
         aiService: AIService
     ) async {
         let store = RecorderConfigStore.shared
+
+        // Speaker diarization (best-effort, before classification). Native-capable models produce
+        // labelled segments; others keep the plain transcript (FluidAudio fallback is M2).
+        if store.recorderDiarizationEnabled, let path = transcription.audioFileURL {
+            let url = URL(fileURLWithPath: path)
+            if let segments = await DiarizationCoordinator.diarize(
+                audioURL: url,
+                transcriptionModelName: transcription.transcriptionModelName,
+                language: store.recorderLanguage,
+                expectedSpeakers: store.recorderExpectedSpeakerCount) {
+                transcription.speakerSegments = segments   // also sets speakerLabeled = true
+                try? modelContext.save()
+            } else if !DiarizationCoordinator.supportsNativeDiarization(modelName: transcription.transcriptionModelName) {
+                NotificationManager.shared.showNotification(
+                    title: "此轉錄模型尚不支援語者辨識（本地補齊為後續版本）", type: .info, duration: 4)
+            }
+        }
+
         await suggestCategory(transcription: transcription, rawText: rawText, modelContext: modelContext,
                               enhancementService: enhancementService, aiService: aiService)
 

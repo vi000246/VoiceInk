@@ -27,6 +27,7 @@ struct ElevenLabsProvider: CloudProvider {
             speed: 0.7,
             accuracy: 0.98,
             isMultilingual: true,
+            supportsNativeDiarization: true,
             supportedLanguages: LanguageDictionary.forProvider(isMultilingual: true, provider: .elevenLabs)
         ),
         CloudModel(
@@ -38,6 +39,7 @@ struct ElevenLabsProvider: CloudProvider {
             accuracy: 0.98,
             isMultilingual: true,
             supportsStreaming: true,
+            supportsNativeDiarization: true,
             supportedLanguages: LanguageDictionary.forProvider(isMultilingual: true, provider: .elevenLabs)
         )
     ]}

@@ -256,6 +256,7 @@ private struct RecordingCard: View {
         .sheet(isPresented: $showTranscriptSheet) {
             TranscriptSheet(
                 title: displayTitle,
+                transcription: transcription,
                 rawText: transcription.text,
                 analysisText: transcription.enhancedText,
                 showAnalysis: $showAnalysis)
@@ -455,13 +456,20 @@ enum RecordingAudioFiles {
 /// long multi-line transcripts that don't fit the card's inline preview.
 private struct TranscriptSheet: View {
     let title: String
+    let transcription: Transcription
     let rawText: String
     let analysisText: String?
     @Binding var showAnalysis: Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @State private var showSpeakerRename = false
+    @State private var renameSpeakerId = ""
+    @State private var renameSpeakerText = ""
 
     private var hasAnalysis: Bool { analysisText?.isEmpty == false }
     private var text: String { (showAnalysis ? analysisText : rawText) ?? rawText }
+    /// Show speaker-grouped blocks only for the raw-transcript tab of a diarized recording.
+    private var showsSpeakers: Bool { !showAnalysis && transcription.speakerLabeled && !transcription.speakerSegments.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -481,13 +489,50 @@ private struct TranscriptSheet: View {
             .padding(.horizontal).padding(.vertical, 8)
             Divider()
             ScrollView {
-                MarkdownContentView(text, fontSize: 14, foregroundColor: AppTheme.Text.primary)
-                    .textSelection(.enabled)
+                if showsSpeakers {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(transcription.speakerSegments.enumerated()), id: \.offset) { _, seg in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text(transcription.displayName(for: seg.speaker))
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(AppTheme.Text.secondary)
+                                    Button {
+                                        renameSpeakerId = seg.speaker
+                                        renameSpeakerText = transcription.displayName(for: seg.speaker)
+                                        showSpeakerRename = true
+                                    } label: {
+                                        Image(systemName: "pencil").font(.system(size: 10))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                Text(seg.text).font(.system(size: 14))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
+                } else {
+                    MarkdownContentView(text, fontSize: 14, foregroundColor: AppTheme.Text.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
             }
         }
         .frame(width: 660, height: 620)
+        .alert("重新命名講者", isPresented: $showSpeakerRename) {
+            TextField("名稱", text: $renameSpeakerText)
+            Button("儲存") {
+                transcription.renameSpeaker(renameSpeakerId, to: renameSpeakerText)
+                try? modelContext.save()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("為這位講者命名（例如「老闆」）。此逐字稿中同一位講者的所有段落都會套用。")
+        }
     }
 
     private func tab(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
