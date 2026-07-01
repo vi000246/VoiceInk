@@ -11,7 +11,9 @@ linear_issue: null
 - **Created**: 2026-07-01
 - **Grill level**: 1 (standard)
 - **Supersedes**: `recorder-automation` M5 / FR-15 (previously "prompt-based speaker inference v1 + FluidAudio-only M5")
-- **Plans**: `docs/plans/recorder-automation-speaker-diarization-m1.plan.md` (M1 — native ElevenLabs vertical slice; FluidAudio fallback / AC-4 deferred to M2)
+- **Plans**:
+  - `docs/plans/completed/recorder-automation-speaker-diarization-m1.plan.md` (M1 — native ElevenLabs vertical slice; **shipped**)
+  - `docs/plans/completed/recorder-automation-speaker-diarization-m2.plan.md` (M2 — FluidAudio local fallback + alignment = AC-4; **shipped**)
 
 ## Feature Summary
 
@@ -90,11 +92,15 @@ added **inside the VoiceInk repo** rather than modifying LLMkit.
 
 ## Functional Requirements
 
-> **Status (2026-07-01):** **M1 shipped** (FR-1,2,3,4,7,8,9,10) — native ElevenLabs path,
-> data model, settings, and speaker-grouped UI with rename. Build green; 11 pure-seam tests pass.
-> See `docs/plans/completed/recorder-automation-speaker-diarization-m1.plan.md` +
-> `docs/reports/recorder-automation-speaker-diarization-m1-report.md`.
-> **FR-5** (FluidAudioDiarizer) and **FR-6** (Whisper alignment) — i.e. AC-4 — remain **M2**.
+> **Status (2026-07-01):** **M1 + M2 shipped — feature complete for v1.**
+> M1 (FR-1,2,3,4,7,8,9,10): native ElevenLabs path, data model, settings, speaker-grouped UI + rename.
+> M2 (FR-5,6 = AC-4): on-device **FluidAudio fallback** — Parakeet ASR token timings + offline
+> diarizer aligned by max-overlap, so **every non-native model** (local Whisper, Apple, …) also gets
+> speaker labels. Build green; 15 pure-seam tests pass.
+> See `docs/plans/completed/recorder-automation-speaker-diarization-m{1,2}.plan.md` +
+> `docs/reports/recorder-automation-speaker-diarization-m{1,2}-report.md`.
+> Deferred to **M3** (optional): other cloud providers' native diarize; share the app's Parakeet
+> instance; speaker labels in the Obsidian export.
 
 - [x] **FR-1** Add a Recorder Mode setting `啟用語者辨識` (`diarizationEnabled`, default **off**)
   and an optional `預期人數` (`expectedSpeakerCount`), persisted via `RecorderConfigStore`.
