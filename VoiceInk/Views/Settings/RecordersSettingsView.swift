@@ -180,6 +180,9 @@ private struct RecorderDeviceCard: View {
             .strokeBorder(isHovering ? AppTheme.Accent.primary.opacity(0.4) : AppTheme.Border.control, lineWidth: 0.5))
         .onHover { isHovering = $0 }
         .onAppear { connected = RecorderImportService.shared.isDeviceConnected(device) }
+        .onReceive(NotificationCenter.default.publisher(for: .recorderDeviceConnectivityChanged)) { _ in
+            connected = RecorderImportService.shared.isDeviceConnected(device)
+        }
     }
 
     // MARK: - Batch progress

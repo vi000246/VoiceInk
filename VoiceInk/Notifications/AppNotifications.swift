@@ -21,4 +21,6 @@ extension Notification.Name {
     static let openFileForTranscription = Notification.Name("openFileForTranscription")
     static let audioDeviceSwitchRequired = Notification.Name("audioDeviceSwitchRequired")
     static let recorderImportCompleted = Notification.Name("recorderImportCompleted")
+    /// Posted when a volume mounts/unmounts so recorder device cards can refresh their connection dot live.
+    static let recorderDeviceConnectivityChanged = Notification.Name("recorderDeviceConnectivityChanged")
 }

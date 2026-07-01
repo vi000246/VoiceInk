@@ -40,12 +40,12 @@ final class RecorderImportService: NSObject, ObservableObject {
         for url in urls where SupportedMedia.isSupported(url: url) {
             let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = rv?.fileSize ?? 0
-            if minimumStableAge > 0 {
-                // Cheap pre-skip so a settling but already-imported file doesn't force endless re-checks.
-                if ImportLedger.shared.hasQuickMatch(fileName: url.lastPathComponent, byteSize: size, in: context) { continue }
-                if let mod = rv?.contentModificationDate, now.timeIntervalSince(mod) < minimumStableAge {
-                    deferred += 1; continue
-                }
+            // Cheap (name+size) pre-skip on ALL paths: an already-imported file is skipped WITHOUT
+            // hashing. This is what stops every mount from SHA-256'ing the whole device on the main
+            // thread (the "app freezes on insert" hitch) — content-hash confirm still runs for new files.
+            if ImportLedger.shared.hasQuickMatch(fileName: url.lastPathComponent, byteSize: size, in: context) { continue }
+            if minimumStableAge > 0, let mod = rv?.contentModificationDate, now.timeIntervalSince(mod) < minimumStableAge {
+                deferred += 1; continue
             }
             guard let fp = try? ImportLedger.shared.contentFingerprint(for: url) else { continue }
             if inFlight.contains(fp) { continue }
