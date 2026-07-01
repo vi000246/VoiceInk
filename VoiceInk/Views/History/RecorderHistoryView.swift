@@ -183,8 +183,16 @@ private struct RecordingCard: View {
     @State private var busy = false
     @State private var confirmDeleteRecord = false
     @State private var confirmDeleteAudio = false
+    @State private var showTranscriptSheet = false
+    @State private var showRename = false
+    @State private var renameText = ""
 
     private var hasAnalysis: Bool { (transcription.enhancedText?.isEmpty == false) }
+    /// Prefer the generated recorder title (date + summary); fall back to the imported file name.
+    private var displayTitle: String {
+        if let t = transcription.recorderTitle, !t.isEmpty { return t }
+        return fileName?.isEmpty == false ? fileName! : "錄音匯入"
+    }
     private var displayText: String {
         (showAnalysis ? transcription.enhancedText : transcription.text) ?? transcription.text
     }
@@ -207,11 +215,33 @@ private struct RecordingCard: View {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(
             isChecked ? AppTheme.Accent.primary.opacity(0.5) : AppTheme.Border.control, lineWidth: isChecked ? 1 : 0.5))
         .onAppear { if selectedCategoryId == nil { selectedCategoryId = transcription.recorderCategoryId } }
+        // Auto-select the classifier's category once classification finishes (or on reclassify).
+        .onChange(of: transcription.recorderCategoryId) { _, newId in
+            if let newId { selectedCategoryId = newId }
+        }
         .confirmationDialog("刪除整筆紀錄？音檔與逐字稿都會移除。", isPresented: $confirmDeleteRecord) {
             Button("刪除整筆", role: .destructive) { deleteRecord() }
         }
         .confirmationDialog("刪除錄音檔？逐字稿會保留。", isPresented: $confirmDeleteAudio) {
             Button("刪除音檔", role: .destructive) { deleteAudio() }
+        }
+        .sheet(isPresented: $showTranscriptSheet) {
+            TranscriptSheet(
+                title: displayTitle,
+                rawText: transcription.text,
+                analysisText: transcription.enhancedText,
+                showAnalysis: $showAnalysis)
+        }
+        .alert("重新命名", isPresented: $showRename) {
+            TextField("名稱", text: $renameText)
+            Button("儲存") {
+                let t = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                transcription.recorderTitle = t.isEmpty ? nil : t
+                try? modelContext.save()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("自訂這筆錄音在管理頁顯示的名稱。清空則還原為預設（日期＋摘要或原檔名）。")
         }
     }
 
@@ -227,7 +257,7 @@ private struct RecordingCard: View {
                 .frame(width: 32, height: 32)
                 .background(AppTheme.Sidebar.fallback, in: RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 3) {
-                Text(fileName?.isEmpty == false ? fileName! : "錄音匯入")
+                Text(displayTitle)
                     .font(.system(size: 13, weight: .medium)).lineLimit(1)
                 HStack(spacing: 6) {
                     Text(transcription.timestamp, format: .dateTime.year().month(.abbreviated).day().hour().minute())
@@ -252,7 +282,12 @@ private struct RecordingCard: View {
                 }
                 .frame(maxWidth: 240)
                 Button("套用") { apply() }.disabled(busy || selectedCategory == nil)
-                if busy { ProgressView().controlSize(.small) }
+                if busy {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.small)
+                        Text("處理中…").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
             }
 
@@ -261,11 +296,26 @@ private struct RecordingCard: View {
                 if hasAnalysis { tab("套用後", active: showAnalysis) { showAnalysis = true } }
                 Spacer()
             }
-            ScrollView {
-                MarkdownContentView(displayText, fontSize: 14, foregroundColor: AppTheme.Text.primary)
+            Button { showTranscriptSheet = true } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(displayText.isEmpty ? "（無內容）" : displayText)
+                        .font(.system(size: 13))
+                        .foregroundStyle(displayText.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(AppTheme.Text.primary))
+                        .lineLimit(3).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 10))
+                        Text("點擊看完整內容").font(.system(size: 11))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.Surface.control, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
+                .contentShape(Rectangle())
             }
-            .frame(maxHeight: 300)
-            .overlay(alignment: .bottomTrailing) { CopyIconButton(textToCopy: displayText).padding(8) }
+            .buttonStyle(.plain)
 
             if let url = audioURL {
                 Divider()
@@ -275,6 +325,9 @@ private struct RecordingCard: View {
 
             Divider()
             HStack(spacing: 12) {
+                Button { renameText = displayTitle; showRename = true } label: {
+                    Label("重新命名", systemImage: "pencil")
+                }.buttonStyle(.plain).foregroundStyle(.secondary)
                 Button { export() } label: { Label("匯出到 Obsidian", systemImage: "square.and.arrow.up") }
                     .disabled(busy || !hasAnalysis)
                 if let path = transcription.exportedFilePath {
@@ -350,5 +403,55 @@ private struct RecordingCard: View {
         .foregroundStyle(tint)
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(Capsule().fill(tint.opacity(0.12)))
+    }
+}
+
+/// Full-screen-ish popup showing a recording's complete transcript (raw or applied), for the
+/// long multi-line transcripts that don't fit the card's inline preview.
+private struct TranscriptSheet: View {
+    let title: String
+    let rawText: String
+    let analysisText: String?
+    @Binding var showAnalysis: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    private var hasAnalysis: Bool { analysisText?.isEmpty == false }
+    private var text: String { (showAnalysis ? analysisText : rawText) ?? rawText }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(title).font(.headline).lineLimit(1)
+                Spacer()
+                Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding()
+            Divider()
+            HStack(spacing: 6) {
+                tab("原始逐字稿", active: !showAnalysis) { showAnalysis = false }
+                if hasAnalysis { tab("套用後", active: showAnalysis) { showAnalysis = true } }
+                Spacer()
+                CopyIconButton(textToCopy: text)
+            }
+            .padding(.horizontal).padding(.vertical, 8)
+            Divider()
+            ScrollView {
+                MarkdownContentView(text, fontSize: 14, foregroundColor: AppTheme.Text.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+        }
+        .frame(width: 660, height: 620)
+    }
+
+    private func tab(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 12, weight: .medium))
+                .foregroundColor(active ? .primary : .secondary)
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .background(Capsule().fill(active ? AppTheme.Surface.controlActive : Color.clear))
+        }
+        .buttonStyle(.plain)
     }
 }

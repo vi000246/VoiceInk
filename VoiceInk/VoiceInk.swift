@@ -141,6 +141,12 @@ struct VoiceInkApp: App {
             RecorderConfigStore.shared.disableSystemTemplateForRecorderPrompts()
             UserDefaults.standard.set(true, forKey: "recorderPromptsNoSystemTemplateV1")
         }
+        // Backfill newly-added default templates (e.g. 獨白記錄) into existing installs.
+        // seedDefaultTemplates is idempotent by name/title, so user-edited prompts are untouched.
+        if !UserDefaults.standard.bool(forKey: "recorderMonologueTemplateV1") {
+            RecorderConfigStore.shared.seedDefaultTemplates()
+            UserDefaults.standard.set(true, forKey: "recorderMonologueTemplateV1")
+        }
 
         // 6. Initialize model state
         // Migration and refreshAllAvailableModels must run before loadCurrentTranscriptionModel so renamed keys are remapped and imported models are present when restoring the saved selection.

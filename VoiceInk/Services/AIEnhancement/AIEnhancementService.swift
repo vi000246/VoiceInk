@@ -169,8 +169,10 @@ class AIEnhancementService: ObservableObject {
     private func makeRequest(
         text: String,
         configuration: EnhancementRuntimeConfiguration,
-        contextSnapshot: RecordingContextSnapshot?
+        contextSnapshot: RecordingContextSnapshot?,
+        timeoutOverride: TimeInterval? = nil
     ) async throws -> String {
+        let requestTimeout = timeoutOverride ?? baseTimeout
         guard isConfigured(for: configuration) else {
             throw EnhancementError.notConfigured
         }
@@ -206,7 +208,7 @@ class AIEnhancementService: ObservableObject {
                     text: formattedText,
                     systemPrompt: systemMessage,
                     model: modelName,
-                    timeout: baseTimeout
+                    timeout: requestTimeout
                 )
                 return AIEnhancementOutputFilter.filter(result)
             } catch {
@@ -247,7 +249,7 @@ class AIEnhancementService: ObservableObject {
                     model: modelName,
                     messages: [.user(formattedText)],
                     systemPrompt: systemMessage,
-                    timeout: baseTimeout
+                    timeout: requestTimeout
                 )
             case .custom:
                 guard let customConfiguration = CustomAIProviderManager.shared.requestConfiguration(forModel: modelName),
@@ -261,7 +263,7 @@ class AIEnhancementService: ObservableObject {
                     messages: [.user(formattedText)],
                     systemPrompt: systemMessage,
                     temperature: 0.3,
-                    timeout: baseTimeout
+                    timeout: requestTimeout
                 )
             default:
                 guard let baseURL = URL(string: provider.baseURL) else {
@@ -285,7 +287,7 @@ class AIEnhancementService: ObservableObject {
                     temperature: temperature,
                     reasoningEffort: reasoningEffort,
                     extraBody: extraBody,
-                    timeout: baseTimeout
+                    timeout: requestTimeout
                 )
             }
             return AIEnhancementOutputFilter.filter(result.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -339,6 +341,7 @@ class AIEnhancementService: ObservableObject {
         text: String,
         configuration: EnhancementRuntimeConfiguration,
         contextSnapshot: RecordingContextSnapshot?,
+        timeoutOverride: TimeInterval? = nil,
         maxRetries: Int = 3,
         initialDelay: TimeInterval = 1.0
     ) async throws -> String {
@@ -350,7 +353,8 @@ class AIEnhancementService: ObservableObject {
                 return try await makeRequest(
                     text: text,
                     configuration: configuration,
-                    contextSnapshot: contextSnapshot
+                    contextSnapshot: contextSnapshot,
+                    timeoutOverride: timeoutOverride
                 )
             } catch let error as EnhancementError {
                 switch error {
@@ -404,7 +408,8 @@ class AIEnhancementService: ObservableObject {
     func enhance(
         _ text: String,
         configuration: EnhancementRuntimeConfiguration,
-        contextSnapshot: RecordingContextSnapshot? = nil
+        contextSnapshot: RecordingContextSnapshot? = nil,
+        timeoutOverride: TimeInterval? = nil
     ) async throws -> (String, TimeInterval, String?) {
         let startTime = Date()
         let promptName = configuration.prompt?.title
@@ -413,7 +418,8 @@ class AIEnhancementService: ObservableObject {
             let result = try await makeRequestWithRetry(
                 text: text,
                 configuration: configuration,
-                contextSnapshot: contextSnapshot
+                contextSnapshot: contextSnapshot,
+                timeoutOverride: timeoutOverride
             )
             let endTime = Date()
             let duration = endTime.timeIntervalSince(startTime)

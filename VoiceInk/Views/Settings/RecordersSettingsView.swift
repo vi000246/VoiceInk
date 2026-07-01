@@ -124,6 +124,8 @@ private struct RecorderDeviceCard: View {
     @State private var files: [RecorderImportService.DeviceFileStatus]?
     @State private var connected = false
     @State private var scanning = false
+    @State private var selectedFiles: Set<String> = []
+    @State private var confirmReprocess = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -196,26 +198,52 @@ private struct RecorderDeviceCard: View {
                         Text("共 \(files.count) 檔・已處理 \(done)・未處理 \(files.count - done)")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()
+                        Button(selectedFiles.count == files.count ? "取消全選" : "全選") {
+                            selectedFiles = selectedFiles.count == files.count ? [] : Set(files.map { $0.fileName })
+                        }.controlSize(.mini)
                         Button("重新整理") { scan() }.controlSize(.mini)
                     }
                     ForEach(files) { f in
-                        HStack(spacing: 8) {
-                            Image(systemName: f.processed ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 12))
-                                .foregroundStyle(f.processed ? AppTheme.Status.success : Color.secondary)
-                            Text(f.fileName).font(.system(size: 12)).lineLimit(1)
-                            Spacer()
-                            if let m = f.modified {
-                                Text(m, format: .dateTime.month(.abbreviated).day().hour().minute())
-                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                        let isSel = selectedFiles.contains(f.fileName)
+                        Button { toggleSelect(f.fileName) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: isSel ? "checkmark.square.fill" : "square")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(isSel ? AppTheme.Accent.primary : Color.secondary)
+                                Image(systemName: f.processed ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(f.processed ? AppTheme.Status.success : Color.secondary)
+                                Text(f.fileName).font(.system(size: 12)).lineLimit(1)
+                                Spacer()
+                                if let m = f.modified {
+                                    Text(m, format: .dateTime.month(.abbreviated).day().hour().minute())
+                                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                                }
+                                Text(f.processed ? "已處理" : "未處理")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(f.processed ? AppTheme.Status.success : .secondary)
                             }
-                            Text(f.processed ? "已處理" : "未處理")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(f.processed ? AppTheme.Status.success : .secondary)
+                            .contentShape(Rectangle())
+                            .padding(.vertical, 3).padding(.horizontal, 8)
+                            .background((isSel ? AppTheme.Accent.primary.opacity(0.12) : AppTheme.Surface.control.opacity(0.5)),
+                                        in: RoundedRectangle(cornerRadius: 6))
                         }
-                        .padding(.vertical, 3).padding(.horizontal, 8)
-                        .background(AppTheme.Surface.control.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                        .buttonStyle(.plain)
                     }
+                    if !selectedFiles.isEmpty {
+                        HStack {
+                            Text("已選 \(selectedFiles.count) 檔").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { confirmReprocess = true } label: {
+                                Label("重新處理所選", systemImage: "arrow.triangle.2.circlepath").font(.system(size: 12, weight: .medium))
+                            }.controlSize(.small)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .confirmationDialog(reprocessPrompt, isPresented: $confirmReprocess, titleVisibility: .visible) {
+                    Button("重新處理") { reprocessSelected() }
+                    Button("取消", role: .cancel) {}
                 }
             }
         }
@@ -225,7 +253,26 @@ private struct RecorderDeviceCard: View {
         scanning = true
         connected = RecorderImportService.shared.isDeviceConnected(device)
         files = RecorderImportService.shared.deviceFiles(for: device, context: modelContext)
+        selectedFiles = selectedFiles.intersection(Set(files?.map { $0.fileName } ?? []))
         scanning = false
+    }
+
+    private func toggleSelect(_ name: String) {
+        if selectedFiles.contains(name) { selectedFiles.remove(name) } else { selectedFiles.insert(name) }
+    }
+
+    /// Confirmation copy — warns that already-processed picks are duplicated with a serial suffix.
+    private var reprocessPrompt: String {
+        let processedCount = (files ?? []).filter { selectedFiles.contains($0.fileName) && $0.processed }.count
+        if processedCount > 0 {
+            return "重新處理所選 \(selectedFiles.count) 檔？其中 \(processedCount) 個已處理，會另存為加流水號的副本（不覆蓋原紀錄、不刪除裝置檔）。"
+        }
+        return "重新處理所選 \(selectedFiles.count) 檔？"
+    }
+
+    private func reprocessSelected() {
+        RecorderImportService.shared.reprocess(fileNames: selectedFiles, device: device)
+        selectedFiles = []
     }
 
     private func pill(_ text: String, on: Bool) -> some View {

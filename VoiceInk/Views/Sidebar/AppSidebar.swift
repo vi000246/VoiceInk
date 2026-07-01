@@ -79,6 +79,7 @@ private extension ViewType {
         case .recorders: return "Recorder Devices"
         case .categories: return "Recorder Prompts"
         case .recorderLog: return "Recording Management"
+        case .templateGuide: return "Template Guide"
         case .models: return "Transcription & AI Models"
         case .transcribeAudio: return "Manual Transcribe"
         case .audio: return "Audio Devices"
@@ -91,7 +92,7 @@ private extension ViewType {
         (nil, [.dashboard]),
         ("Voice Input", [.modes, .prompts, .history]),
         ("Recorder → Obsidian", [.recorders, .recorderMode, .categories, .recorderLog]),
-        ("Shared & System", [.models, .systemTemplate, .dictionary, .transcribeAudio, .audio, .settings, .license]),
+        ("Shared & System", [.models, .systemTemplate, .templateGuide, .dictionary, .transcribeAudio, .audio, .settings, .license]),
     ]
 
     static func assertSidebarItemsCoverAllCases() {
@@ -116,6 +117,7 @@ private extension ViewType {
         case .categories: return "folder.fill.badge.gearshape"
         case .recorderLog: return "list.bullet.rectangle.fill"
         case .systemTemplate: return "doc.badge.gearshape"
+        case .templateGuide: return "graduationcap.fill"
         case .settings: return "gearshape.fill"
         case .license: return "checkmark.seal.fill"
         }
@@ -148,6 +150,8 @@ private extension ViewType {
         case .recorderLog:
             return .init(background: AppTheme.Sidebar.audio)
         case .systemTemplate:
+            return .init(background: AppTheme.Sidebar.fallback)
+        case .templateGuide:
             return .init(background: AppTheme.Sidebar.fallback)
         case .settings:
             return .init(background: AppTheme.Sidebar.fallback)

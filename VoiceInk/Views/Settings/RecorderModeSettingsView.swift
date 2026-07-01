@@ -24,16 +24,26 @@ struct RecorderModeSettingsView: View {
                         }
                     }
                     TextField("語言代碼（留空＝自動，例如 zh、en）", text: languageBinding)
-                    Toggle("文字格式化（自動分段）", isOn: formattingBinding)
+                    Toggle(isOn: formattingBinding) {
+                        HStack(spacing: 4) {
+                            Text("段落分隔（自動分段）")
+                            InfoTip("開啟後用智慧格式化自動判斷斷句，把大段文字分成段落。與語音模式的「Paragraph breaks」是同一套機制。")
+                        }
+                    }
                 }
                 Section("分析") {
                     Picker("預設分析模型", selection: analysisBinding) {
-                        Text("跟隨目前 Mode").tag(RecorderModelChoice?.none)
+                        Text("自動（第一個可用）").tag(RecorderModelChoice?.none)
                         ForEach(recorderModelChoices(aiService), id: \.self) { c in
                             Text(c.label).tag(RecorderModelChoice?.some(c))
                         }
                     }
                     Text("套範本分析用的模型;個別類別可在「錄音筆範本」各自覆寫。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Stepper(value: timeoutBinding, in: 15...600, step: 15) {
+                        Text("分析逾時：\(store.recorderAnalysisTimeoutSeconds) 秒")
+                    }
+                    Text("分析請求的等待上限。用較慢的本地模型（如 32B）產長筆記時，語音預設的 7 秒會逾時，調高即可。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("分類") {
@@ -67,6 +77,9 @@ struct RecorderModeSettingsView: View {
     }
     private var formattingBinding: Binding<Bool> {
         Binding(get: { store.recorderTextFormattingEnabled }, set: { store.setRecorderTextFormatting($0) })
+    }
+    private var timeoutBinding: Binding<Int> {
+        Binding(get: { store.recorderAnalysisTimeoutSeconds }, set: { store.setRecorderAnalysisTimeout($0) })
     }
     private var autoExportBinding: Binding<Bool> {
         Binding(get: { store.recorderAutoExportEnabled }, set: { store.setRecorderAutoExport($0) })

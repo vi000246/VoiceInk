@@ -70,6 +70,68 @@ final class RecorderImportService: NSObject, ObservableObject {
         AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
     }
 
+    /// Manually (re)process the given device files, regardless of prior import status.
+    /// - Never-processed files import normally (real content fingerprint → future dedup works).
+    /// - Already-processed files are duplicated as a NEW record: a synthetic unique fingerprint
+    ///   bypasses content dedup, and the ledger/display name gets a serial suffix `name (2).ext`.
+    /// Copies only into app storage (never writes to the device) and never deletes the original,
+    /// even if the device opts into delete-after-import.
+    func reprocess(fileNames: Set<String>, device: RecorderDevice) {
+        guard let modelContext, let engine else { logger.error("Import service not configured"); return }
+        guard !fileNames.isEmpty else { return }
+        guard let folder = resolveSourceFolder(device) else {
+            NotificationManager.shared.showNotification(title: "錄音筆來源資料夾無法存取，請重新授權", type: .warning, duration: 4)
+            return
+        }
+        let accessing = folder.startAccessingSecurityScopedResource()
+        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+
+        let urls = ((try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
+            .filter { SupportedMedia.isSupported(url: $0) && fileNames.contains($0.lastPathComponent) }
+
+        var enqueued = 0
+        for url in urls {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let alreadyProcessed = ImportLedger.shared.hasQuickMatch(
+                fileName: url.lastPathComponent, byteSize: size, in: modelContext)
+
+            let fingerprint: String
+            let displayName: String
+            if alreadyProcessed {
+                fingerprint = "reprocess-\(UUID().uuidString)"   // unique → bypass content dedup
+                displayName = serialNumberedName(base: url.lastPathComponent, in: modelContext)
+            } else if let real = try? ImportLedger.shared.contentFingerprint(for: url) {
+                fingerprint = real
+                displayName = url.lastPathComponent
+            } else { continue }
+
+            if inFlight.contains(fingerprint) { continue }
+            guard let copied = copyIntoAppStorage(url) else { continue }
+            inFlight.insert(fingerprint)
+            // NOTE: deliberately not setting originalURLs → reprocess never deletes the device original.
+            pendingMeta[fingerprint] = (displayName, size)
+            AudioTranscriptionManager.shared.addToQueue(urls: [copied],
+                origin: .recorderImport(deviceId: device.id, fingerprint: fingerprint))
+            enqueued += 1
+        }
+        guard enqueued > 0 else { return }
+        let recorderMode = RecorderTranscriptionConfig.current()
+        AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
+        NotificationManager.shared.showNotification(title: "重新處理 \(enqueued) 個檔案", type: .info, duration: 3)
+    }
+
+    /// Next unused `stem (n).ext` (n≥2) so a reprocessed duplicate doesn't collide in the ledger.
+    private func serialNumberedName(base: String, in context: ModelContext) -> String {
+        let ns = base as NSString
+        let ext = ns.pathExtension
+        let stem = ns.deletingPathExtension
+        func candidate(_ i: Int) -> String { ext.isEmpty ? "\(stem) (\(i))" : "\(stem) (\(i)).\(ext)" }
+        var n = 2
+        while ImportLedger.shared.hasFileName(candidate(n), in: context) { n += 1 }
+        return candidate(n)
+    }
+
     /// Called by the post-processor once an item finishes. Deletes the on-device original only when
     /// the device opts into `deleteAfterImport` AND every stage (import + transcribe + export) succeeded.
     func finalizeImport(fingerprint: String, device: RecorderDevice, exported: Bool) {

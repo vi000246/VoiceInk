@@ -34,6 +34,8 @@ final class Transcription {
     var importFingerprint: String?
     var recorderCategoryName: String?
     var recorderCategoryId: UUID?
+    /// Recorder display title: `yyyyMMdd HHmm <≤10-char AI summary>`, generated at classification.
+    var recorderTitle: String?
     var classificationConfidence: Double?
     var exportedFilePath: String?
     var speakerLabeled: Bool = false

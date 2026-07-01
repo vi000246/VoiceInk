@@ -12,7 +12,7 @@ final class RecorderConfigStore: ObservableObject {
     /// Global Obsidian vault root (single vault for all devices; per-category sub-folders live under it).
     @Published private(set) var vaultRootBookmark: Data?
     /// Default analysis model (provider + model) used when a category doesn't override it.
-    /// nil → fall back to the active Mode's AI model.
+    /// nil → auto: the first connected AI provider (never follows the voice Mode).
     @Published private(set) var defaultAIProviderName: String?
     @Published private(set) var defaultAIModelName: String?
     // MARK: Recorder Mode (recorder's own transcription settings, independent of voice Modes)
@@ -23,6 +23,9 @@ final class RecorderConfigStore: ObservableObject {
     /// Classifier model (e.g. a cheap local Ollama). nil → use the default analysis model.
     @Published private(set) var recorderClassifierProviderName: String?
     @Published private(set) var recorderClassifierModelName: String?
+    /// Timeout (seconds) for a recorder analysis call. Analysis output is long and local models are
+    /// slow, so this is far higher than the voice-dictation default (7s). User-adjustable.
+    @Published private(set) var recorderAnalysisTimeoutSeconds: Int = 120
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let recorderPromptsKey = "recorderCategoryPromptsV1"
@@ -35,6 +38,7 @@ final class RecorderConfigStore: ObservableObject {
     private let recAutoExportKey = "recorderAutoExportV1"
     private let recClassifierProviderKey = "recorderClassifierProviderV1"
     private let recClassifierModelKey = "recorderClassifierModelV1"
+    private let recAnalysisTimeoutKey = "recorderAnalysisTimeoutV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -60,6 +64,15 @@ final class RecorderConfigStore: ObservableObject {
         recorderAutoExportEnabled = UserDefaults.standard.bool(forKey: recAutoExportKey)
         recorderClassifierProviderName = UserDefaults.standard.string(forKey: recClassifierProviderKey)
         recorderClassifierModelName = UserDefaults.standard.string(forKey: recClassifierModelKey)
+        let storedTimeout = UserDefaults.standard.integer(forKey: recAnalysisTimeoutKey)
+        recorderAnalysisTimeoutSeconds = storedTimeout > 0 ? storedTimeout : 120
+    }
+
+    /// Clamp to a sane range so a stray value can't disable the timeout or make it uselessly short.
+    func setRecorderAnalysisTimeout(_ seconds: Int) {
+        let clamped = min(600, max(15, seconds))
+        recorderAnalysisTimeoutSeconds = clamped
+        UserDefaults.standard.set(clamped, forKey: recAnalysisTimeoutKey)
     }
 
     func setClassifierModel(provider: String?, model: String?) {
@@ -94,7 +107,7 @@ final class RecorderConfigStore: ObservableObject {
         else { UserDefaults.standard.removeObject(forKey: vaultRootKey) }
     }
 
-    /// Set (or clear) the default analysis model. Pass nil/nil to follow the active Mode.
+    /// Set (or clear) the default analysis model. Pass nil/nil for auto (first connected provider).
     func setDefaultModel(provider: String?, model: String?) {
         defaultAIProviderName = provider
         defaultAIModelName = model

@@ -15,6 +15,7 @@ enum ViewType: String, CaseIterable, Identifiable {
     case categories = "Categories"
     case recorderLog = "Recorder Log"
     case systemTemplate = "System Template"
+    case templateGuide = "Template Guide"
     case settings = "Settings"
     case license = "VoiceInk Pro"
 
@@ -98,6 +99,8 @@ struct ContentView: View {
             RecorderHistoryView()
         case .systemTemplate:
             SystemTemplateSettingsView()
+        case .templateGuide:
+            TemplateWritingGuideView()
         case .settings:
             SettingsView()
         case .license:

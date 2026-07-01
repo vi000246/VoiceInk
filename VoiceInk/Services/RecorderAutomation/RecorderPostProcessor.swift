@@ -18,11 +18,11 @@ final class RecorderPostProcessor {
         return stored > 0 ? stored : 0.5
     }
 
-    /// Resolve the analysis model: category override → store default → active Mode (baseConfig).
-    /// Only honours a stored provider that is currently connected.
+    /// Resolve the analysis model: category override → Recorder Mode default → first connected
+    /// provider (auto). Fully independent of the voice Modes — the recorder never follows the
+    /// active Mode's AI model. Only honours a stored provider that is currently connected.
     private func resolvedAnalysisModel(
-        categoryProvider: String?, categoryModel: String?,
-        baseConfig: EnhancementRuntimeConfiguration, aiService: AIService
+        categoryProvider: String?, categoryModel: String?, aiService: AIService
     ) -> (provider: AIProvider, modelName: String?) {
         let store = RecorderConfigStore.shared
         let providerName = categoryProvider ?? store.defaultAIProviderName
@@ -31,21 +31,30 @@ final class RecorderPostProcessor {
            aiService.connectedProviders.contains(p) {
             return (p, modelName)
         }
-        let fallback = baseConfig.provider ?? aiService.connectedProviders.first ?? .anthropic
-        return (fallback, baseConfig.modelName)
+        // Auto: first connected provider, its default model (nil → provider.defaultModel downstream).
+        let fallback = aiService.connectedProviders.first ?? .anthropic
+        return (fallback, nil)
     }
 
     /// Classifier model: dedicated classifier override (e.g. local Ollama) → default analysis model.
-    private func resolvedClassifierModel(
-        baseConfig: EnhancementRuntimeConfiguration, aiService: AIService
-    ) -> (provider: AIProvider, modelName: String?) {
+    private func resolvedClassifierModel(aiService: AIService) -> (provider: AIProvider, modelName: String?) {
         let store = RecorderConfigStore.shared
         if let name = store.recorderClassifierProviderName, let p = AIProvider(rawValue: name),
            aiService.connectedProviders.contains(p) {
             return (p, store.recorderClassifierModelName)
         }
-        return resolvedAnalysisModel(categoryProvider: nil, categoryModel: nil,
-                                     baseConfig: baseConfig, aiService: aiService)
+        return resolvedAnalysisModel(categoryProvider: nil, categoryModel: nil, aiService: aiService)
+    }
+
+    /// A recorder-owned enhancement configuration — no voice-Mode context (clipboard/selection/
+    /// screen capture), no active Mode. Runs a category's analysis prompt with the recorder model.
+    private func recorderEnhancementConfig(
+        prompt: CustomPrompt?, model: (provider: AIProvider, modelName: String?)
+    ) -> EnhancementRuntimeConfiguration {
+        EnhancementRuntimeConfiguration(
+            mode: nil, isEnabled: true, prompt: prompt,
+            provider: model.provider, modelName: model.modelName,
+            useClipboardContext: false, useSelectedTextContext: false, useScreenCaptureContext: false)
     }
 
     /// One lightweight AI call → a ≤10-char content title for the export file name. nil on failure.
@@ -102,13 +111,11 @@ final class RecorderPostProcessor {
         enhancementService: AIEnhancementService, aiService: AIService
     ) async {
         let store = RecorderConfigStore.shared
-        let baseConfig = ModeRuntimeResolver.currentEnhancementConfiguration(
-            enhancementService: enhancementService, aiService: aiService)
-        guard baseConfig.provider != nil else {
-            logger.notice("No AI provider configured — leaving raw recorder transcript unclassified")
+        guard !aiService.connectedProviders.isEmpty else {
+            logger.notice("No AI provider connected — leaving raw recorder transcript unclassified")
             return
         }
-        let classifyModel = resolvedClassifierModel(baseConfig: baseConfig, aiService: aiService)
+        let classifyModel = resolvedClassifierModel(aiService: aiService)
         let result = await TranscriptClassificationService.shared.classify(
             rawText, categories: store.categories, aiService: aiService,
             provider: classifyModel.provider, modelName: classifyModel.modelName)
@@ -118,7 +125,26 @@ final class RecorderPostProcessor {
         transcription.recorderCategoryId = decision.category.id
         transcription.recorderCategoryName = decision.category.name
         transcription.classificationConfidence = result.confidence
+        transcription.recorderTitle = await makeRecorderTitle(
+            from: rawText, model: classifyModel, aiService: aiService, timestamp: transcription.timestamp)
         try? modelContext.save()
+    }
+
+    private static let titleDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd HHmm"; return f
+    }()
+
+    /// Recorder display title = `yyyyMMdd HHmm <≤10-char AI summary>`. Falls back to a raw excerpt
+    /// if the summary call fails, so the title always at least carries the date.
+    private func makeRecorderTitle(
+        from text: String, model: (provider: AIProvider, modelName: String?),
+        aiService: AIService, timestamp: Date
+    ) async -> String {
+        let date = Self.titleDateFormatter.string(from: timestamp)
+        let summary = await generateShortTitle(
+            from: text, provider: model.provider, modelName: model.modelName, aiService: aiService)
+        let tail = summary ?? String(text.prefix(10)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return tail.isEmpty ? date : "\(date) \(tail)"
     }
 
     /// Apply a category's template to the raw transcript → `enhancedText` (raw `text` untouched).
@@ -128,12 +154,14 @@ final class RecorderPostProcessor {
         transcription: Transcription, category: RecorderCategory, modelContext: ModelContext,
         enhancementService: AIEnhancementService, aiService: AIService
     ) async -> Bool {
-        let baseConfig = ModeRuntimeResolver.currentEnhancementConfiguration(
-            enhancementService: enhancementService, aiService: aiService)
-        guard baseConfig.provider != nil else { return false }
+        guard !aiService.connectedProviders.isEmpty else {
+            NotificationManager.shared.showNotification(
+                title: "套用失敗：尚未連接任何 AI provider", type: .warning, duration: 4)
+            return false
+        }
         let model = resolvedAnalysisModel(categoryProvider: category.aiProviderName,
                                           categoryModel: category.aiModelName,
-                                          baseConfig: baseConfig, aiService: aiService)
+                                          aiService: aiService)
         let analysisInput = await LongTranscriptSummarizer.shared.condense(
             transcription.text, aiService: aiService, provider: model.provider, modelName: model.modelName)
         transcription.recorderCategoryId = category.id
@@ -147,12 +175,17 @@ final class RecorderPostProcessor {
         do {
             let (enhanced, _, _) = try await enhancementService.enhance(
                 analysisInput,
-                configuration: baseConfig.replacing(prompt: prompt, provider: model.provider, modelName: model.modelName))
+                configuration: recorderEnhancementConfig(prompt: prompt, model: model),
+                // analysis output is long + local models are slow; the 7s voice default times out.
+                timeoutOverride: TimeInterval(RecorderConfigStore.shared.recorderAnalysisTimeoutSeconds))
             transcription.enhancedText = enhanced
             try? modelContext.save()
             return true
         } catch {
             logger.error("Apply template failed: \(error, privacy: .public)")
+            NotificationManager.shared.showNotification(
+                title: "套用失敗（\(model.provider.rawValue) · \(model.modelName ?? model.provider.defaultModel)）：\(error.localizedDescription)",
+                type: .error, duration: 6)
             return false
         }
     }
@@ -174,11 +207,9 @@ final class RecorderPostProcessor {
             try? FileManager.default.removeItem(at: URL(fileURLWithPath: old))
             transcription.exportedFilePath = nil
         }
-        let baseConfig = ModeRuntimeResolver.currentEnhancementConfiguration(
-            enhancementService: enhancementService, aiService: aiService)
         let model = resolvedAnalysisModel(categoryProvider: category.aiProviderName,
                                           categoryModel: category.aiModelName,
-                                          baseConfig: baseConfig, aiService: aiService)
+                                          aiService: aiService)
         let title = await generateShortTitle(from: analysis, provider: model.provider,
                                              modelName: model.modelName, aiService: aiService)
         let deviceName = transcription.recorderSourceDeviceId.flatMap { store.device(byId: $0)?.displayName }

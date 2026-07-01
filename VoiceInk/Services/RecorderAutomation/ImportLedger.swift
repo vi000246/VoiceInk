@@ -24,6 +24,13 @@ final class ImportLedger {
         return ((try? context.fetch(d))?.isEmpty == false)
     }
 
+    /// Any ledger row with this exact fileName (used to pick a unique serial suffix on reprocess).
+    func hasFileName(_ fileName: String, in context: ModelContext) -> Bool {
+        var d = FetchDescriptor<ImportLedgerEntry>(predicate: #Predicate { $0.fileName == fileName })
+        d.fetchLimit = 1
+        return ((try? context.fetch(d))?.isEmpty == false)
+    }
+
     /// Quick-path: any ledger row with same (fileName, byteSize)?
     func hasQuickMatch(fileName: String, byteSize: Int, in context: ModelContext) -> Bool {
         var d = FetchDescriptor<ImportLedgerEntry>(

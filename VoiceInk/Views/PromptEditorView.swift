@@ -18,9 +18,13 @@ struct PromptEditorView: View {
     }
     
     let mode: Mode
-    /// Voice prompts may wrap their text in the system template (toggle shown). Recorder prompts
-    /// always run raw (analysis tasks), so the toggle + starter-template menu are hidden.
+    /// Show the "Use System Template" toggle (and honour a prompt's stored value when editing).
     var allowsSystemTemplateToggle: Bool = true
+    /// Initial toggle state for NEW prompts. Voice prompts default on; recorder analysis prompts
+    /// default off (raw), but the toggle still lets the user opt in.
+    var defaultUseSystemTemplate: Bool = true
+    /// Show the voice starter-template menu (add mode). Hidden for recorder analysis prompts.
+    var showsStarterTemplateMenu: Bool = true
     @EnvironmentObject private var enhancementService: AIEnhancementService
     let onDismiss: () -> Void
     let onSave: (CustomPrompt) -> Void
@@ -53,12 +57,16 @@ struct PromptEditorView: View {
     init(
         mode: Mode,
         allowsSystemTemplateToggle: Bool = true,
+        defaultUseSystemTemplate: Bool = true,
+        showsStarterTemplateMenu: Bool = true,
         onDismiss: @escaping () -> Void,
         onSave: @escaping (CustomPrompt) -> Void,
         onDelete: ((CustomPrompt) -> Void)? = nil
     ) {
         self.mode = mode
         self.allowsSystemTemplateToggle = allowsSystemTemplateToggle
+        self.defaultUseSystemTemplate = defaultUseSystemTemplate
+        self.showsStarterTemplateMenu = showsStarterTemplateMenu
         self.onDismiss = onDismiss
         self.onSave = onSave
         self.onDelete = onDelete
@@ -66,7 +74,7 @@ struct PromptEditorView: View {
         case .add:
             _title = State(initialValue: "")
             _promptText = State(initialValue: "")
-            _useSystemInstructions = State(initialValue: allowsSystemTemplateToggle)
+            _useSystemInstructions = State(initialValue: defaultUseSystemTemplate)
         case .edit(let prompt):
             _title = State(initialValue: prompt.title)
             _promptText = State(initialValue: prompt.promptText)
@@ -84,7 +92,7 @@ struct PromptEditorView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if case .add = mode, allowsSystemTemplateToggle {
+                    if case .add = mode, showsStarterTemplateMenu {
                         templateMenu
                     }
 
