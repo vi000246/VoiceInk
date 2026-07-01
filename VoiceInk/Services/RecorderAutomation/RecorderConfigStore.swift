@@ -20,6 +20,9 @@ final class RecorderConfigStore: ObservableObject {
     @Published private(set) var recorderLanguage: String?                 // nil = auto
     @Published private(set) var recorderTextFormattingEnabled: Bool = false
     @Published private(set) var recorderAutoExportEnabled: Bool = false   // default manual
+    /// Append the full raw transcript to the exported Obsidian note (below a divider). Default off —
+    /// the note carries only the analysis.
+    @Published private(set) var recorderExportIncludeRawTranscript: Bool = false
     /// Classifier model (e.g. a cheap local Ollama). nil → use the default analysis model.
     @Published private(set) var recorderClassifierProviderName: String?
     @Published private(set) var recorderClassifierModelName: String?
@@ -36,6 +39,7 @@ final class RecorderConfigStore: ObservableObject {
     private let recLanguageKey = "recorderLanguageV1"
     private let recFormattingKey = "recorderTextFormattingV1"
     private let recAutoExportKey = "recorderAutoExportV1"
+    private let recExportRawKey = "recorderExportIncludeRawV1"
     private let recClassifierProviderKey = "recorderClassifierProviderV1"
     private let recClassifierModelKey = "recorderClassifierModelV1"
     private let recAnalysisTimeoutKey = "recorderAnalysisTimeoutV1"
@@ -62,6 +66,7 @@ final class RecorderConfigStore: ObservableObject {
         recorderLanguage = UserDefaults.standard.string(forKey: recLanguageKey)
         recorderTextFormattingEnabled = UserDefaults.standard.bool(forKey: recFormattingKey)
         recorderAutoExportEnabled = UserDefaults.standard.bool(forKey: recAutoExportKey)
+        recorderExportIncludeRawTranscript = UserDefaults.standard.bool(forKey: recExportRawKey)
         recorderClassifierProviderName = UserDefaults.standard.string(forKey: recClassifierProviderKey)
         recorderClassifierModelName = UserDefaults.standard.string(forKey: recClassifierModelKey)
         let storedTimeout = UserDefaults.standard.integer(forKey: recAnalysisTimeoutKey)
@@ -98,6 +103,9 @@ final class RecorderConfigStore: ObservableObject {
     }
     func setRecorderAutoExport(_ on: Bool) {
         recorderAutoExportEnabled = on; UserDefaults.standard.set(on, forKey: recAutoExportKey)
+    }
+    func setRecorderExportIncludeRawTranscript(_ on: Bool) {
+        recorderExportIncludeRawTranscript = on; UserDefaults.standard.set(on, forKey: recExportRawKey)
     }
 
     /// Set (or clear) the single global vault root bookmark.
@@ -159,8 +167,12 @@ final class RecorderConfigStore: ObservableObject {
         if let i = devices.firstIndex(where: { $0.id == device.id }) { devices[i] = device }
         else { devices.append(device) }
         saveDevices()
+        RecorderFolderWatcher.shared.sync()
     }
-    func remove(_ id: UUID) { devices.removeAll { $0.id == id }; saveDevices() }
+    func remove(_ id: UUID) {
+        devices.removeAll { $0.id == id }; saveDevices()
+        RecorderFolderWatcher.shared.sync()
+    }
 
     /// First auto-import-enabled device whose match string is contained in the mounted volume name.
     func device(forVolumeName name: String) -> RecorderDevice? {

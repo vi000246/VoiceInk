@@ -26,31 +26,51 @@ final class RecorderImportService: NSObject, ObservableObject {
     }
 
     /// Pure decision: supported + not-yet-imported (ledger) + not in-flight.
-    func newImportableFiles(in folder: URL, context: ModelContext) -> [ImportCandidate] {
+    /// - `minimumStableAge`: when > 0 (watched-folder path), skip files modified within that window —
+    ///   they may still be copying in — and report them as `deferredCount` so the caller can re-check.
+    ///   0 (mount path) keeps the original behaviour: device files are already complete on mount.
+    func newImportableFiles(in folder: URL, context: ModelContext,
+                            minimumStableAge: TimeInterval = 0) -> (candidates: [ImportCandidate], deferredCount: Int) {
         let urls = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
+            at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles])) ?? []
         var out: [ImportCandidate] = []
+        var deferred = 0
+        let now = Date()
         for url in urls where SupportedMedia.isSupported(url: url) {
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = rv?.fileSize ?? 0
+            if minimumStableAge > 0 {
+                // Cheap pre-skip so a settling but already-imported file doesn't force endless re-checks.
+                if ImportLedger.shared.hasQuickMatch(fileName: url.lastPathComponent, byteSize: size, in: context) { continue }
+                if let mod = rv?.contentModificationDate, now.timeIntervalSince(mod) < minimumStableAge {
+                    deferred += 1; continue
+                }
+            }
             guard let fp = try? ImportLedger.shared.contentFingerprint(for: url) else { continue }
             if inFlight.contains(fp) { continue }
             if ImportLedger.shared.isImported(fingerprint: fp, in: context) { continue }
             out.append(ImportCandidate(url: url, fingerprint: fp, fileName: url.lastPathComponent, byteSize: size))
         }
-        return out
+        return (out, deferred)
     }
 
-    /// Triggered by the monitor when a configured device mounts.
-    func handleMount(device: RecorderDevice) {
+    /// Import any new files sitting in the device's source folder. Triggered by the mount monitor
+    /// (`.volume`) or the folder watcher (`.folder`). Copies into app storage, never mutates the source
+    /// until a successful delete-after-import.
+    func importNewFiles(device: RecorderDevice) {
         guard let modelContext, let engine else { logger.error("Import service not configured"); return }
         guard let folder = resolveSourceFolder(device) else {
-            NotificationManager.shared.showNotification(title: "錄音筆來源資料夾無法存取，請重新授權", type: .warning, duration: 4)
+            NotificationManager.shared.showNotification(title: "錄音來源資料夾無法存取，請重新授權", type: .warning, duration: 4)
             return
         }
         let accessing = folder.startAccessingSecurityScopedResource()
         defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
 
-        let candidates = newImportableFiles(in: folder, context: modelContext)
+        // Watched folders may hold files mid-copy; give them a few seconds to settle, then re-check.
+        let stableAge: TimeInterval = device.kind == .folder ? 4 : 0
+        let (candidates, deferred) = newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
+        if deferred > 0 { RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id) }
         guard !candidates.isEmpty else { return }
 
         var enqueued: [URL] = []

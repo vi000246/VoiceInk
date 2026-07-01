@@ -14,13 +14,13 @@ final class RecorderImportServiceTests: XCTestCase {
                                    configurations: ModelConfiguration(isStoredInMemoryOnly: true)))
 
         let first = RecorderImportService.shared.newImportableFiles(in: dir, context: ctx)
-        XCTAssertEqual(first.map { $0.url.lastPathComponent }, ["a.wav"]) // txt filtered out
+        XCTAssertEqual(first.candidates.map { $0.url.lastPathComponent }, ["a.wav"]) // txt filtered out
 
         // Simulate it was imported → ledger record → no longer returned
         let fp = try ImportLedger.shared.contentFingerprint(for: wav)
         ImportLedger.shared.record(fingerprint: fp, fileName: "a.wav", byteSize: 3,
                                    sourceDeviceId: nil, transcriptionId: nil, in: ctx)
         let second = RecorderImportService.shared.newImportableFiles(in: dir, context: ctx)
-        XCTAssertTrue(second.isEmpty)
+        XCTAssertTrue(second.candidates.isEmpty)
     }
 }

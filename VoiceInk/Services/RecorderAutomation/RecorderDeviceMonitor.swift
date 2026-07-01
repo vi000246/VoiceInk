@@ -32,6 +32,6 @@ final class RecorderDeviceMonitor: NSObject {
             ?? volumeURL.lastPathComponent
         guard let device = RecorderConfigStore.shared.device(forVolumeName: name) else { return }
         logger.notice("Recorder mounted: \(name, privacy: .public)")
-        RecorderImportService.shared.handleMount(device: device)
+        RecorderImportService.shared.importNewFiles(device: device)
     }
 }

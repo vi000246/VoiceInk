@@ -17,10 +17,10 @@ struct RecordersSettingsView: View {
         VStack(spacing: 0) {
             AppScreenHeader(
                 title: "Recorder Devices",
-                infoMessage: "插入已設定的錄音筆即自動匯入、轉錄、分類，並輸出到 Obsidian Vault。",
+                infoMessage: "插入已設定的錄音筆、或監看一般資料夾，偵測到新錄音即自動匯入、轉錄、分類，並輸出到 Obsidian Vault。",
                 infoURL: nil
             ) {
-                AppIconButton(systemName: "plus.circle.fill", help: "新增錄音筆") { editTarget = .add }
+                AppIconButton(systemName: "plus.circle.fill", help: "新增錄音來源") { editTarget = .add }
             }
 
             ScrollView {
@@ -55,8 +55,8 @@ struct RecordersSettingsView: View {
         VStack(spacing: 10) {
             Image(systemName: "recordingtape")
                 .font(.system(size: 40)).foregroundStyle(.secondary.opacity(0.6))
-            Text("尚未設定錄音筆").font(.system(size: 16, weight: .medium))
-            Text("插入錄音筆後點右上「+」新增，選擇裝置上存放錄音的資料夾。")
+            Text("尚未設定錄音來源").font(.system(size: 16, weight: .medium))
+            Text("點右上「+」新增：錄音筆裝置（插入時比對磁碟名稱），或一般資料夾（持續監看新錄音檔）。")
                 .font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 40)
@@ -131,20 +131,21 @@ private struct RecorderDeviceCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "recordingtape")
+                Image(systemName: device.kind == .folder ? "folder.fill" : "recordingtape")
                     .font(.system(size: 18)).foregroundStyle(.white)
                     .frame(width: 36, height: 36)
                     .background(AppTheme.Sidebar.fallback, in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text(device.displayName.isEmpty ? "未命名裝置" : device.displayName)
+                        Text(device.displayName.isEmpty ? "未命名來源" : device.displayName)
                             .font(.system(size: 14, weight: .semibold))
                         connectionDot
                     }
-                    Text("符合磁碟名稱：\(device.volumeNameMatch)")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(sourceSubtitle)
+                        .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     HStack(spacing: 6) {
-                        pill(device.autoImportEnabled ? "自動匯入" : "已停用", on: device.autoImportEnabled)
+                        pill(device.autoImportEnabled ? (device.kind == .folder ? "監看中" : "自動匯入") : "已停用",
+                             on: device.autoImportEnabled)
                         if device.deleteAfterImport { pill("匯入後刪除", on: false) }
                     }
                 }
@@ -236,10 +237,20 @@ private struct RecorderDeviceCard: View {
         return parts.isEmpty ? nil : parts.joined(separator: "・")
     }
 
+    /// Subtitle: the volume-name match (removable device) or the watched folder path (plain folder).
+    private var sourceSubtitle: String {
+        switch device.kind {
+        case .volume: return "符合磁碟名稱：\(device.volumeNameMatch)"
+        case .folder: return "監看資料夾：\(device.resolveSourceFolder()?.path ?? "無法解析")"
+        }
+    }
+
     @ViewBuilder private var connectionDot: some View {
         HStack(spacing: 3) {
             Circle().fill(connected ? AppTheme.Status.success : Color.secondary.opacity(0.5)).frame(width: 7, height: 7)
-            Text(connected ? "已連接" : "未連接").font(.system(size: 10)).foregroundStyle(.secondary)
+            Text(connected ? (device.kind == .folder ? "可存取" : "已連接")
+                           : (device.kind == .folder ? "無法存取" : "未連接"))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 
@@ -357,6 +368,7 @@ private struct RecorderDeviceEditorPanel: View {
     let onDismiss: () -> Void
 
     @State private var displayName: String
+    @State private var kind: RecorderDevice.Kind
     @State private var volumeNameMatch: String
     @State private var sourceFolderBookmark: Data?
     @State private var sourceFolderName: String?
@@ -374,6 +386,7 @@ private struct RecorderDeviceEditorPanel: View {
         case .add:
             existingId = nil; createdAt = Date()
             _displayName = State(initialValue: "")
+            _kind = State(initialValue: .volume)
             _volumeNameMatch = State(initialValue: "")
             _sourceFolderBookmark = State(initialValue: nil)
             _sourceFolderName = State(initialValue: nil)
@@ -382,30 +395,41 @@ private struct RecorderDeviceEditorPanel: View {
         case .edit(let d):
             existingId = d.id; createdAt = d.createdAt
             _displayName = State(initialValue: d.displayName)
+            _kind = State(initialValue: d.kind)
             _volumeNameMatch = State(initialValue: d.volumeNameMatch)
             _sourceFolderBookmark = State(initialValue: d.sourceFolderBookmark)
-            var stale = false
-            let url = try? URL(resolvingBookmarkData: d.sourceFolderBookmark, options: [.withSecurityScope],
-                               relativeTo: nil, bookmarkDataIsStale: &stale)
-            _sourceFolderName = State(initialValue: url?.lastPathComponent)
+            _sourceFolderName = State(initialValue: d.resolveSourceFolder()?.lastPathComponent)
             _autoImportEnabled = State(initialValue: d.autoImportEnabled)
             _deleteAfterImport = State(initialValue: d.deleteAfterImport)
         }
     }
 
     private var canSave: Bool {
-        sourceFolderBookmark != nil && !volumeNameMatch.trimmingCharacters(in: .whitespaces).isEmpty
+        guard sourceFolderBookmark != nil else { return false }
+        if kind == .volume { return !volumeNameMatch.trimmingCharacters(in: .whitespaces).isEmpty }
+        return true
     }
+
+    private var isFolder: Bool { kind == .folder }
 
     var body: some View {
         VStack(spacing: 0) {
-            AppPanelHeader(title: target.id == "add" ? "新增錄音筆" : "編輯錄音筆", onClose: onDismiss)
+            AppPanelHeader(title: target.id == "add" ? "新增錄音來源" : "編輯錄音來源", onClose: onDismiss)
             Form {
+                Section("類型") {
+                    Picker("來源類型", selection: $kind) {
+                        Text("錄音筆裝置（插入時比對磁碟名稱）").tag(RecorderDevice.Kind.volume)
+                        Text("一般資料夾（持續監看新檔案）").tag(RecorderDevice.Kind.folder)
+                    }
+                    .pickerStyle(.radioGroup)
+                }
                 Section("辨識") {
                     TextField("顯示名稱", text: $displayName)
-                    TextField("符合磁碟名稱（插入時比對，包含即符合）", text: $volumeNameMatch)
+                    if !isFolder {
+                        TextField("符合磁碟名稱（插入時比對，包含即符合）", text: $volumeNameMatch)
+                    }
                 }
-                Section("來源資料夾（裝置上存放錄音的位置）") {
+                Section(isFolder ? "監看資料夾（偵測到新錄音檔即自動匯入）" : "來源資料夾（裝置上存放錄音的位置）") {
                     HStack {
                         Text(sourceFolderName ?? "尚未選擇")
                             .foregroundStyle(sourceFolderName == nil ? .secondary : .primary)
@@ -414,8 +438,8 @@ private struct RecorderDeviceEditorPanel: View {
                     }
                 }
                 Section("自動化") {
-                    Toggle("插入即自動匯入", isOn: $autoImportEnabled)
-                    Toggle("匯入後刪除裝置原始檔（成功匯入＋轉錄＋輸出後才刪）", isOn: $deleteAfterImport)
+                    Toggle(isFolder ? "偵測到新檔案即自動匯入" : "插入即自動匯入", isOn: $autoImportEnabled)
+                    Toggle("匯入後刪除來源原始檔（成功匯入＋轉錄＋輸出後才刪）", isOn: $deleteAfterImport)
                 }
                 Section {
                     Button("儲存", action: save).disabled(!canSave)
@@ -434,7 +458,7 @@ private struct RecorderDeviceEditorPanel: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "選擇錄音筆上存放錄音的資料夾"
+        panel.message = isFolder ? "選擇要監看的資料夾" : "選擇錄音筆上存放錄音的資料夾"
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         guard let bookmark = try? folder.bookmarkData(options: [.withSecurityScope],
                                                       includingResourceValuesForKeys: nil, relativeTo: nil) else {
@@ -442,18 +466,21 @@ private struct RecorderDeviceEditorPanel: View {
         }
         sourceFolderBookmark = bookmark
         sourceFolderName = folder.lastPathComponent
-        // Auto-fill the volume / display name from the folder's volume when blank.
+        // Auto-fill names from the folder. For a removable device, match on its volume name;
+        // for a plain folder, there's no volume to match, so just seed the display name.
         let volumeName = (try? folder.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? folder.lastPathComponent
-        if volumeNameMatch.isEmpty { volumeNameMatch = volumeName }
-        if displayName.isEmpty { displayName = volumeName }
+        if !isFolder, volumeNameMatch.isEmpty { volumeNameMatch = volumeName }
+        if displayName.isEmpty { displayName = isFolder ? folder.lastPathComponent : volumeName }
     }
 
     private func save() {
         guard let bookmark = sourceFolderBookmark else { return }
+        let fallbackName = isFolder ? (sourceFolderName ?? "資料夾") : volumeNameMatch
         let device = RecorderDevice(
             id: existingId ?? UUID(),
-            displayName: displayName.isEmpty ? volumeNameMatch : displayName,
-            volumeNameMatch: volumeNameMatch,
+            displayName: displayName.isEmpty ? fallbackName : displayName,
+            kind: kind,
+            volumeNameMatch: isFolder ? "" : volumeNameMatch,
             sourceFolderBookmark: bookmark,
             autoImportEnabled: autoImportEnabled,
             deleteAfterImport: deleteAfterImport,

@@ -247,7 +247,8 @@ final class RecorderPostProcessor {
             transcriptionModel: transcription.transcriptionModelName,
             enhancementModel: transcription.aiEnhancementModelName,
             confidence: transcription.classificationConfidence)
-        let markdown = VaultExportService.shared.buildMarkdown(input)
+        let markdown = VaultExportService.shared.buildMarkdown(
+            input, includeRawTranscript: RecorderConfigStore.shared.recorderExportIncludeRawTranscript)
         let fileName = VaultExportService.shared.suggestedFileName(
             date: transcription.timestamp, categoryName: decision.category.name, title: title)
         do {

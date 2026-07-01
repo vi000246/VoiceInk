@@ -85,7 +85,7 @@ final class RecorderPipelineTests: XCTestCase {
     }
 
     // MARK: - VaultExportService
-    func testBuildMarkdownHasFrontmatterAndCollapsibleRaw() {
+    func testBuildMarkdownFrontmatterAndDefaultOmitsRaw() {
         let input = VaultExportService.ExportInput(
             analysis: "## 重點\n- A", rawTranscript: "line one\nline two",
             categoryName: "演講", deviceName: "IC RECORDER", date: Date(timeIntervalSince1970: 0),
@@ -94,9 +94,20 @@ final class RecorderPipelineTests: XCTestCase {
         XCTAssertTrue(md.hasPrefix("---\n"))
         XCTAssertTrue(md.contains("category: \"演講\""))
         XCTAssertTrue(md.contains("confidence: 0.91"))
-        XCTAssertTrue(md.contains("> [!note]- 原始逐字稿"))
-        XCTAssertTrue(md.contains("> line one"))
-        XCTAssertTrue(md.contains("> line two"))
+        // Default: analysis only, no raw transcript appended.
+        XCTAssertFalse(md.contains("原始逐字稿"))
+        XCTAssertFalse(md.contains("line one"))
+    }
+
+    func testBuildMarkdownAppendsRawTranscriptWhenEnabled() {
+        let input = VaultExportService.ExportInput(
+            analysis: "## 重點\n- A", rawTranscript: "line one\nline two",
+            categoryName: "演講", deviceName: "IC RECORDER", date: Date(timeIntervalSince1970: 0),
+            transcriptionModel: "whisper", enhancementModel: "claude", confidence: 0.91)
+        let md = VaultExportService.shared.buildMarkdown(input, includeRawTranscript: true)
+        // Raw transcript appended below a horizontal-rule divider at the very bottom.
+        XCTAssertTrue(md.contains("\n---\n\n## 原始逐字稿"))
+        XCTAssertTrue(md.contains("line one\nline two"))
     }
 
     func testSuggestedFileNameSanitizes() {

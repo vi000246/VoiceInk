@@ -21,13 +21,16 @@ final class VaultExportService {
     }
 
     /// Pure: build the Markdown document. Frontmatter values are YAML-escaped minimally.
-    func buildMarkdown(_ input: ExportInput, dateFormatter: ISO8601DateFormatter = .init()) -> String {
+    /// When `includeRawTranscript` is true, the full raw transcript is appended below a horizontal
+    /// rule at the bottom of the note; when false (default) the note carries only the analysis.
+    func buildMarkdown(_ input: ExportInput, includeRawTranscript: Bool = false,
+                       dateFormatter: ISO8601DateFormatter = .init()) -> String {
         func esc(_ s: String?) -> String {
             guard let s, !s.isEmpty else { return "\"\"" }
             return "\"" + s.replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
         let confidenceLine = input.confidence.map { "confidence: \(String(format: "%.2f", $0))\n" } ?? ""
-        return """
+        var doc = """
         ---
         date: \(dateFormatter.string(from: input.date))
         source_device: \(esc(input.deviceName))
@@ -37,10 +40,19 @@ final class VaultExportService {
         \(confidenceLine)---
 
         \(input.analysis)
-
-        > [!note]- 原始逐字稿
-        \(input.rawTranscript.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n"))
         """
+        if includeRawTranscript {
+            doc += """
+
+
+            ---
+
+            ## 原始逐字稿
+
+            \(input.rawTranscript)
+            """
+        }
+        return doc
     }
 
     /// Sanitized, collision-resistant file name: `YYYY-MM-DD HHmm <category> <short title>.md`.

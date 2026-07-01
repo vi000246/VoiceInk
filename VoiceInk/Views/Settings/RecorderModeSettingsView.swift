@@ -61,6 +61,11 @@ struct RecorderModeSettingsView: View {
                     Text("關閉（預設）：匯入只轉錄＋建議分類,套範本與匯出在「錄音管理」手動進行。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Obsidian 匯出") {
+                    Toggle("匯出時附上原始逐字稿", isOn: includeRawBinding)
+                    Text("關閉（預設）：Obsidian 筆記只含分析結果。開啟：在筆記最下方以分隔線附上完整原始逐字稿。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
         }
@@ -83,6 +88,10 @@ struct RecorderModeSettingsView: View {
     }
     private var autoExportBinding: Binding<Bool> {
         Binding(get: { store.recorderAutoExportEnabled }, set: { store.setRecorderAutoExport($0) })
+    }
+    private var includeRawBinding: Binding<Bool> {
+        Binding(get: { store.recorderExportIncludeRawTranscript },
+                set: { store.setRecorderExportIncludeRawTranscript($0) })
     }
     private var analysisBinding: Binding<RecorderModelChoice?> {
         Binding(
