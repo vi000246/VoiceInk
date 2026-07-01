@@ -10,7 +10,7 @@
 - **Owner**: TBD (personal fork — vi000246/VoiceInk)
 - **Status**: ACTIVE — living document
 - **Created**: 2026-06-29
-- **Last Updated**: 2026-06-30
+- **Last Updated**: 2026-07-01
 
 ## Change History
 
@@ -20,6 +20,8 @@
 | 2026-06-29 | same | same | **M1 implemented** — mount monitor, import ledger (SHA-256 dedup), device config/store, queue origin tag + raw-transcription bypass, minimal Recorders page. Build green; 5 unit tests. |
 | 2026-06-30 | same | same | **M2 implemented** (FR-6–11,13,14) — `TranscriptClassificationService` (classify→id/uncertain+confidence), `TemplateRouter` (fallback on uncertain/below-floor), `LongTranscriptSummarizer` (map-reduce), `VaultExportService` (frontmatter+collapsible raw md), `RecorderPostProcessor` (orchestrator wired into `processItem`), `RecorderCategory` + store w/ undeletable fallback, Categories page, vault-root capture, delete-after-import. FR-12 partial: `reclassify` logic done, History badge UI deferred. 18 unit tests green. Manual/hardware AC pending. |
 | 2026-06-30 | extends | `docs/srs/recorder-automation-recorder-mode-and-recording-management.srs.md` | **M3 spec'd** — two pipelines fully separated: recorder prompts split from voice prompts (`recorderPrompts` store, implemented); new **Recorder Mode** (own transcription model + default analysis model + language, decoupled from active Voice Mode); export shifts to **manual** by default (import = transcribe + suggest category only); new **Recording Management** page (replaces Import Log) with raw audio/transcript preservation, manual template apply→preview→export, delete-audio / delete-record; recorder audio exempt from auto-cleanup. Implemented so far: prompt split, sectioned sidebar + renames, rich recorder log, cleanup exemption. Pending: Recorder Mode page, manual apply/export flow, auto-export toggle. |
+| 2026-07-01 | code-sync | N/A | **Synced to code** — (1) new **watched-folder source**: `RecorderDevice.Kind` (`.volume`/`.folder`) lets an ordinary always-present folder be monitored (not just removable volumes); new `RecorderFolderWatcher` (per-folder `DispatchSource` vnode watcher, debounced, file-stability gated). (2) `handleMount`→`importNewFiles` unified entry; `newImportableFiles` now returns `(candidates, deferredCount)` with `minimumStableAge` + `hasQuickMatch` pre-skip for mid-copy files. (3) **Export raw-transcript is now opt-in**: `recorderExportIncludeRawTranscript` (default off → analysis-only note); when on, the full transcript is appended under a `## 原始逐字稿` rule (replaces the always-on collapsible callout). |
+| 2026-07-01 | free-form request | `docs/srs/recorder-automation-speaker-diarization.srs.md` | **Universal speaker diarization spec'd** — **replaces the old M5/FR-15 FluidAudio-only plan** with a hybrid, provider-agnostic design: a `DiarizationCoordinator` routes native-capable models (ElevenLabs first) through a new in-repo `ElevenLabsDiarizingClient` (`diarize=true`, `words[].speaker_id`) and everything else through a `FluidAudioDiarizer` fallback aligned to transcript timestamps. New `SpeakerSegment` type + `speakerSegmentsRaw`/`speakerNamesRaw` on `Transcription` (reusing existing `speakerLabeled`). Speakers are anonymous (講者1/2) and **manually renamable** transcript-wide. Off by default; batch recorder imports only (no streaming). Not yet implemented. |
 
 ## Summary
 
@@ -43,8 +45,10 @@ only thin new services plus two settings pages.
 ### Ubiquitous Language
 | Term | Definition |
 |------|-----------|
-| Recorder (Device) | A physical recorder that mounts as a USB mass-storage volume (e.g. "IC RECORDER"). Modeled as `RecorderDevice` config. |
-| Source Folder | The folder **on the device** that holds new recordings; user-granted + bookmarked. |
+| Recorder Source (Device) | A configured audio source, modeled as `RecorderDevice`. Two `Kind`s: **`.volume`** — a removable recorder matched by mounted volume name and imported on mount; **`.folder`** — an ordinary always-present folder watched live for new files. |
+| Watched Folder | A `.folder`-kind source monitored continuously by `RecorderFolderWatcher` (directory-vnode `DispatchSource`); imports fire on file changes, debounced. |
+| File-stability Gate | Import skips files modified within `minimumStableAge` (4 s on the folder path) — they may still be copying in — reporting them as `deferredCount` and re-checking via `scheduleRecheck`. |
+| Source Folder | The bookmarked folder holding new recordings — on the device (`.volume`) or anywhere on disk (`.folder`); user-granted + security-scoped. |
 | Import | Copying a new source file into app-controlled storage and enqueueing it for transcription. |
 | Import Ledger | Persistent record of already-imported files (content-hash keyed) ensuring exactly-once processing. |
 | Category | A user-defined content class (e.g. 面試 / 演講 / 通用). Binds an existing `CustomPrompt`, a classifier description, and a vault sub-folder. Modeled as `RecorderCategory`. |
@@ -52,13 +56,18 @@ only thin new services plus two settings pages.
 | Routing | Selecting the category's `CustomPrompt` for enhancement; `uncertain` → fallback category. |
 | Fallback (General) Category | The undeletable default category used when classification is `uncertain`. |
 | Vault Root | The Obsidian vault directory (security-scoped bookmark) under which category sub-folders live. |
-| Speaker Inference (v1) | Prompt-driven guess of who spoke (interviewer vs me), absent real diarization. |
-| Diarization (M5) | Real per-speaker segmentation via FluidAudio `OfflineDiarizerManager`. |
+| Diarization | Splitting a transcript into per-speaker segments so the user can tell who said what. Hybrid: native (cloud) or FluidAudio (local) — see below. |
+| Native Diarization | Speaker labels returned by the transcription model's own API (e.g. ElevenLabs `diarize=true` → `words[].speaker_id`). No extra call, word-accurate. |
+| Diarization Fallback | For models with no native support: a separate FluidAudio pass yields a speaker timeline, aligned to the transcript's segment timestamps. |
+| Speaker Segment | A `{ speaker, text, start, end }` unit; consecutive same-speaker words/segments merged. Stored as JSON in `Transcription.speakerSegmentsRaw`. |
+| Speaker Id vs Name | Segments carry a stable anonymous id ("1", "2"); a rename map (`speakerNamesRaw`) resolves ids → display names (講者1 → "Logan") at render time. |
+| Speaker Inference (legacy) | Old prompt-driven guess of the speaker; superseded by real diarization above. |
 
 ### Domain Events
 | Event | Trigger Condition | Consumers |
 |---|---|---|
-| `recorderDidMount` (internal) | Configured volume name matches a mounted volume | `RecorderImportService` |
+| `recorderDidMount` (internal) | Configured volume name matches a mounted volume (`.volume` source) | `RecorderImportService.importNewFiles` |
+| folder vnode change (internal) | `DispatchSource` fires on a watched `.folder` source (write/rename/delete) | `RecorderFolderWatcher` → debounced `importNewFiles` |
 | `recorderImportCompleted` (`Notification.Name`, new) | All stages succeed for an item | UI badge refresh, optional delete-after-import |
 
 ---
@@ -66,7 +75,7 @@ only thin new services plus two settings pages.
 ## System Context
 
 ### Scope & Boundaries
-- **In scope**: mount monitoring; folder scan + dedup + import; raw transcription routing;
+- **In scope**: mount monitoring (`.volume`) **and live folder watching (`.folder`)**; folder scan + dedup + import; raw transcription routing;
   post-transcription classification; template routing to `CustomPrompt`; long-transcript
   summarization; Markdown export to vault; Recorders & Categories settings UI; category badge +
   manual re-classification; optional delete-after-import; (M5) real diarization.
@@ -76,19 +85,23 @@ only thin new services plus two settings pages.
 ### Actors
 | Actor | Type | Interaction |
 |---|---|---|
-| User | Human | One-time setup (devices, categories, vault); plugs in recorder; optionally re-classifies |
-| Physical recorder | External device | Mounts as a volume exposing an audio source folder |
+| User | Human | One-time setup (sources, categories, vault); plugs in recorder or drops files into a watched folder; optionally re-classifies |
+| Physical recorder | External device | Mounts as a volume (`.volume` source) exposing an audio source folder |
+| Watched folder | Local filesystem | An always-present folder (`.folder` source) into which recordings are copied/synced; watched live |
 | AI provider (Anthropic / OpenAI / …) | Service | Classification call + enhancement call (existing provider routing) |
 | Obsidian vault (filesystem) | External store | Destination for exported Markdown notes |
-| FluidAudio models (M5) | Local ML | Speaker diarization (offline) |
+| FluidAudio diarizer models | Local ML | On-device speaker diarization fallback for models without native support |
+| ElevenLabs / Deepgram / AssemblyAI / … STT API | Service | Native diarization (`diarize` param) returned inline with the transcript |
 
 ### External Dependencies
 | Dependency | Purpose | Failure Mode |
 |---|---|---|
-| `NSWorkspace` mount notifications | Detect device plug-in | If unavailable, fall back to manual "Scan now" button in Recorders page |
+| `NSWorkspace` mount notifications | Detect `.volume` device plug-in | If unavailable, fall back to manual "Scan now" button in Recorders page |
+| `DispatchSource` directory vnode (`O_EVTONLY`) | Detect new files in `.folder` sources | Bookmark unresolvable / `open()` fails → watcher logs + skips that folder |
 | AI provider (via `AIEnhancementService` / `AIChatCompletionService`) | Classification + enhancement | Reuse existing retry/backoff + graceful error strings; item marked failed, original kept |
 | Security-scoped bookmarks (source folder + vault root) | Sandbox-safe file access | Stale bookmark → prompt user to re-grant in Recorders page |
-| `FluidInference/FluidAudio` (already linked) | (M5) diarization | Models not downloaded → silently keep v1 prompt-based inference |
+| `FluidInference/FluidAudio` Diarizer (already linked) | Local diarization fallback (`DiarizerManager` / `OfflineDiarizerManager`) | Models not downloaded → skip diarization, keep plain transcript (FR-10 degrade) |
+| ElevenLabs STT `diarize` (via in-repo `ElevenLabsDiarizingClient`) | Native diarization for ElevenLabs models | API error → degrade to plain transcript; diarization-off case uses the unchanged LLMkit path |
 
 ---
 
@@ -118,20 +131,28 @@ only thin new services plus two settings pages.
 ### Components
 | Component | Responsibility | Interface |
 |---|---|---|
-| `RecorderDeviceMonitor` | Observe mount/unmount; match volume name → device | `@MainActor` singleton; subscribes to `NSWorkspace.shared.notificationCenter`; emits to `RecorderImportService` |
-| `RecorderImportService` | Scan source folder, dedup via ledger, copy + enqueue, optional delete-after-success | `func handleMount(_ device:)`, `func scanNow(_ device:)` |
+| `RecorderDeviceMonitor` | Observe mount/unmount; match volume name → `.volume` device | `@MainActor` singleton; subscribes to `NSWorkspace.shared.notificationCenter`; calls `RecorderImportService.importNewFiles` |
+| `RecorderFolderWatcher` | Watch `.folder` sources for new files via per-folder directory-vnode `DispatchSource`; debounce + re-check settling files | `@MainActor` singleton: `start()`, `sync()` (rebuild from device list), `scheduleRecheck(deviceId:)` |
+| `RecorderImportService` | Scan source folder, dedup via ledger (with `minimumStableAge` gate + `hasQuickMatch` pre-skip), copy + enqueue, optional delete-after-success | `func importNewFiles(device:)`, `func newImportableFiles(in:context:minimumStableAge:) -> (candidates, deferredCount)` |
 | `ImportLedger` | Exactly-once bookkeeping | SwiftData-backed: `func fingerprint(for:) -> String`, `func contains(_:) -> Bool`, `func record(_:)` |
 | `RecorderPostProcessor` | Orchestrate classify → route → summarize → enhance → persist → export for recorder items | `func process(transcription:rawText:device:) async` |
 | `TranscriptClassificationService` | One lightweight AI call → category id / `uncertain` + confidence | `func classify(_ text:, categories:) async -> ClassificationResult` |
 | `TemplateRouter` | Map category → `CustomPrompt` (+ fallback) | `func prompt(for categoryId:) -> CustomPrompt` |
 | `LongTranscriptSummarizer` | Map-reduce summarization above token threshold | `func condense(_ text:) async -> String` |
-| `VaultExportService` | Write Markdown (frontmatter + analysis + collapsible raw) to vault sub-folder | `func export(_:to category:device:) throws -> URL` |
+| `VaultExportService` | Write Markdown (frontmatter + analysis; raw transcript appended under a `## 原始逐字稿` rule **only when** `recorderExportIncludeRawTranscript` is on, default off) to vault sub-folder | `func buildMarkdown(_:includeRawTranscript:)`, `func export(...) throws -> URL` |
 | `RecorderConfigStore` | Persist `RecorderDevice[]` / `RecorderCategory[]` as JSON in `UserDefaults` | mirrors `ModeManager` (`Modes/ModeConfig.swift:276-287`) |
-| `SpeakerDiarizationService` (M5) | Wrap FluidAudio `OfflineDiarizerManager` → per-speaker segments | `func diarize(_ audioURL:) async -> [SpeakerSegment]` |
+| `DiarizationCoordinator` | Provider-agnostic entry: route native-capable models to native diarization, else FluidAudio fallback + alignment; best-effort, never drops transcript | `func diarize(audioURL:model:transcript:expectedSpeakers:) async -> [SpeakerSegment]?` |
+| `ElevenLabsDiarizingClient` | In-repo (bypasses remote LLMkit) ElevenLabs STT call with `diarize=true`; parse `words[].speaker_id` → merged `[SpeakerSegment]` + full text | `static func transcribeDiarized(...) async throws -> (text: String, segments: [SpeakerSegment])` |
+| `FluidAudioDiarizer` | Wrap FluidAudio `OfflineDiarizerManager` / `DiarizerManager` → speaker timeline `[(speaker,start,end)]` | `func timeline(_ audioURL:, expectedSpeakers:) async -> [SpeakerTimelineEntry]` |
+| Diarization alignment | Assign each timestamped transcript segment to the max-overlap speaker in the timeline | pure function `align(segments:timeline:) -> [SpeakerSegment]` |
 | Recorders / Categories views | Settings UI (cards + ~400pt side panel; category list) | New `ViewType` cases + `AppSidebar` entries |
 
 ### Data Flow
-Mount (sync notification) → folder scan + dedup (sync, fast) → copy + enqueue (async). The
+Two entry triggers converge on `RecorderImportService.importNewFiles`: a `.volume` **mount**
+(`NSWorkspace` notification) or a `.folder` **vnode change** (`RecorderFolderWatcher`, debounced,
+with the file-stability gate + `scheduleRecheck` for files still copying). Editing the device list
+calls `RecorderFolderWatcher.sync()` to rebuild watchers; `VoiceInk.swift` starts the watcher at
+launch alongside the mount monitor. From there: folder scan + dedup (sync, fast) → copy + enqueue (async). The
 transcription queue processes items **sequentially** (existing behavior). For
 `.recorderImport` items the post-processor runs the classify → enhance → export chain
 **asynchronously** per item. Everything after mount detection is background; the user only sees
@@ -173,16 +194,18 @@ User        NSWorkspace   DeviceMonitor   ImportService   Ledger   Queue(ATM)   
 ### Schema (new / changed)
 ```swift
 // NEW config structs (Codable; JSON in UserDefaults, key e.g. "recorderDevicesV1" / "recorderCategoriesV1")
-struct RecorderDevice: Codable, Identifiable {
+struct RecorderDevice: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable { case volume, folder }   // removable device vs watched folder
     let id: UUID
     var displayName: String
-    var volumeNameMatch: String        // matched against mounted volume name, e.g. "IC RECORDER"
-    var sourceFolderBookmark: Data      // security-scoped bookmark to the folder ON the device
-    var allowedFileTypes: [String]      // defaults from SupportedMedia
+    var kind: Kind                      // .volume (mount-matched) | .folder (live-watched); back-compat decode → .volume
+    var volumeNameMatch: String         // .volume only — matched against mounted volume name, e.g. "IC RECORDER"
+    var sourceFolderBookmark: Data      // security-scoped bookmark to the source folder (device or disk)
     var autoImportEnabled: Bool         // default true
     var deleteAfterImport: Bool         // default false
-    var vaultRootBookmark: Data         // security-scoped bookmark to Obsidian vault root
     var createdAt: Date
+    // custom init(from:) decodes pre-`kind` rows as .volume; matches(volumeName:) requires .volume + non-empty match
+    // vault root is a single global bookmark on RecorderConfigStore (not per-device)
 }
 
 struct RecorderCategory: Codable, Identifiable {
@@ -211,7 +234,20 @@ struct RecorderCategory: Codable, Identifiable {
 //   var classificationConfidence: Double?
 //   var exportedFilePath: String?
 //   var importFingerprint: String?
-//   var speakerLabeled: Bool = false
+//   var speakerLabeled: Bool = false          // existing — set true when segments present
+
+// NEW (speaker diarization) — additive optional fields on Transcription:
+//   var speakerSegmentsRaw: String?           // JSON [SpeakerSegment]
+//   var speakerNamesRaw: String?              // JSON [speakerId: displayName] rename map
+// computed accessors parse/serialize these, mirroring audioChunkURLs/audioChunkPathsRaw
+
+// NEW value type (Codable) — the diarization unit:
+struct SpeakerSegment: Codable, Equatable {
+    var speaker: String        // stable anonymous id ("1", "2") or native provider label
+    var text: String
+    var start: TimeInterval
+    var end: TimeInterval
+}
 ```
 
 ### Migration Strategy
@@ -283,9 +319,11 @@ breaking shape changes (mirrors `ModeManager`'s `modeConfigurationsV2`).
 | Dedup key | `(filename,size)` fast filter + SHA-256 confirm | filename+mtime only; hash only | Cheap common case, robust on collision (user chose both) |
 | Classification | Separate lightweight AI call | Fold into enhancement prompt | Returns confidence, enables fallback/badge/re-run (user chose separate) |
 | Enhancement | Reuse `AIEnhancementService.enhance()` | New analysis engine | 80% reuse; provider routing/retry/filter already solid |
-| Speaker labeling v1 | Prompt-based inference | Real diarization now | Zero cost; validate quality before wiring diarization |
-| Diarization (M5) | FluidAudio `OfflineDiarizerManager` | Add new dependency | Already linked (`FluidInference/FluidAudio`); no new dep |
-| Export format | Markdown + YAML frontmatter | JSON, plain txt | Obsidian-native; frontmatter carries metadata |
+| Speaker diarization | **Hybrid**: native API where supported (ElevenLabs first) + FluidAudio local fallback | Native-only (drops local models); FluidAudio-only (worse quality, extra compute for cloud) | Universality across all models with best available quality per model (user decision) |
+| ElevenLabs diarize client | In-repo `ElevenLabsDiarizingClient` calling the HTTP API directly | Fork/modify LLMkit `ElevenLabsClient` | LLMkit is a remote, non-editable package; keep the change in-repo |
+| Local diarization engine | FluidAudio `OfflineDiarizerManager` / `DiarizerManager` | Add pyannote/sherpa-onnx dep | Already linked (`FluidInference/FluidAudio`); no new dep |
+| Speaker naming | Anonymous ids + manual rename map | Voiceprint enrollment now | Simplest useful v1; enrollment (auto-naming recurring speakers) deferred (user decision) |
+| Export format | Markdown + YAML frontmatter; raw transcript **opt-in** (`recorderExportIncludeRawTranscript`, default off) appended under a rule | Always-embed collapsible raw (old plan); JSON/plain txt | Obsidian-native; keep notes analysis-only by default, full transcript on demand (supersedes the always-on callout) |
 
 ---
 
@@ -300,6 +338,7 @@ breaking shape changes (mirrors `ModeManager`'s `modeConfigurationsV2`).
 | `NotificationManager.showNotification` | In-process call | Start/complete toasts | Yes — additive |
 | Sidebar `ViewType` / `AppSidebar` | UI registration | Two new cases + items | Yes — additive |
 | Schema array in `VoiceInk.swift:48-81` | App bootstrap | Add `ImportLedgerEntry` | Yes — additive |
+| `RecorderFolderWatcher.shared.start()` in `VoiceInk.swift` | App bootstrap | Start folder watchers after import service is configured | Yes — additive |
 
 ### Rollout Strategy
 Feature is inert until the user configures ≥1 `RecorderDevice`. No flag needed for personal
@@ -328,7 +367,11 @@ keys (optional fields harmless).
 | Sidebar routing | `Views/ContentView.swift:4-16,67-88`, `Views/Sidebar/AppSidebar.swift:69-126` | Recorders / Categories pages |
 | ~400pt slide-out panel | `Views/Components/SidePanel.swift:87-100`, `Modes/ModeView.swift:17-65` | Device card → form |
 | Reusable prompt editor | `PromptEditorView` / `PromptSelectionGrid` | Editing the prompt a category binds |
-| FluidAudio service wrapper | `Transcription/FluidAudio/FluidAudioTranscriptionService.swift` | (M5) where to wire `OfflineDiarizerManager` |
+| FluidAudio service wrapper | `Transcription/FluidAudio/FluidAudioTranscriptionService.swift` | Shape for `FluidAudioDiarizer` wrapping `OfflineDiarizerManager` |
+| Cloud provider + client split | `Transcription/Cloud/ElevenLabsProvider.swift`, `Transcription/Cloud/CloudProvider.swift:13` | Where the diarization-off ElevenLabs path stays; capability flag lives near the provider |
+| Whisper segment timestamps | `Transcription/Whisper/LibWhisper.swift:21-24` (`whisper_full_n_segments`) | Source of segment `start`/`end` for fallback alignment |
+| Multipart STT HTTP call | `LLMkit .../Transcription/ElevenLabsClient.swift` (reference only — remote) | Shape to reimplement in-repo `ElevenLabsDiarizingClient` with `diarize=true` |
+| JSON-in-raw-field accessor | `Models/Transcription.swift:43-50` (`audioChunkURLs`/`audioChunkPathsRaw`) | Pattern for `speakerSegments`/`speakerSegmentsRaw` + `speakerNames` accessors |
 
 ---
 
@@ -341,7 +384,10 @@ keys (optional fields harmless).
 | Classification accuracy below trust threshold | M | M | Fallback category + confidence floor; manual re-classification (AC-7); product metric tracked in PRD |
 | Long-transcript context overflow | M | M | Token-estimate gate + map-reduce (FR-8 / AC-6) |
 | Delete-after-import data loss | L | H | Default off; gated on full success of import+transcribe+export (AC-8) |
-| Diarization model download size / compute (M5) | M | L | Off by default; only download when user opts in; v1 prompt inference unaffected |
+| Diarization model download size / compute | M | L | Off by default; download FluidAudio diarizer only when user opts into fallback; native path needs no download |
+| Fallback alignment inaccuracy (timeline vs transcript timestamps drift) | M | M | Max-overlap assignment at segment granularity; only local Whisper (has segment timestamps) fully supported in v1; flat-text models degrade (FR-10) |
+| Native diarization quality varies by provider / few-speaker over-splitting | M | M | Forward `expectedSpeakerCount` → `num_speakers`; expose `diarization_threshold` later if needed |
+| Per-transcript speaker ids not stable across files | H | L | Documented v1 boundary; voiceprint enrollment deferred |
 | Sequential queue serializes long imports | L | M | Acceptable for personal use; background; notifications keep visibility |
 
 ---
@@ -354,7 +400,10 @@ keys (optional fields harmless).
 | Classification | Separate lightweight AI call (category + confidence) | Combined with enhancement | Enables fallback, badge, re-run, confidence gate |
 | Dedup key | filename+size fast filter + SHA-256 confirm | filename+mtime; hash-only | Cheap common case + robust (user decision) |
 | Delete originals | Default off, optional, success-gated | Always delete; never | Safety first (user decision) |
-| Diarization | Spec both: prompt inference v1, real FluidAudio M5 | Prompt-only; diarization-only | Library already linked; validate quality first (user decision) |
+| Diarization architecture | Hybrid: native-first + FluidAudio fallback | FluidAudio-only (old M5 plan); native-only | Universality with best-per-model quality (user decision, supersedes M5) |
+| ElevenLabs diarize impl | In-repo client bypassing LLMkit | Fork LLMkit | LLMkit remote/non-editable |
+| Speaker naming | Anonymous ids + manual rename | Voiceprint enrollment now | Simplest useful v1 (user decision); enrollment deferred |
+| Diarization scope | Batch recorder imports only | Include streaming | Streaming diarize is a separate path; keep v1 focused |
 | Export | Markdown: frontmatter + analysis + collapsible raw | Analysis only; two files | Obsidian-friendly, max info in one file (user decision) |
 | Config storage | JSON in UserDefaults | SwiftData | Mirrors ModeManager; small non-queryable config |
 | Mount detection | `NSWorkspace.didMountNotification` | DiskArbitration/FSEvents | Idiomatic, least code |
