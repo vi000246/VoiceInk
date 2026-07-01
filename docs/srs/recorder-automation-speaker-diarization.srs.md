@@ -90,7 +90,13 @@ added **inside the VoiceInk repo** rather than modifying LLMkit.
 
 ## Functional Requirements
 
-- [ ] **FR-1** Add a Recorder Mode setting `啟用語者辨識` (`diarizationEnabled`, default **off**)
+> **Status (2026-07-01):** **M1 shipped** (FR-1,2,3,4,7,8,9,10) — native ElevenLabs path,
+> data model, settings, and speaker-grouped UI with rename. Build green; 11 pure-seam tests pass.
+> See `docs/plans/completed/recorder-automation-speaker-diarization-m1.plan.md` +
+> `docs/reports/recorder-automation-speaker-diarization-m1-report.md`.
+> **FR-5** (FluidAudioDiarizer) and **FR-6** (Whisper alignment) — i.e. AC-4 — remain **M2**.
+
+- [x] **FR-1** Add a Recorder Mode setting `啟用語者辨識` (`diarizationEnabled`, default **off**)
   and an optional `預期人數` (`expectedSpeakerCount`), persisted via `RecorderConfigStore`.
 - [ ] **FR-2** Introduce `SpeakerSegment` and a `DiarizationCoordinator` that decides, per model,
   whether to use native diarization or the FluidAudio fallback.
