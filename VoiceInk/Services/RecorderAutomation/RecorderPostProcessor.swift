@@ -88,8 +88,11 @@ final class RecorderPostProcessor {
         // Speaker diarization (best-effort, before classification). Native-capable models (ElevenLabs)
         // use their word-accurate API; every other model falls back to the on-device FluidAudio
         // diarizer. Any failure degrades silently to the plain transcript.
-        if store.recorderDiarizationEnabled, let path = transcription.audioFileURL {
-            let url = URL(fileURLWithPath: path)
+        // audioFileURL is stored as an absoluteString (file://…), so parse with URL(string:);
+        // fall back to a filesystem path only for legacy plain-path values.
+        if store.recorderDiarizationEnabled,
+           let path = transcription.audioFileURL,
+           let url = URL(string: path) ?? (path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil) {
             if let segments = await DiarizationCoordinator.diarize(
                 audioURL: url,
                 transcriptionModelName: transcription.transcriptionModelName,

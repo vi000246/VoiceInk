@@ -32,6 +32,8 @@ struct RecorderModeSettingsView: View {
                     }
                     Toggle("啟用語者辨識", isOn: diarizationBinding)
                     if store.recorderDiarizationEnabled {
+                        Label(diarizationModeHint, systemImage: diarizationIsNative ? "sparkles" : "cpu")
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         Stepper(value: expectedSpeakersBinding, in: 0...12) {
                             Text(store.recorderExpectedSpeakerCount.map { "預期人數：\($0)" } ?? "預期人數：自動")
                         }
@@ -108,6 +110,19 @@ struct RecorderModeSettingsView: View {
     private var expectedSpeakersBinding: Binding<Int> {
         Binding(get: { store.recorderExpectedSpeakerCount ?? 0 },
                 set: { store.setRecorderExpectedSpeakerCount($0 == 0 ? nil : $0) })
+    }
+    /// Whether the currently selected recorder transcription model diarizes natively.
+    private var diarizationIsNative: Bool {
+        DiarizationCoordinator.supportsNativeDiarization(modelName: store.recorderTranscriptionModelName)
+    }
+    /// Live hint of which diarization path the current model will use.
+    private var diarizationModeHint: String {
+        if store.recorderTranscriptionModelName == nil {
+            return "目前模型：自動（ElevenLabs 走原生辨識，其餘走本地辨識）"
+        }
+        return diarizationIsNative
+            ? "目前模型：原生語者辨識（最準）"
+            : "目前模型：本地語者辨識（首次需下載模型，較慢）"
     }
     private var analysisBinding: Binding<RecorderModelChoice?> {
         Binding(
