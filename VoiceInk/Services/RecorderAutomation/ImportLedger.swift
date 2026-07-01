@@ -31,6 +31,14 @@ final class ImportLedger {
         return ((try? context.fetch(d))?.isEmpty == false)
     }
 
+    /// The stored device filename for an imported fingerprint (nil if not in the ledger). Used to
+    /// recover the real recording time (encoded in the filename) after the audio was renamed on import.
+    func fileName(forFingerprint fingerprint: String, in context: ModelContext) -> String? {
+        var d = FetchDescriptor<ImportLedgerEntry>(predicate: #Predicate { $0.fingerprint == fingerprint })
+        d.fetchLimit = 1
+        return (try? context.fetch(d))?.first?.fileName
+    }
+
     /// Quick-path: any ledger row with same (fileName, byteSize)?
     func hasQuickMatch(fileName: String, byteSize: Int, in context: ModelContext) -> Bool {
         var d = FetchDescriptor<ImportLedgerEntry>(

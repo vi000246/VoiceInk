@@ -119,6 +119,7 @@ private struct RecorderDeviceCard: View {
     let device: RecorderDevice
     let onEdit: () -> Void
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var transcriptionManager = AudioTranscriptionManager.shared
     @State private var isHovering = false
     @State private var expanded = false
     @State private var files: [RecorderImportService.DeviceFileStatus]?
@@ -168,6 +169,8 @@ private struct RecorderDeviceCard: View {
             .buttonStyle(.plain)
             .padding(.top, 10)
 
+            progressSection
+
             if expanded { fileList.padding(.top, 8) }
         }
         .padding(14)
@@ -176,6 +179,61 @@ private struct RecorderDeviceCard: View {
             .strokeBorder(isHovering ? AppTheme.Accent.primary.opacity(0.4) : AppTheme.Border.control, lineWidth: 0.5))
         .onHover { isHovering = $0 }
         .onAppear { connected = RecorderImportService.shared.isDeviceConnected(device) }
+    }
+
+    // MARK: - Batch progress
+
+    /// This device's items currently in the transcription queue (auto-import + manual reprocess).
+    private var deviceQueueItems: [AudioFileQueueItem] {
+        transcriptionManager.queue.filter {
+            if case let .recorderImport(id, _) = $0.origin { return id == device.id }
+            return false
+        }
+    }
+
+    private var isBatchProcessing: Bool { deviceQueueItems.contains { !$0.status.isTerminal } }
+
+    @ViewBuilder private var progressSection: some View {
+        let items = deviceQueueItems
+        if isBatchProcessing, !items.isEmpty {
+            let done = items.filter { if case .completed = $0.status { return true }; return false }.count
+            let failed = items.filter { if case .failed = $0.status { return true }; return false }.count
+            let active = items.first { if case .processing = $0.status { return true }; return false }
+            // Fold the active file's chunk fraction into the bar so a single long recording still
+            // advances smoothly instead of jumping only when a whole file finishes.
+            let value = min(Double(done) + (active?.chunkProgress?.fraction ?? 0), Double(items.count))
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("處理中 \(done)/\(items.count)").font(.system(size: 11, weight: .medium))
+                    if failed > 0 {
+                        Text("・失敗 \(failed)").font(.system(size: 11)).foregroundStyle(AppTheme.Status.error)
+                    }
+                    Spacer()
+                    if let active, let label = activeLabel(active) {
+                        Text(label).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                ProgressView(value: value, total: Double(items.count))
+                    .progressViewStyle(.linear).tint(AppTheme.Accent.primary)
+            }
+            .padding(.top, 10)
+        }
+    }
+
+    /// Live sub-status for the file currently transcribing — phase + chunk progress when chunked.
+    private func activeLabel(_ item: AudioFileQueueItem) -> String? {
+        var parts: [String] = []
+        if case let .processing(phase) = item.status {
+            switch phase {
+            case .loading: parts.append("載入模型")
+            case .processingAudio: parts.append("處理音訊")
+            case .transcribing: parts.append("轉錄中")
+            case .enhancing: parts.append("增強中")
+            }
+        }
+        if let cp = item.chunkProgress, cp.total > 1 { parts.append("片段 \(cp.done)/\(cp.total)") }
+        return parts.isEmpty ? nil : parts.joined(separator: "・")
     }
 
     @ViewBuilder private var connectionDot: some View {
@@ -215,6 +273,8 @@ private struct RecorderDeviceCard: View {
                                     .foregroundStyle(f.processed ? AppTheme.Status.success : Color.secondary)
                                 Text(f.fileName).font(.system(size: 12)).lineLimit(1)
                                 Spacer()
+                                Text(Self.sizeText(f.byteSize))
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
                                 if let m = f.modified {
                                     Text(m, format: .dateTime.month(.abbreviated).day().hour().minute())
                                         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -281,6 +341,11 @@ private struct RecorderDeviceCard: View {
             .foregroundStyle(on ? AppTheme.Accent.primary : .secondary)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill((on ? AppTheme.Accent.primary : Color.secondary).opacity(0.12)))
+    }
+
+    /// Human-readable file size (KB / MB) for a device file row.
+    static func sizeText(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
 

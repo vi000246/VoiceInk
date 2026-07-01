@@ -125,14 +125,16 @@ final class RecorderPostProcessor {
         transcription.recorderCategoryId = decision.category.id
         transcription.recorderCategoryName = decision.category.name
         transcription.classificationConfidence = result.confidence
+        // The recording time lives in the device filename (e.g. 260701_1258.mp3), not the import
+        // timestamp — recover it from the ledger so the title carries the real recording time.
+        let recordingTime = transcription.importFingerprint
+            .flatMap { ImportLedger.shared.fileName(forFingerprint: $0, in: modelContext) }
+            .flatMap { RecorderRecordingTime.parse(fromFileName: $0) }
+            ?? transcription.timestamp
         transcription.recorderTitle = await makeRecorderTitle(
-            from: rawText, model: classifyModel, aiService: aiService, timestamp: transcription.timestamp)
+            from: rawText, model: classifyModel, aiService: aiService, timestamp: recordingTime)
         try? modelContext.save()
     }
-
-    private static let titleDateFormatter: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "yyyyMMdd HHmm"; return f
-    }()
 
     /// Recorder display title = `yyyyMMdd HHmm <≤10-char AI summary>`. Falls back to a raw excerpt
     /// if the summary call fails, so the title always at least carries the date.
@@ -140,7 +142,7 @@ final class RecorderPostProcessor {
         from text: String, model: (provider: AIProvider, modelName: String?),
         aiService: AIService, timestamp: Date
     ) async -> String {
-        let date = Self.titleDateFormatter.string(from: timestamp)
+        let date = RecorderRecordingTime.titleStamp(timestamp)
         let summary = await generateShortTitle(
             from: text, provider: model.provider, modelName: model.modelName, aiService: aiService)
         let tail = summary ?? String(text.prefix(10)).trimmingCharacters(in: .whitespacesAndNewlines)

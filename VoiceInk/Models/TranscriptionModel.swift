@@ -32,6 +32,17 @@ enum ModelProvider: String, Codable, Hashable, CaseIterable {
     }
 }
 
+extension ModelProvider {
+    /// Providers that upload the audio to a remote API (subject to ~25MB request limits), as
+    /// opposed to on-device transcription. Long recordings must be chunked before upload.
+    var usesCloudUpload: Bool {
+        switch self {
+        case .whisper, .fluidAudio, .nativeApple: return false
+        default: return true
+        }
+    }
+}
+
 // A unified protocol for any transcription model
 protocol TranscriptionModel: Identifiable, Hashable {
     var id: UUID { get }

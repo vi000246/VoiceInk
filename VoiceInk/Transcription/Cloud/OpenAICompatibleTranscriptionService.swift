@@ -13,6 +13,7 @@ class OpenAICompatibleTranscriptionService {
         request.setValue("Bearer \(model.apiKey)", forHTTPHeaderField: "Authorization")
 
         let body = try buildRequestBody(audioURL: audioURL, modelName: model.modelName, boundary: boundary, context: context)
+        request.timeoutInterval = CloudTranscriptionTimeout.forAudio(body)   // long recordings need minutes
         let (data, response) = try await URLSession.shared.upload(for: request, from: body)
 
         guard let httpResponse = response as? HTTPURLResponse else {

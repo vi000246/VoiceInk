@@ -11,6 +11,7 @@ struct RecorderHistoryView: View {
            sort: \Transcription.timestamp, order: .reverse)
     private var items: [Transcription]
     @State private var fileNameByFingerprint: [String: String] = [:]
+    @State private var byteSizeByFingerprint: [String: Int] = [:]
     @State private var expandedId: UUID?
     @State private var searchText = ""
     @State private var categoryFilter: String?   // nil = 全部
@@ -60,6 +61,7 @@ struct RecorderHistoryView: View {
                             RecordingCard(
                                 transcription: t,
                                 fileName: t.importFingerprint.flatMap { fileNameByFingerprint[$0] },
+                                byteSize: t.importFingerprint.flatMap { byteSizeByFingerprint[$0] },
                                 isExpanded: expandedId == t.id,
                                 isChecked: selectedIds.contains(t.id),
                                 onToggleCheck: { toggle(t.id) },
@@ -139,7 +141,7 @@ struct RecorderHistoryView: View {
     private func batchDelete() {
         let targets = items.filter { selectedIds.contains($0.id) }
         for t in targets {
-            if let s = t.audioFileURL, let u = URL(string: s) { try? FileManager.default.removeItem(at: u) }
+            RecordingAudioFiles.removeAll(for: t)
             modelContext.delete(t)
         }
         try? modelContext.save()
@@ -150,6 +152,8 @@ struct RecorderHistoryView: View {
     private func loadFileNames() {
         let entries = (try? modelContext.fetch(FetchDescriptor<ImportLedgerEntry>())) ?? []
         fileNameByFingerprint = Dictionary(entries.map { ($0.fingerprint, $0.fileName) },
+                                           uniquingKeysWith: { a, _ in a })
+        byteSizeByFingerprint = Dictionary(entries.map { ($0.fingerprint, $0.byteSize) },
                                            uniquingKeysWith: { a, _ in a })
     }
 
@@ -168,6 +172,7 @@ struct RecorderHistoryView: View {
 private struct RecordingCard: View {
     let transcription: Transcription
     let fileName: String?
+    let byteSize: Int?
     let isExpanded: Bool
     let isChecked: Bool
     let onToggleCheck: () -> Void
@@ -188,10 +193,28 @@ private struct RecordingCard: View {
     @State private var renameText = ""
 
     private var hasAnalysis: Bool { (transcription.enhancedText?.isEmpty == false) }
-    /// Prefer the generated recorder title (date + summary); fall back to the imported file name.
+    /// The true recording time — parsed from the device filename (e.g. 260701_1258.mp3); falls back
+    /// to the import timestamp when the name carries no stamp (e.g. a manually named file).
+    private var recordingDate: Date {
+        (fileName.flatMap { RecorderRecordingTime.parse(fromFileName: $0) }) ?? transcription.timestamp
+    }
+    /// Prefer the generated recorder title (date + summary), but swap in the real recording-time
+    /// stamp so the title matches the audio filename; fall back to the imported file name.
     private var displayTitle: String {
-        if let t = transcription.recorderTitle, !t.isEmpty { return t }
+        if let t = transcription.recorderTitle, !t.isEmpty {
+            // Auto title ("yyyyMMdd HHmm <summary>") → re-stamp with the filename recording time.
+            // User-renamed titles (no leading date stamp) are shown verbatim.
+            if fileName.flatMap({ RecorderRecordingTime.parse(fromFileName: $0) }) != nil,
+               let summary = RecorderRecordingTime.autoTitleSummary(from: t) {
+                let stamp = RecorderRecordingTime.titleStamp(recordingDate)
+                return summary.isEmpty ? stamp : "\(stamp) \(summary)"
+            }
+            return t
+        }
         return fileName?.isEmpty == false ? fileName! : "錄音匯入"
+    }
+    private var sizeText: String? {
+        byteSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
     }
     private var displayText: String {
         (showAnalysis ? transcription.enhancedText : transcription.text) ?? transcription.text
@@ -201,6 +224,11 @@ private struct RecordingCard: View {
               FileManager.default.fileExists(atPath: u.path) else { return nil }
         return u
     }
+    /// Playable split chunks (long recordings), filtered to those still on disk.
+    private var chunkURLs: [URL] {
+        transcription.audioChunkURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+    private var hasAudio: Bool { audioURL != nil || !chunkURLs.isEmpty }
     private var selectedCategory: RecorderCategory? {
         selectedCategoryId.flatMap { store.category(byId: $0) } ?? store.categories.first { $0.isFallback }
     }
@@ -260,8 +288,9 @@ private struct RecordingCard: View {
                 Text(displayTitle)
                     .font(.system(size: 13, weight: .medium)).lineLimit(1)
                 HStack(spacing: 6) {
-                    Text(transcription.timestamp, format: .dateTime.year().month(.abbreviated).day().hour().minute())
+                    Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
                         .font(.system(size: 11)).foregroundStyle(.secondary)
+                    if let sizeText { Text(sizeText).font(.system(size: 11)).foregroundStyle(.secondary) }
                     if let c = transcription.recorderCategoryName { badge(c, "tag.fill", AppTheme.Accent.primary) }
                     if transcription.exportedFilePath != nil { badge("已輸出", "checkmark.circle.fill", AppTheme.Status.success) }
                 }
@@ -317,7 +346,10 @@ private struct RecordingCard: View {
             }
             .buttonStyle(.plain)
 
-            if let url = audioURL {
+            if chunkURLs.count > 1 {
+                Divider()
+                RecorderChunkPlayerView(urls: chunkURLs).padding(.vertical, 4)
+            } else if let url = audioURL {
                 Divider()
                 AudioPlayerView(url: url, transcription: transcription, showsEnhancementControls: false)
                     .padding(.vertical, 4)
@@ -337,7 +369,7 @@ private struct RecordingCard: View {
                 }
                 Spacer()
                 Button(role: .destructive) { confirmDeleteAudio = true } label: { Label("刪除音檔", systemImage: "speaker.slash") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).disabled(audioURL == nil)
+                    .buttonStyle(.plain).foregroundStyle(.secondary).disabled(!hasAudio)
                 Button(role: .destructive) { confirmDeleteRecord = true } label: { Label("刪除整筆", systemImage: "trash") }
                     .buttonStyle(.plain).foregroundStyle(AppTheme.Status.error.opacity(0.85))
             }
@@ -371,13 +403,14 @@ private struct RecordingCard: View {
     }
 
     private func deleteAudio() {
-        if let url = audioURL { try? FileManager.default.removeItem(at: url) }
+        RecordingAudioFiles.removeAll(for: transcription)
         transcription.audioFileURL = nil
+        transcription.audioChunkPathsRaw = nil
         try? modelContext.save()
     }
 
     private func deleteRecord() {
-        if let url = audioURL { try? FileManager.default.removeItem(at: url) }
+        RecordingAudioFiles.removeAll(for: transcription)
         modelContext.delete(transcription)
         try? modelContext.save()
         NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
@@ -403,6 +436,18 @@ private struct RecordingCard: View {
         .foregroundStyle(tint)
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(Capsule().fill(tint.opacity(0.12)))
+    }
+}
+
+/// Removes every on-disk audio file backing a recording — the single WAV and any split chunks.
+enum RecordingAudioFiles {
+    static func removeAll(for transcription: Transcription) {
+        if let s = transcription.audioFileURL, let u = URL(string: s) {
+            try? FileManager.default.removeItem(at: u)
+        }
+        for url in transcription.audioChunkURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }
 

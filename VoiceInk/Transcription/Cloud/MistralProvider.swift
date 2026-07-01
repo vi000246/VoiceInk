@@ -22,12 +22,13 @@ struct MistralProvider: CloudProvider {
         )
     ]}
 
-    func transcribe(audioData: Data, fileName: String, apiKey: String, model: String, language: String?, prompt: String?, customVocabulary: [String]) async throws -> String {
+    func transcribe(audioData: Data, fileName: String, apiKey: String, model: String, language: String?, prompt: String?, customVocabulary: [String], timeout: TimeInterval) async throws -> String {
         return try await MistralTranscriptionClient.transcribe(
             audioData: audioData,
             fileName: fileName,
             apiKey: apiKey,
-            model: model
+            model: model,
+            timeout: timeout
         )
     }
 

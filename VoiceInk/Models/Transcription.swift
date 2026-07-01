@@ -39,6 +39,15 @@ final class Transcription {
     var classificationConfidence: Double?
     var exportedFilePath: String?
     var speakerLabeled: Bool = false
+    /// Newline-joined absolute paths of the split audio chunks, when a long recording was chunked
+    /// for cloud transcription. nil for single-file recordings.
+    var audioChunkPathsRaw: String?
+
+    /// The playable audio chunks in order. Empty when the recording wasn't chunked.
+    var audioChunkURLs: [URL] {
+        guard let raw = audioChunkPathsRaw, !raw.isEmpty else { return [] }
+        return raw.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+    }
 
     init(text: String,
          duration: TimeInterval,

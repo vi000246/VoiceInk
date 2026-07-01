@@ -28,6 +28,13 @@ enum QueueItemOrigin: Equatable {
     case recorderImport(deviceId: UUID, fingerprint: String)
 }
 
+/// Sub-progress while transcribing a chunked (long) recording: chunk `done` of `total`.
+struct ChunkProgress: Equatable {
+    let done: Int
+    let total: Int
+    var fraction: Double { total > 0 ? Double(done) / Double(total) : 0 }
+}
+
 @MainActor
 class AudioFileQueueItem: Identifiable, ObservableObject {
     let id = UUID()
@@ -37,6 +44,8 @@ class AudioFileQueueItem: Identifiable, ObservableObject {
 
     @Published var status: QueueItemStatus = .pending
     @Published var transcription: Transcription?
+    /// Set while a long recording is transcribed chunk-by-chunk; nil for single-shot transcription.
+    @Published var chunkProgress: ChunkProgress?
 
     init(url: URL, origin: QueueItemOrigin = .manual) {
         self.url = url

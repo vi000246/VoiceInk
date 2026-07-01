@@ -11,6 +11,7 @@ enum CloudTranscriptionError: Error, LocalizedError {
     case networkError(Error)
     case noTranscriptionReturned
     case dataEncodingError
+    case fileTooLarge(bytes: Int, limitBytes: Int)
 
     var errorDescription: String? {
         switch self {
@@ -30,9 +31,16 @@ enum CloudTranscriptionError: Error, LocalizedError {
             return String(localized: "The API returned an empty or invalid response.")
         case .dataEncodingError:
             return String(localized: "Failed to encode the request body.")
+        case .fileTooLarge(let bytes, let limitBytes):
+            let mb = Double(bytes) / 1_048_576, limitMB = Double(limitBytes) / 1_048_576
+            return String(format: String(localized: "The audio is too large for cloud transcription (%.0f MB; the API limit is about %.0f MB). Long recordings become large 16kHz WAVs — use a local transcription model, or split the file."), mb, limitMB)
         }
     }
 }
+
+/// Cloud whisper APIs (OpenAI, Groq, …) reject uploads above ~25MB. VoiceInk uploads a 16kHz mono
+/// WAV, so anything past ~13 minutes crosses this line — guard early with an actionable error.
+private let cloudTranscriptionByteLimit = 25 * 1024 * 1024
 
 class CloudTranscriptionService: TranscriptionService {
     private let modelContext: ModelContext
@@ -58,6 +66,9 @@ class CloudTranscriptionService: TranscriptionService {
             guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider) else {
                 throw CloudTranscriptionError.unsupportedProvider
             }
+            if audioData.count > cloudTranscriptionByteLimit {
+                throw CloudTranscriptionError.fileTooLarge(bytes: audioData.count, limitBytes: cloudTranscriptionByteLimit)
+            }
             let apiKey = try requireAPIKey(forProvider: cloudProvider.providerKey)
             return try await cloudProvider.transcribe(
                 audioData: audioData,
@@ -66,7 +77,8 @@ class CloudTranscriptionService: TranscriptionService {
                 model: model.name,
                 language: language,
                 prompt: transcriptionPrompt(from: context),
-                customVocabulary: getCustomDictionaryTerms()
+                customVocabulary: getCustomDictionaryTerms(),
+                timeout: CloudTranscriptionTimeout.forAudio(audioData)
             )
         } catch let error as CloudTranscriptionError {
             throw error
