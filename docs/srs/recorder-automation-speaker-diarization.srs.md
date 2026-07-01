@@ -11,6 +11,7 @@ linear_issue: null
 - **Created**: 2026-07-01
 - **Grill level**: 1 (standard)
 - **Supersedes**: `recorder-automation` M5 / FR-15 (previously "prompt-based speaker inference v1 + FluidAudio-only M5")
+- **Plans**: `docs/plans/recorder-automation-speaker-diarization-m1.plan.md` (M1 — native ElevenLabs vertical slice; FluidAudio fallback / AC-4 deferred to M2)
 
 ## Feature Summary
 
