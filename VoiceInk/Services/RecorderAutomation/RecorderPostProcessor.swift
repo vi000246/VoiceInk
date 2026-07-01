@@ -85,8 +85,9 @@ final class RecorderPostProcessor {
     ) async {
         let store = RecorderConfigStore.shared
 
-        // Speaker diarization (best-effort, before classification). Native-capable models produce
-        // labelled segments; others keep the plain transcript (FluidAudio fallback is M2).
+        // Speaker diarization (best-effort, before classification). Native-capable models (ElevenLabs)
+        // use their word-accurate API; every other model falls back to the on-device FluidAudio
+        // diarizer. Any failure degrades silently to the plain transcript.
         if store.recorderDiarizationEnabled, let path = transcription.audioFileURL {
             let url = URL(fileURLWithPath: path)
             if let segments = await DiarizationCoordinator.diarize(
@@ -96,9 +97,6 @@ final class RecorderPostProcessor {
                 expectedSpeakers: store.recorderExpectedSpeakerCount) {
                 transcription.speakerSegments = segments   // also sets speakerLabeled = true
                 try? modelContext.save()
-            } else if !DiarizationCoordinator.supportsNativeDiarization(modelName: transcription.transcriptionModelName) {
-                NotificationManager.shared.showNotification(
-                    title: "此轉錄模型尚不支援語者辨識（本地補齊為後續版本）", type: .info, duration: 4)
             }
         }
 

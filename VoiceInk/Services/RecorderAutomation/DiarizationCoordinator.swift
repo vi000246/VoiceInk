@@ -20,18 +20,40 @@ enum DiarizationCoordinator {
         return false
     }
 
-    /// Merged speaker segments for the audio, or nil when diarization is unavailable (non-native
-    /// model in M1) or failed (missing key / API / network error → degrade to plain transcript).
+    /// Merged speaker segments for the audio, or nil when diarization can't produce anything
+    /// (degrade to plain transcript). Native-capable models (ElevenLabs) use their word-accurate
+    /// API; every other model — and any native failure — falls back to the on-device FluidAudio
+    /// diarizer so diarization is universal across all transcription models.
     static func diarize(audioURL: URL, transcriptionModelName: String?,
                         language: String?, expectedSpeakers: Int?) async -> [SpeakerSegment]? {
-        guard supportsNativeDiarization(modelName: transcriptionModelName),
-              let modelName = transcriptionModelName else { return nil }
+        if supportsNativeDiarization(modelName: transcriptionModelName),
+           let modelName = transcriptionModelName {
+            if let native = await nativeElevenLabs(audioURL: audioURL, modelName: modelName,
+                                                   language: language, expectedSpeakers: expectedSpeakers) {
+                return native
+            }
+            // Native path failed (no key / API error) → still try the local fallback below.
+        }
+        // Universal on-device fallback (FluidAudio ASR + diarizer, aligned).
+        return await FluidAudioDiarizer.shared.diarize(
+            audioURL: audioURL,
+            expectedSpeakers: expectedSpeakers,
+            onFirstDownload: {
+                NotificationManager.shared.showNotification(
+                    title: "首次語者辨識：正在下載本地模型…", type: .info, duration: 4)
+            })
+    }
+
+    /// ElevenLabs native diarization via the in-repo client. nil on missing key / unreadable audio /
+    /// API error so the coordinator can fall back to the local diarizer.
+    private static func nativeElevenLabs(audioURL: URL, modelName: String,
+                                         language: String?, expectedSpeakers: Int?) async -> [SpeakerSegment]? {
         guard let apiKey = APIKeyManager.shared.getAPIKey(forProvider: "ElevenLabs"), !apiKey.isEmpty else {
-            logger.notice("Diarization skipped — no ElevenLabs API key")
+            logger.notice("Native diarization skipped — no ElevenLabs API key")
             return nil
         }
         guard let audioData = try? Data(contentsOf: audioURL) else {
-            logger.error("Diarization skipped — cannot read audio at \(audioURL.lastPathComponent, privacy: .public)")
+            logger.error("Native diarization skipped — cannot read audio at \(audioURL.lastPathComponent, privacy: .public)")
             return nil
         }
         do {
@@ -43,10 +65,10 @@ enum DiarizationCoordinator {
                 language: (language == "auto" ? nil : language),
                 numSpeakers: expectedSpeakers,
                 timeout: CloudTranscriptionTimeout.forAudio(audioData))
-            logger.notice("Diarization produced \(result.segments.count, privacy: .public) segments")
+            logger.notice("Native diarization produced \(result.segments.count, privacy: .public) segments")
             return result.segments
         } catch {
-            logger.error("Diarization failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Native diarization failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

@@ -35,7 +35,7 @@ struct RecorderModeSettingsView: View {
                         Stepper(value: expectedSpeakersBinding, in: 0...12) {
                             Text(store.recorderExpectedSpeakerCount.map { "預期人數：\($0)" } ?? "預期人數：自動")
                         }
-                        Text("辨識會議中的說話者並分段標記（講者1／講者2…，可事後改名）。僅 ElevenLabs 等原生支援的雲端模型有效；其他模型維持純文字（本地補齊為後續版本）。")
+                        Text("辨識會議中的說話者並分段標記（講者1／講者2…，可事後改名）。目前原生語者辨識僅 ElevenLabs 等特定雲端模型支援（最準）；其他模型改用本地辨識，首次需下載模型、速度較慢，且分段文字以本地辨識結果為準。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
