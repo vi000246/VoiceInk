@@ -10,12 +10,14 @@
 - **Owner**: TBD (personal fork — vi000246/VoiceInk)
 - **Status**: ACTIVE — living document
 - **Created**: 2026-06-29
-- **Last Updated**: 2026-07-01
+- **Last Updated**: 2026-07-02
 
 ## Change History
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
+| 2026-07-02 | free-form request | N/A | **Chunking made provider-aware — ElevenLabs never chunks.** Recordings were still being split into ~10-min WAV chunks because the chunk gate (`AudioFileTranscriptionManager`) and the `fileTooLarge` guard (`CloudTranscriptionService`) used a fixed 25MB limit for ALL cloud providers. Added `ModelProvider.maxUploadBytes` (ElevenLabs 2GB, others ~25MB); both sites now gate on it, so an ElevenLabs recording is transcribed + diarized as ONE file. Timeout ceiling raised 600s→1800s for large single uploads. Build 204. |
+| 2026-07-02 | free-form request | N/A | **方案 C — diarization unified on whole-file ElevenLabs; FluidAudio diarization fallback REMOVED.** Root cause of "only the first 10-min chunk had speakers": the recorder reused the transcript path's <25MB WAV chunks for diarization, and ElevenLabs numbers speakers per request (so chunk N's `speaker_0` ≠ chunk N+1's). Two failed attempts recorded so we don't retry them (see **Key Decisions** below): (M2) per-chunk merge only labelled the whole transcript, ids still restarted per chunk; (方案 A) using a single local FluidAudio diarizer pass for a consistent timeline collapsed the whole recording to ONE speaker (FluidAudio diarization too weak on real audio). **Fix:** ElevenLabs STT accepts up to 5GB and diarizes long audio natively (up to 48 speakers, consistent), so the diarization call now sends the WHOLE recording in ONE request (`DiarizationCoordinator` reassembles chunks → one WAV when needed). Recorder transcription model is hardcoded to ElevenLabs `scribe_v2` via `RecorderTranscriptionConfig.transcriptionModelName` (settings picker hidden). `FluidAudioDiarizer` + `DiarizationAlignment` deleted; FluidAudio remains the app's local *transcription* engine (unchanged). Build green; tests trimmed to the surviving seams. |
 | 2026-06-29 | `docs/prd/recorder-auto-import-and-template-routing.prd.md` | `docs/srs/recorder-automation-auto-import-template-routing.srs.md` | Created from brownfield analysis — new module that watches recorder volume mounts, auto-imports audio into the existing transcription queue, classifies each transcript, routes to a category's CustomPrompt, and exports analysis Markdown to an Obsidian vault. |
 | 2026-06-29 | same | same | **M1 implemented** — mount monitor, import ledger (SHA-256 dedup), device config/store, queue origin tag + raw-transcription bypass, minimal Recorders page. Build green; 5 unit tests. |
 | 2026-06-30 | same | same | **M2 implemented** (FR-6–11,13,14) — `TranscriptClassificationService` (classify→id/uncertain+confidence), `TemplateRouter` (fallback on uncertain/below-floor), `LongTranscriptSummarizer` (map-reduce), `VaultExportService` (frontmatter+collapsible raw md), `RecorderPostProcessor` (orchestrator wired into `processItem`), `RecorderCategory` + store w/ undeletable fallback, Categories page, vault-root capture, delete-after-import. FR-12 partial: `reclassify` logic done, History badge UI deferred. 18 unit tests green. Manual/hardware AC pending. |
@@ -34,6 +36,46 @@ and AI-enhancement capabilities, then exports results as Markdown into a vault. 
 **reuses ~80% of VoiceInk** (transcription queue, `AIEnhancementService`, `CustomPrompt`,
 security-scoped bookmarks, notifications, SwiftData history, sidebar/side-panel UI) and adds
 only thin new services plus two settings pages.
+
+---
+
+## Key Decisions / 踩雷筆記 (diarization)
+
+> **Read this before touching recorder diarization.** These are locked-in decisions from real
+> failures — don't re-introduce the removed approaches.
+
+1. **Recorder transcription model is hardcoded to ElevenLabs `scribe_v2`.**
+   Single source of truth: `RecorderTranscriptionConfig.transcriptionModelName`. The Recorder Mode
+   settings picker is hidden. Rationale: ElevenLabs accepts the whole recording in one request
+   (≤5GB) and diarizes long audio natively with **consistent speaker ids across the entire file**,
+   so the recorder never has to chunk-for-diarization, stitch speakers across chunks, or fall back
+   to a local diarizer. To change the model later, edit that one constant (the UI adapts).
+   *Requires an ElevenLabs API key* — without one, transcription resolution falls back to the first
+   usable model and diarization is unavailable.
+
+2. **Chunking is provider-aware — ElevenLabs never chunks (transcript OR diarization).**
+   Chunking is gated on `ModelProvider.maxUploadBytes`: ElevenLabs = 2GB (docs allow ~5GB), whisper-
+   style providers = ~25MB. `AudioFileTranscriptionManager.transcribeSamples` only splits when the
+   whole 16kHz WAV exceeds that cap, and `CloudTranscriptionService` guards on the same per-provider
+   value. So an ElevenLabs recording of any realistic length is transcribed as ONE file, and
+   `DiarizationCoordinator.diarize` sends that same whole recording in ONE
+   `ElevenLabsDiarizingClient.transcribeDiarized` call (it still reassembles chunks into one file if
+   a *different* provider ever produced them). ❌ Do not reinstate a fixed global 25MB/10-min chunk
+   limit — that split ElevenLabs recordings for no reason and broke cross-chunk speaker identity.
+
+3. **The on-device FluidAudio diarization fallback is REMOVED** (`FluidAudioDiarizer`,
+   `DiarizationAlignment` deleted). It stays only as the app-wide local *transcription* engine.
+   ❌ **Do not re-add a local diarizer fallback for the recorder.** Two removed attempts and why:
+   - **Per-chunk merge (M2 → superseded):** diarize each chunk and offset times. Labelled the whole
+     transcript but speaker ids restarted per chunk — cross-chunk identity wrong.
+   - **方案 A (local global timeline):** one FluidAudio diarizer pass over the concatenated audio to
+     get consistent ids, aligning ElevenLabs words onto it. **FluidAudio's diarizer collapsed the
+     whole recording to ONE speaker** on real audio — its diarization quality is not good enough.
+     ElevenLabs' own diarizer is far stronger; use it, don't reinvent it.
+
+4. **Only-if-forced future path:** if a recording ever exceeds ElevenLabs' limits (≈never for a
+   voice recorder), the fallback is speaker-embedding voiceprint matching across chunks — **not** a
+   local frame-level diarizer. Not implemented; do not build until actually needed.
 
 ---
 
@@ -58,9 +100,9 @@ only thin new services plus two settings pages.
 | Routing | Selecting the category's `CustomPrompt` for enhancement; `uncertain` → fallback category. |
 | Fallback (General) Category | The undeletable default category used when classification is `uncertain`. |
 | Vault Root | The Obsidian vault directory (security-scoped bookmark) under which category sub-folders live. |
-| Diarization | Splitting a transcript into per-speaker segments so the user can tell who said what. Hybrid: native (cloud) or FluidAudio (local) — see below. |
-| Native Diarization | Speaker labels returned by the transcription model's own API (e.g. ElevenLabs `diarize=true` → `words[].speaker_id`). No extra call, word-accurate. |
-| Diarization Fallback | For models with no native support: a separate FluidAudio pass yields a speaker timeline, aligned to the transcript's segment timestamps. |
+| Diarization | Splitting a transcript into per-speaker segments so the user can tell who said what. **(方案 C, 2026-07-02)** Recorder path is ElevenLabs-only — see Key Decisions. |
+| Native Diarization | Speaker labels returned by the transcription model's own API (ElevenLabs `diarize=true` → `words[].speaker_id`). Whole recording sent in one request → speaker ids consistent across the entire transcript. |
+| ~~Diarization Fallback~~ | **SUPERSEDED (2026-07-02, 方案 C)** — local FluidAudio fallback removed; the recorder is hardcoded to ElevenLabs which diarizes natively. |
 | Speaker Segment | A `{ speaker, text, start, end }` unit; consecutive same-speaker words/segments merged. Stored as JSON in `Transcription.speakerSegmentsRaw`. |
 | Speaker Id vs Name | Segments carry a stable anonymous id ("1", "2"); a rename map (`speakerNamesRaw`) resolves ids → display names (講者1 → "Logan") at render time. |
 | Speaker Inference (legacy) | Old prompt-driven guess of the speaker; superseded by real diarization above. |
@@ -92,8 +134,8 @@ only thin new services plus two settings pages.
 | Watched folder | Local filesystem | An always-present folder (`.folder` source) into which recordings are copied/synced; watched live |
 | AI provider (Anthropic / OpenAI / …) | Service | Classification call + enhancement call (existing provider routing) |
 | Obsidian vault (filesystem) | External store | Destination for exported Markdown notes |
-| FluidAudio diarizer models | Local ML | On-device speaker diarization fallback for models without native support |
-| ElevenLabs / Deepgram / AssemblyAI / … STT API | Service | Native diarization (`diarize` param) returned inline with the transcript |
+| ~~FluidAudio diarizer models~~ | ~~Local ML~~ | **SUPERSEDED (2026-07-02, 方案 C)** — local diarization fallback removed; see Key Decisions. Diarization is ElevenLabs-only. |
+| ElevenLabs STT API | Service | Native diarization (`diarize` param) returned inline with the transcript — the recorder's sole diarization path (whole recording, one request) |
 
 ### External Dependencies
 | Dependency | Purpose | Failure Mode |
@@ -102,8 +144,8 @@ only thin new services plus two settings pages.
 | `DispatchSource` directory vnode (`O_EVTONLY`) | Detect new files in `.folder` sources | Bookmark unresolvable / `open()` fails → watcher logs + skips that folder |
 | AI provider (via `AIEnhancementService` / `AIChatCompletionService`) | Classification + enhancement | Reuse existing retry/backoff + graceful error strings; item marked failed, original kept |
 | Security-scoped bookmarks (source folder + vault root) | Sandbox-safe file access | Stale bookmark → prompt user to re-grant in Recorders page |
-| `FluidInference/FluidAudio` Diarizer (already linked) | Local diarization fallback (`DiarizerManager` / `OfflineDiarizerManager`) | Models not downloaded → skip diarization, keep plain transcript (FR-10 degrade) |
-| ElevenLabs STT `diarize` (via in-repo `ElevenLabsDiarizingClient`) | Native diarization for ElevenLabs models | API error → degrade to plain transcript; diarization-off case uses the unchanged LLMkit path |
+| ~~`FluidInference/FluidAudio` Diarizer~~ | ~~Local diarization fallback~~ | **SUPERSEDED (2026-07-02, 方案 C)** — removed for the recorder; see Key Decisions. (FluidAudio still linked for local *transcription*.) |
+| ElevenLabs STT `diarize` (via in-repo `ElevenLabsDiarizingClient`) | Sole diarization path — whole recording in one request | API error / no key → degrade to plain transcript; diarization-off case uses the unchanged LLMkit path |
 
 ---
 
@@ -143,10 +185,10 @@ only thin new services plus two settings pages.
 | `LongTranscriptSummarizer` | Map-reduce summarization above token threshold | `func condense(_ text:) async -> String` |
 | `VaultExportService` | Write Markdown (frontmatter + analysis; raw transcript appended under a `## 原始逐字稿` rule **only when** `recorderExportIncludeRawTranscript` is on, default off) to vault sub-folder | `func buildMarkdown(_:includeRawTranscript:)`, `func export(...) throws -> URL` |
 | `RecorderConfigStore` | Persist `RecorderDevice[]` / `RecorderCategory[]` as JSON in `UserDefaults` | mirrors `ModeManager` (`Modes/ModeConfig.swift:276-287`) |
-| `DiarizationCoordinator` | Provider-agnostic entry: route native-capable models to native diarization, else FluidAudio fallback + alignment; best-effort, never drops transcript | `func diarize(audioURL:model:transcript:expectedSpeakers:) async -> [SpeakerSegment]?` |
-| `ElevenLabsDiarizingClient` | In-repo (bypasses remote LLMkit) ElevenLabs STT call with `diarize=true`; parse `words[].speaker_id` → merged `[SpeakerSegment]` + full text | `static func transcribeDiarized(...) async throws -> (text: String, segments: [SpeakerSegment])` |
-| `FluidAudioDiarizer` | Wrap FluidAudio `OfflineDiarizerManager` / `DiarizerManager` → speaker timeline `[(speaker,start,end)]` | `func timeline(_ audioURL:, expectedSpeakers:) async -> [SpeakerTimelineEntry]` |
-| Diarization alignment | Assign each timestamped transcript segment to the max-overlap speaker in the timeline | pure function `align(segments:timeline:) -> [SpeakerSegment]` |
+| `DiarizationCoordinator` | **(方案 C, 2026-07-02)** ElevenLabs-only entry: reassemble chunks → one file → single whole-recording diarization request; native fallback removed | `func diarize(audioURLs:transcriptionModelName:language:expectedSpeakers:detectSpeakerRoles:) async -> Outcome?` |
+| `ElevenLabsDiarizingClient` | In-repo (bypasses remote LLMkit) ElevenLabs STT call with `diarize=true`; parse `words[].speaker_id` → merged `[SpeakerSegment]` + full text | `static func transcribeDiarized(...) async throws -> Result` |
+| ~~`FluidAudioDiarizer`~~ | ~~Local diarizer timeline~~ | **DELETED (2026-07-02, 方案 C)** — see Key Decisions |
+| ~~Diarization alignment~~ | ~~token↔timeline max-overlap~~ | **DELETED (2026-07-02, 方案 C)** — `DiarizationAlignment` removed |
 | Recorders / Categories views | Settings UI (cards + ~400pt side panel; category list) | New `ViewType` cases + `AppSidebar` entries |
 
 ### Data Flow

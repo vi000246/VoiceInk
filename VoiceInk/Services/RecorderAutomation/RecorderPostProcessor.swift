@@ -7,10 +7,15 @@ import os
 /// classify → route to category prompt → (long?) summarize → enhance → persist metadata → export.
 /// Runs per item; all heavy work is async. Decoupled from the transcription engine.
 @MainActor
-final class RecorderPostProcessor {
+final class RecorderPostProcessor: ObservableObject {
     static let shared = RecorderPostProcessor()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() {}
+
+    /// Transcriptions whose post-processing (diarization + classification + optional export) is still
+    /// running. The raw transcript is already visible in Recording Management by then, so the UI
+    /// watches this to badge those records "處理中" until their category + speaker labels land.
+    @Published private(set) var processingIds: Set<UUID> = []
 
     /// Confidence below this floor routes to the fallback category. Permissive default; calibrate later.
     private var confidenceFloor: Double {
@@ -84,21 +89,23 @@ final class RecorderPostProcessor {
         aiService: AIService
     ) async {
         let store = RecorderConfigStore.shared
+        processingIds.insert(transcription.id)                 // badge the record "處理中" in the UI
+        defer { processingIds.remove(transcription.id) }
 
         // Speaker diarization (best-effort, before classification). Native-capable models (ElevenLabs)
         // use their word-accurate API; every other model falls back to the on-device FluidAudio
         // diarizer. Any failure degrades silently to the plain transcript.
-        // audioFileURL is stored as an absoluteString (file://…), so parse with URL(string:);
-        // fall back to a filesystem path only for legacy plain-path values.
-        if store.recorderDiarizationEnabled,
-           let path = transcription.audioFileURL,
-           let url = URL(string: path) ?? (path.hasPrefix("/") ? URL(fileURLWithPath: path) : nil) {
-            if let segments = await DiarizationCoordinator.diarize(
-                audioURL: url,
+        if store.recorderDiarizationEnabled {
+            let audioURLs = diarizationAudioURLs(for: transcription)
+            if !audioURLs.isEmpty,
+               let outcome = await DiarizationCoordinator.diarize(
+                audioURLs: audioURLs,
                 transcriptionModelName: transcription.transcriptionModelName,
                 language: store.recorderLanguage,
-                expectedSpeakers: store.recorderExpectedSpeakerCount) {
-                transcription.speakerSegments = segments   // also sets speakerLabeled = true
+                expectedSpeakers: store.recorderExpectedSpeakerCount,
+                detectSpeakerRoles: store.recorderDetectSpeakerRoles) {
+                transcription.speakerSegments = outcome.segments   // also sets speakerLabeled = true
+                transcription.speakerSegmentsAreNative = outcome.isNative
                 try? modelContext.save()
             }
         }
@@ -122,6 +129,20 @@ final class RecorderPostProcessor {
                 title: "已轉錄（待處理）：\(transcription.recorderCategoryName ?? "")", type: .info, duration: 3)
         }
         NotificationCenter.default.post(name: .recorderImportCompleted, object: transcription)
+    }
+
+    /// Audio to diarize. A long recording transcribed by a cloud model is split into <25MB WAV
+    /// chunks; the plain transcript merges them all, so diarization must see every chunk — otherwise
+    /// it stops at the first (~10 min) chunk and labels only part of the transcript. Prefer the
+    /// ordered chunk list; fall back to the single stored audio file for non-chunked recordings.
+    /// `audioFileURL` is an absoluteString (file://…); `audioChunkURLs` are filesystem paths.
+    private func diarizationAudioURLs(for transcription: Transcription) -> [URL] {
+        let chunks = transcription.audioChunkURLs
+        if !chunks.isEmpty { return chunks }
+        guard let path = transcription.audioFileURL else { return [] }
+        if let url = URL(string: path), url.isFileURL { return [url] }
+        if path.hasPrefix("/") { return [URL(fileURLWithPath: path)] }   // legacy plain-path values
+        return []
     }
 
     /// Classify the raw transcript and set the SUGGESTED category metadata. No enhancement, no export.

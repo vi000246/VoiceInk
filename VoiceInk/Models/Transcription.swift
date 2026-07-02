@@ -39,6 +39,11 @@ final class Transcription {
     var classificationConfidence: Double?
     var exportedFilePath: String?
     var speakerLabeled: Bool = false
+    /// True only when the speaker segments' text is the user's real transcript (native diarization,
+    /// e.g. ElevenLabs). FluidAudio fallback segments carry local Parakeet-ASR text that may not
+    /// match the recording's language (e.g. Chinese), so they must never replace the original
+    /// transcript in the UI — the raw-transcript tab shows plain `text` instead.
+    var speakerSegmentsAreNative: Bool = false
     /// Newline-joined absolute paths of the split audio chunks, when a long recording was chunked
     /// for cloud transcription. nil for single-file recordings.
     var audioChunkPathsRaw: String?
@@ -89,8 +94,14 @@ final class Transcription {
     /// Display name for a speaker id: the rename map wins; otherwise "講者N" by first-appearance order.
     func displayName(for speakerId: String) -> String {
         if let name = speakerNames[speakerId], !name.isEmpty { return name }
-        let idx = orderedSpeakerIds.firstIndex(of: speakerId) ?? 0
-        return "講者\(idx + 1)"
+        // ElevenLabs detect_speaker_roles returns semantic ids instead of speaker_0/1/…
+        switch speakerId {
+        case "agent": return "客服"
+        case "customer": return "客戶"
+        default:
+            let idx = orderedSpeakerIds.firstIndex(of: speakerId) ?? 0
+            return "講者\(idx + 1)"
+        }
     }
 
     /// Rename a speaker; a blank name removes the override (falls back to 講者N).

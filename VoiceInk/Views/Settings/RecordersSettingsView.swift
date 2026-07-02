@@ -120,6 +120,7 @@ private struct RecorderDeviceCard: View {
     let onEdit: () -> Void
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var transcriptionManager = AudioTranscriptionManager.shared
+    @ObservedObject private var importService = RecorderImportService.shared
     @State private var isHovering = false
     @State private var expanded = false
     @State private var files: [RecorderImportService.DeviceFileStatus]?
@@ -198,14 +199,24 @@ private struct RecorderDeviceCard: View {
     private var isBatchProcessing: Bool { deviceQueueItems.contains { !$0.status.isTerminal } }
 
     @ViewBuilder private var progressSection: some View {
+        // Copy-into-storage phase: no queue item exists yet, so show a lightweight "準備中" row so a
+        // reprocess of a large recording doesn't look frozen for the tens of seconds before transcription.
+        if importService.preparingDeviceIds.contains(device.id) {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("準備中…（複製檔案）").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            }
+            .padding(.top, 10)
+        }
         let items = deviceQueueItems
         if isBatchProcessing, !items.isEmpty {
             let done = items.filter { if case .completed = $0.status { return true }; return false }.count
             let failed = items.filter { if case .failed = $0.status { return true }; return false }.count
             let active = items.first { if case .processing = $0.status { return true }; return false }
-            // Fold the active file's chunk fraction into the bar so a single long recording still
-            // advances smoothly instead of jumping only when a whole file finishes.
-            let value = min(Double(done) + (active?.chunkProgress?.fraction ?? 0), Double(items.count))
+            // The linear bar is only meaningful when there's real sub-progress: a chunked (split)
+            // recording. A single-file upload can't report true progress, so we show elapsed seconds
+            // instead of a bar that just sits at 0.
+            let activeIsChunked = (active?.chunkProgress?.total ?? 0) > 1
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
@@ -218,8 +229,19 @@ private struct RecorderDeviceCard: View {
                         Text(label).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                ProgressView(value: value, total: Double(items.count))
-                    .progressViewStyle(.linear).tint(AppTheme.Accent.primary)
+                if activeIsChunked {
+                    // Fold the active file's chunk fraction into the bar so a single long recording
+                    // still advances smoothly instead of jumping only when a whole file finishes.
+                    let value = min(Double(done) + (active?.chunkProgress?.fraction ?? 0), Double(items.count))
+                    ProgressView(value: value, total: Double(items.count))
+                        .progressViewStyle(.linear).tint(AppTheme.Accent.primary)
+                } else if let start = active?.transcribingStartedAt {
+                    // Single-file upload: tick elapsed seconds (no fake progress bar).
+                    TimelineView(.periodic(from: start, by: 1)) { context in
+                        Text("上傳／辨識中… 已用 \(Int(max(0, context.date.timeIntervalSince(start)))) 秒")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                }
             }
             .padding(.top, 10)
         }

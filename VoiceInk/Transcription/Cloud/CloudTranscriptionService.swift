@@ -38,10 +38,6 @@ enum CloudTranscriptionError: Error, LocalizedError {
     }
 }
 
-/// Cloud whisper APIs (OpenAI, Groq, …) reject uploads above ~25MB. VoiceInk uploads a 16kHz mono
-/// WAV, so anything past ~13 minutes crosses this line — guard early with an actionable error.
-private let cloudTranscriptionByteLimit = 25 * 1024 * 1024
-
 class CloudTranscriptionService: TranscriptionService {
     private let modelContext: ModelContext
     private lazy var openAICompatibleService = OpenAICompatibleTranscriptionService()
@@ -66,10 +62,24 @@ class CloudTranscriptionService: TranscriptionService {
             guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider) else {
                 throw CloudTranscriptionError.unsupportedProvider
             }
-            if audioData.count > cloudTranscriptionByteLimit {
-                throw CloudTranscriptionError.fileTooLarge(bytes: audioData.count, limitBytes: cloudTranscriptionByteLimit)
+            let uploadLimit = model.provider.maxUploadBytes
+            if audioData.count > uploadLimit {
+                throw CloudTranscriptionError.fileTooLarge(bytes: audioData.count, limitBytes: uploadLimit)
             }
             let apiKey = try requireAPIKey(forProvider: cloudProvider.providerKey)
+            // no_verbatim is an ElevenLabs scribe_v2-only param the bundled LLMkit client can't send,
+            // so route that specific case through the in-repo REST client. Everything else (incl.
+            // scribe_v1 or noVerbatim off) uses the normal shared path.
+            if context.noVerbatim, model.provider == .elevenLabs, model.name == "scribe_v2" {
+                return try await ElevenLabsScribeClient.transcribe(
+                    audioData: audioData,
+                    fileName: fileName,
+                    apiKey: apiKey,
+                    model: model.name,
+                    language: language,
+                    noVerbatim: true,
+                    timeout: CloudTranscriptionTimeout.forAudio(audioData))
+            }
             return try await cloudProvider.transcribe(
                 audioData: audioData,
                 fileName: fileName,

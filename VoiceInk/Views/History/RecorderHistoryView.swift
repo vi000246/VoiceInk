@@ -182,6 +182,7 @@ private struct RecordingCard: View {
     @EnvironmentObject private var enhancementService: AIEnhancementService
     @EnvironmentObject private var aiService: AIService
     @StateObject private var store = RecorderConfigStore.shared
+    @ObservedObject private var postProcessor = RecorderPostProcessor.shared
 
     @State private var selectedCategoryId: UUID?
     @State private var showAnalysis = false
@@ -292,7 +293,11 @@ private struct RecordingCard: View {
                     Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                     if let sizeText { Text(sizeText).font(.system(size: 11)).foregroundStyle(.secondary) }
-                    if let c = transcription.recorderCategoryName { badge(c, "tag.fill", AppTheme.Accent.primary) }
+                    if postProcessor.processingIds.contains(transcription.id) {
+                        processingBadge
+                    } else if let c = transcription.recorderCategoryName {
+                        badge(c, "tag.fill", AppTheme.Accent.primary)
+                    }
                     if transcription.exportedFilePath != nil { badge("已輸出", "checkmark.circle.fill", AppTheme.Status.success) }
                 }
             }
@@ -429,6 +434,18 @@ private struct RecordingCard: View {
         .buttonStyle(.plain)
     }
 
+    /// Shown while post-processing (classification + speaker diarization) is still running — the raw
+    /// transcript is already visible, but the category and speaker labels haven't landed yet.
+    private var processingBadge: some View {
+        HStack(spacing: 3) {
+            ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 10, height: 10)
+            Text("處理中（分類・語者辨識）").font(.system(size: 10, weight: .medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+    }
+
     private func badge(_ text: String, _ system: String, _ tint: Color) -> some View {
         HStack(spacing: 3) {
             Image(systemName: system).font(.system(size: 9))
@@ -468,8 +485,13 @@ private struct TranscriptSheet: View {
 
     private var hasAnalysis: Bool { analysisText?.isEmpty == false }
     private var text: String { (showAnalysis ? analysisText : rawText) ?? rawText }
-    /// Show speaker-grouped blocks only for the raw-transcript tab of a diarized recording.
-    private var showsSpeakers: Bool { !showAnalysis && transcription.speakerLabeled && !transcription.speakerSegments.isEmpty }
+    /// Show speaker-grouped blocks only for the raw-transcript tab of a *natively* diarized recording.
+    /// Native segment text (ElevenLabs) IS the real transcript; the local FluidAudio fallback's text
+    /// comes from Parakeet ASR and may not match the recording's language, so for it we fall through
+    /// to the plain original transcript instead of replacing it with mismatched segment text.
+    private var showsSpeakers: Bool {
+        !showAnalysis && transcription.speakerSegmentsAreNative && !transcription.speakerSegments.isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

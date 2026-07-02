@@ -46,6 +46,9 @@ class AudioFileQueueItem: Identifiable, ObservableObject {
     @Published var transcription: Transcription?
     /// Set while a long recording is transcribed chunk-by-chunk; nil for single-shot transcription.
     @Published var chunkProgress: ChunkProgress?
+    /// When the transcribing phase began — drives the elapsed-seconds display for single-file
+    /// (unchunked) uploads, where a progress bar can't reflect real upload progress. nil until then.
+    @Published var transcribingStartedAt: Date?
 
     init(url: URL, origin: QueueItemOrigin = .manual) {
         self.url = url

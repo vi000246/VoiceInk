@@ -287,6 +287,12 @@ struct SettingsView: View {
             Section("Diagnostics") {
                 DiagnosticsSettingsView()
             }
+
+            Section("About") {
+                LabeledContent("Version") {
+                    Text(Self.appVersionString).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -305,6 +311,16 @@ struct SettingsView: View {
         } message: {
             Text("Your language change will take full effect after you quit and reopen VoiceInk.")
         }
+    }
+
+    /// Marketing version + build number from the bundle (auto-generated from MARKETING_VERSION /
+    /// CURRENT_PROJECT_VERSION). The build number is bumped every deploy so it can be cross-checked
+    /// against what's actually installed.
+    private static var appVersionString: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (build \(build))"
     }
 
     private static let defaultCancelRecordingShortcut = Shortcut.key(

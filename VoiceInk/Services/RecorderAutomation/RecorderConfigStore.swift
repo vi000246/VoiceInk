@@ -28,6 +28,12 @@ final class RecorderConfigStore: ObservableObject {
     @Published private(set) var recorderDiarizationEnabled: Bool = false
     /// Expected number of speakers, forwarded to the diarizer. nil → let the model decide.
     @Published private(set) var recorderExpectedSpeakerCount: Int?
+    /// ElevenLabs native only: label speakers as agent/customer roles (`detect_speaker_roles`).
+    /// Requires diarize=true; +10% transcription cost. Ignored by the local FluidAudio fallback.
+    @Published private(set) var recorderDetectSpeakerRoles: Bool = false
+    /// ElevenLabs scribe_v2 only: drop filler words / false starts / non-speech sounds from the
+    /// transcript (`no_verbatim`). No extra cost. Ignored by every other model.
+    @Published private(set) var recorderNoVerbatim: Bool = false
     /// Classifier model (e.g. a cheap local Ollama). nil → use the default analysis model.
     @Published private(set) var recorderClassifierProviderName: String?
     @Published private(set) var recorderClassifierModelName: String?
@@ -47,6 +53,8 @@ final class RecorderConfigStore: ObservableObject {
     private let recExportRawKey = "recorderExportIncludeRawV1"
     private let recDiarizationKey = "recorderDiarizationEnabledV1"
     private let recExpectedSpeakersKey = "recorderExpectedSpeakerCountV1"
+    private let recDetectSpeakerRolesKey = "recorderDetectSpeakerRolesV1"
+    private let recNoVerbatimKey = "recorderNoVerbatimV1"
     private let recClassifierProviderKey = "recorderClassifierProviderV1"
     private let recClassifierModelKey = "recorderClassifierModelV1"
     private let recAnalysisTimeoutKey = "recorderAnalysisTimeoutV1"
@@ -77,6 +85,8 @@ final class RecorderConfigStore: ObservableObject {
         recorderDiarizationEnabled = UserDefaults.standard.bool(forKey: recDiarizationKey)
         let storedSpeakers = UserDefaults.standard.integer(forKey: recExpectedSpeakersKey)
         recorderExpectedSpeakerCount = storedSpeakers > 0 ? storedSpeakers : nil
+        recorderDetectSpeakerRoles = UserDefaults.standard.bool(forKey: recDetectSpeakerRolesKey)
+        recorderNoVerbatim = UserDefaults.standard.bool(forKey: recNoVerbatimKey)
         recorderClassifierProviderName = UserDefaults.standard.string(forKey: recClassifierProviderKey)
         recorderClassifierModelName = UserDefaults.standard.string(forKey: recClassifierModelKey)
         let storedTimeout = UserDefaults.standard.integer(forKey: recAnalysisTimeoutKey)
@@ -123,6 +133,14 @@ final class RecorderConfigStore: ObservableObject {
     func setRecorderExpectedSpeakerCount(_ n: Int?) {
         recorderExpectedSpeakerCount = n
         UserDefaults.standard.set(n ?? 0, forKey: recExpectedSpeakersKey)
+    }
+    func setRecorderDetectSpeakerRoles(_ on: Bool) {
+        recorderDetectSpeakerRoles = on
+        UserDefaults.standard.set(on, forKey: recDetectSpeakerRolesKey)
+    }
+    func setRecorderNoVerbatim(_ on: Bool) {
+        recorderNoVerbatim = on
+        UserDefaults.standard.set(on, forKey: recNoVerbatimKey)
     }
 
     /// Set (or clear) the single global vault root bookmark.

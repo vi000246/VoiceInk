@@ -168,10 +168,12 @@ class AudioTranscriptionManager: ObservableObject {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
             try Task.checkCancellation()
 
-            // Phase: Transcribing. Long recordings on cloud models are split into <25MB WAV chunks,
-            // transcribed one at a time, and the transcripts merged back together.
+            // Phase: Transcribing. Long recordings are split into WAV chunks ONLY for providers whose
+            // request cap requires it (whisper-style ~25MB); ElevenLabs takes the whole file in one
+            // request. Chunked pieces are transcribed one at a time and merged back together.
             item.status = .processing(phase: .transcribing)
             let transcriptionStart = Date()
+            item.transcribingStartedAt = transcriptionStart
             let (rawText, chunkURLs) = try await transcribeSamples(
                 samples, model: currentModel,
                 requestContext: transcriptionConfiguration.requestContext,
@@ -268,6 +270,7 @@ class AudioTranscriptionManager: ObservableObject {
                 transcription.audioChunkPathsRaw = chunkURLs.map { $0.path }.joined(separator: "\n")
             }
             item.chunkProgress = nil
+            item.transcribingStartedAt = nil
 
             modelContext.insert(transcription)
             try modelContext.save()
@@ -307,8 +310,11 @@ class AudioTranscriptionManager: ObservableObject {
         await serviceRegistry.cleanup()
     }
 
-    /// 16kHz mono samples per WAV chunk. 10 min → ~19MB, safely under the ~25MB cloud upload cap.
+    /// 16kHz mono samples per WAV chunk, for providers that DO chunk. 10 min → ~19MB, safely under
+    /// the ~25MB whisper-style cap.
     private static let chunkSampleLimit = Int(AudioProcessor.AudioFormat.targetSampleRate) * 600
+    /// 16kHz mono int16 WAV = 2 bytes/sample. Used to compare a recording against a provider's limit.
+    private static let bytesPerSample = 2
 
     /// Transcribe processed samples, chunking long recordings for cloud models. Returns the merged
     /// transcript plus the on-disk WAV chunk(s) — a single WAV when no chunking was needed, or the
@@ -322,7 +328,11 @@ class AudioTranscriptionManager: ObservableObject {
         item: AudioFileQueueItem
     ) async throws -> (text: String, chunkURLs: [URL]) {
         let limit = Self.chunkSampleLimit
-        let needsChunking = model.provider.usesCloudUpload && samples.count > limit
+        // Chunk only when the WHOLE recording exceeds the provider's request cap. ElevenLabs accepts
+        // ~5GB and diarizes long audio natively, so it never chunks (the recorder depends on this);
+        // whisper-style providers (~25MB) still split into `limit`-sized chunks.
+        let wholeBytes = samples.count * Self.bytesPerSample
+        let needsChunking = model.provider.usesCloudUpload && wholeBytes > model.provider.maxUploadBytes
 
         guard needsChunking else {
             let url = recordingsDirectory.appendingPathComponent("transcribed_\(UUID().uuidString).wav")

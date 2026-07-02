@@ -87,6 +87,9 @@ struct ModeConfig: Codable, Identifiable, Equatable {
     var customCommand: ModeCustomCommand?
     var isEnabled: Bool = true
     var isDefault: Bool = false
+    /// Runtime-only (never persisted): recorder ElevenLabs scribe_v2 `no_verbatim`. Set when the
+    /// recorder builds its transient mode; stays false for user voice Modes.
+    var noVerbatim: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id, name, icon, appConfigs, urlConfigs, triggerGroups, triggerWords, isAIEnhancementEnabled, selectedPrompt, isRealtimeTranscriptionEnabled, selectedLanguage, isTextFormattingEnabled, useClipboardContext, useSelectedTextContext, useScreenCapture, selectedAIProvider, selectedAIModel, outputMode, isAutoSendEnabled, autoSendKey, customCommand, isEnabled, isDefault
@@ -99,7 +102,7 @@ struct ModeConfig: Codable, Identifiable, Equatable {
          urlConfigs: [URLConfig]? = nil, triggerGroups: [ModeTriggerGroup]? = nil, triggerWords: [String] = [],
          isAIEnhancementEnabled: Bool, selectedPrompt: String? = nil,
          selectedTranscriptionModelName: String? = nil, isRealtimeTranscriptionEnabled: Bool = true, selectedLanguage: String? = nil, useClipboardContext: Bool = false, useSelectedTextContext: Bool = true, useScreenCapture: Bool = false,
-         isTextFormattingEnabled: Bool = false, selectedAIProvider: String? = nil, selectedAIModel: String? = nil, outputMode: ModeOutputMode = .paste, autoSendKey: AutoSendKey = .none, customCommand: ModeCustomCommand? = nil, isEnabled: Bool = true, isDefault: Bool = false) {
+         isTextFormattingEnabled: Bool = false, selectedAIProvider: String? = nil, selectedAIModel: String? = nil, outputMode: ModeOutputMode = .paste, autoSendKey: AutoSendKey = .none, customCommand: ModeCustomCommand? = nil, isEnabled: Bool = true, isDefault: Bool = false, noVerbatim: Bool = false) {
         self.id = id
         self.name = name
         self.icon = icon
@@ -123,6 +126,7 @@ struct ModeConfig: Codable, Identifiable, Equatable {
         self.isTextFormattingEnabled = isTextFormattingEnabled
         self.isEnabled = isEnabled
         self.isDefault = isDefault
+        self.noVerbatim = noVerbatim
     }
 
     static func normalizedTriggerWords(_ words: [String]) -> [String] {

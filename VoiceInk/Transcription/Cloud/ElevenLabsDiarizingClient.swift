@@ -44,8 +44,11 @@ struct ElevenLabsDiarizingClient {
 
     /// Pure multipart body builder (kept separate so it is unit-testable).
     /// `numSpeakers` nil → omit `num_speakers` and let the model decide the speaker count.
+    /// `detectSpeakerRoles` true → send `detect_speaker_roles=true`, so speaker ids come back as
+    /// `agent`/`customer` instead of `speaker_0`/… (requires diarize=true; +10% cost).
     static func multipartBody(boundary: String, audio: Data, fileName: String,
-                              model: String, language: String?, numSpeakers: Int?) -> Data {
+                              model: String, language: String?, numSpeakers: Int?,
+                              detectSpeakerRoles: Bool = false) -> Data {
         var body = Data()
         func field(_ name: String, _ value: String) {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -60,6 +63,7 @@ struct ElevenLabsDiarizingClient {
         field("temperature", "0.0")
         field("tag_audio_events", "false")
         field("diarize", "true")
+        if detectSpeakerRoles { field("detect_speaker_roles", "true") }
         if let numSpeakers { field("num_speakers", String(numSpeakers)) }
         if let language, !language.isEmpty { field("language_code", language) }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
@@ -70,6 +74,7 @@ struct ElevenLabsDiarizingClient {
     /// can degrade to a plain transcript.
     static func transcribeDiarized(audioData: Data, fileName: String, apiKey: String,
                                    model: String, language: String?, numSpeakers: Int?,
+                                   detectSpeakerRoles: Bool = false,
                                    timeout: TimeInterval) async throws -> Result {
         guard !apiKey.isEmpty else { throw ElevenLabsDiarizingError.missingAPIKey }
         let boundary = "voiceink-\(UUID().uuidString)"
@@ -80,7 +85,8 @@ struct ElevenLabsDiarizingClient {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         let body = multipartBody(boundary: boundary, audio: audioData, fileName: fileName,
-                                 model: model, language: language, numSpeakers: numSpeakers)
+                                 model: model, language: language, numSpeakers: numSpeakers,
+                                 detectSpeakerRoles: detectSpeakerRoles)
         let (data, response) = try await URLSession.shared.upload(for: req, from: body)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw ElevenLabsDiarizingError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")

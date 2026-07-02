@@ -17,17 +17,24 @@ struct RecorderModeSettingsView: View {
 
             Form {
                 Section("語音轉文字") {
-                    Picker("轉錄模型", selection: transcriptionBinding) {
-                        Text("自動（第一個可用）").tag(String?.none)
-                        ForEach(transcriptionModelManager.usableModels, id: \.name) { m in
-                            Text(m.displayName).tag(String?.some(m.name))
-                        }
+                    LabeledContent("轉錄模型") {
+                        Text("ElevenLabs Scribe V2（固定）").foregroundStyle(.secondary)
                     }
+                    Text("錄音筆固定使用 ElevenLabs：它能整份錄音一次辨識、講者全程一致，不需切段或本地備援。需在 AI Models 設定 ElevenLabs API 金鑰。")
+                        .font(.caption).foregroundStyle(.secondary)
                     TextField("語言代碼（留空＝自動，例如 zh、en）", text: languageBinding)
                     Toggle(isOn: formattingBinding) {
                         HStack(spacing: 4) {
                             Text("段落分隔（自動分段）")
                             InfoTip("開啟後用智慧格式化自動判斷斷句，把大段文字分成段落。與語音模式的「Paragraph breaks」是同一套機制。")
+                        }
+                    }
+                    if noVerbatimSupported {
+                        Toggle(isOn: noVerbatimBinding) {
+                            HStack(spacing: 4) {
+                                Text("去除贅字（no_verbatim）")
+                                InfoTip("ElevenLabs scribe_v2 原生功能：自動去掉「呃、那個、就是說」等贅字、口頭禪、false start 與非語音雜音，逐字稿更乾淨好讀。免費，僅 scribe_v2 支援。")
+                            }
                         }
                     }
                     Toggle("啟用語者辨識", isOn: diarizationBinding)
@@ -37,7 +44,15 @@ struct RecorderModeSettingsView: View {
                         Stepper(value: expectedSpeakersBinding, in: 0...12) {
                             Text(store.recorderExpectedSpeakerCount.map { "預期人數：\($0)" } ?? "預期人數：自動")
                         }
-                        Text("辨識會議中的說話者並分段標記（講者1／講者2…，可事後改名）。目前原生語者辨識僅 ElevenLabs 等特定雲端模型支援（最準）；其他模型改用本地辨識，首次需下載模型、速度較慢，且分段文字以本地辨識結果為準。")
+                        if diarizationIsNative {
+                            Toggle(isOn: detectSpeakerRolesBinding) {
+                                HStack(spacing: 4) {
+                                    Text("辨識講者角色（客服／客戶）")
+                                    InfoTip("ElevenLabs 原生功能 detect_speaker_roles：把講者標記成「客服」與「客戶」而非講者1／2。需搭配語者辨識，費用約 +10%。")
+                                }
+                            }
+                        }
+                        Text("辨識會議中的說話者並分段標記（講者1／講者2…，可事後改名）。整份錄音會一次送 ElevenLabs 原生辨識，長錄音的講者編號跨全程一致。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -82,10 +97,6 @@ struct RecorderModeSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var transcriptionBinding: Binding<String?> {
-        Binding(get: { store.recorderTranscriptionModelName },
-                set: { store.setRecorderTranscriptionModel($0) })
-    }
     private var languageBinding: Binding<String> {
         Binding(get: { store.recorderLanguage ?? "" },
                 set: { store.setRecorderLanguage($0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0) })
@@ -111,19 +122,24 @@ struct RecorderModeSettingsView: View {
         Binding(get: { store.recorderExpectedSpeakerCount ?? 0 },
                 set: { store.setRecorderExpectedSpeakerCount($0 == 0 ? nil : $0) })
     }
-    /// Whether the currently selected recorder transcription model diarizes natively.
+    private var detectSpeakerRolesBinding: Binding<Bool> {
+        Binding(get: { store.recorderDetectSpeakerRoles },
+                set: { store.setRecorderDetectSpeakerRoles($0) })
+    }
+    private var noVerbatimBinding: Binding<Bool> {
+        Binding(get: { store.recorderNoVerbatim },
+                set: { store.setRecorderNoVerbatim($0) })
+    }
+    /// no_verbatim is an ElevenLabs scribe_v2-only parameter; the recorder is hardcoded to it.
+    private var noVerbatimSupported: Bool {
+        RecorderTranscriptionConfig.transcriptionModelName == "scribe_v2"
+    }
+    /// The recorder's fixed model diarizes natively (ElevenLabs). Kept as a computed value so the
+    /// UI adapts automatically if `RecorderTranscriptionConfig.transcriptionModelName` ever changes.
     private var diarizationIsNative: Bool {
-        DiarizationCoordinator.supportsNativeDiarization(modelName: store.recorderTranscriptionModelName)
+        DiarizationCoordinator.supportsNativeDiarization(modelName: RecorderTranscriptionConfig.transcriptionModelName)
     }
-    /// Live hint of which diarization path the current model will use.
-    private var diarizationModeHint: String {
-        if store.recorderTranscriptionModelName == nil {
-            return "目前模型：自動（ElevenLabs 走原生辨識，其餘走本地辨識）"
-        }
-        return diarizationIsNative
-            ? "目前模型：原生語者辨識（最準）"
-            : "目前模型：本地語者辨識（首次需下載模型，較慢）"
-    }
+    private var diarizationModeHint: String { "整份錄音一次辨識，講者全程一致（ElevenLabs 原生）" }
     private var analysisBinding: Binding<RecorderModelChoice?> {
         Binding(
             get: {

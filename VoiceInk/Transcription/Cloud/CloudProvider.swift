@@ -30,7 +30,9 @@ extension CloudProvider {
 /// upload + server processing). Scales generously with bytes, floored/capped for sane bounds.
 enum CloudTranscriptionTimeout {
     static func forAudio(_ data: Data) -> TimeInterval {
-        min(600, max(60, Double(data.count) / 40_000))
+        // Ceiling raised to 30 min: providers that don't chunk (ElevenLabs) may receive a whole
+        // multi-hour recording in one request, which needs a longer upload + processing window.
+        min(1800, max(60, Double(data.count) / 40_000))
     }
 }
 

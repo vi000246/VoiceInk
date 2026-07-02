@@ -3,6 +3,8 @@ import Foundation
 struct TranscriptionRequestContext {
     let language: String?
     let prompt: String?
+    /// ElevenLabs scribe_v2 `no_verbatim` — strip filler/false-starts. Recorder-only; false elsewhere.
+    var noVerbatim: Bool = false
 
     static var currentDefaults: TranscriptionRequestContext {
         TranscriptionRequestContext(

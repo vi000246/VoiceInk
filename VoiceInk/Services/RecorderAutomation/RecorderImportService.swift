@@ -13,6 +13,10 @@ final class RecorderImportService: NSObject, ObservableObject {
     private var pendingMeta: [String: (fileName: String, byteSize: Int)] = [:]  // fingerprint → ledger display meta
     private weak var engine: VoiceInkEngine?
     private var modelContext: ModelContext?
+    /// Devices whose files are being copied into app storage BEFORE they hit the transcription
+    /// queue. Copying a large recording takes tens of seconds, during which no queue item exists
+    /// yet — the UI watches this so the user sees "準備中" instead of a frozen-looking blank gap.
+    @Published private(set) var preparingDeviceIds: Set<UUID> = []
 
     private override init() {
         super.init()
@@ -64,30 +68,40 @@ final class RecorderImportService: NSObject, ObservableObject {
             NotificationManager.shared.showNotification(title: "錄音來源資料夾無法存取，請重新授權", type: .warning, duration: 4)
             return
         }
-        let accessing = folder.startAccessingSecurityScopedResource()
-        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        // Offload the file copies (see reprocess): keep @MainActor state on main, copy off it, and
+        // hold the security scope across the whole async span.
+        Task { @MainActor in
+            let accessing = folder.startAccessingSecurityScopedResource()
+            defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
 
-        // Watched folders may hold files mid-copy; give them a few seconds to settle, then re-check.
-        let stableAge: TimeInterval = device.kind == .folder ? 4 : 0
-        let (candidates, deferred) = newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
-        if deferred > 0 { RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id) }
-        guard !candidates.isEmpty else { return }
+            // Watched folders may hold files mid-copy; give them a few seconds to settle, then re-check.
+            let stableAge: TimeInterval = device.kind == .folder ? 4 : 0
+            let (candidates, deferred) = newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
+            if deferred > 0 { RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id) }
+            guard !candidates.isEmpty else { return }
 
-        var enqueued: [URL] = []
-        for c in candidates {
-            guard let copied = copyIntoAppStorage(c.url) else { continue }
-            inFlight.insert(c.fingerprint)
-            originalURLs[c.fingerprint] = c.url
-            pendingMeta[c.fingerprint] = (c.fileName, c.byteSize)
-            enqueued.append(copied)
-            AudioTranscriptionManager.shared.addToQueue(urls: [copied],
-                origin: .recorderImport(deviceId: device.id, fingerprint: c.fingerprint))
+            // Signal "準備中" while the (possibly large) files copy into app storage — the queue
+            // item, and thus the progress bar, only appears once each copy finishes.
+            preparingDeviceIds.insert(device.id)
+            defer { preparingDeviceIds.remove(device.id) }
+
+            var enqueued: [URL] = []
+            for c in candidates {
+                if inFlight.contains(c.fingerprint) { continue }
+                inFlight.insert(c.fingerprint)   // reserve before the async copy (closes the await gap)
+                guard let copied = await copyIntoAppStorage(c.url) else { inFlight.remove(c.fingerprint); continue }
+                originalURLs[c.fingerprint] = c.url
+                pendingMeta[c.fingerprint] = (c.fileName, c.byteSize)
+                enqueued.append(copied)
+                AudioTranscriptionManager.shared.addToQueue(urls: [copied],
+                    origin: .recorderImport(deviceId: device.id, fingerprint: c.fingerprint))
+            }
+            guard !enqueued.isEmpty else { return }
+            NotificationManager.shared.showNotification(title: "匯入 \(enqueued.count) 個新檔", type: .info, duration: 3)
+            // Recorder transcription uses Recorder Mode (its own model), NOT the active voice Mode.
+            let recorderMode = RecorderTranscriptionConfig.current()
+            AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
         }
-        guard !enqueued.isEmpty else { return }
-        NotificationManager.shared.showNotification(title: "匯入 \(enqueued.count) 個新檔", type: .info, duration: 3)
-        // Recorder transcription uses Recorder Mode (its own model), NOT the active voice Mode.
-        let recorderMode = RecorderTranscriptionConfig.current()
-        AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
     }
 
     /// Manually (re)process the given device files, regardless of prior import status.
@@ -103,42 +117,54 @@ final class RecorderImportService: NSObject, ObservableObject {
             NotificationManager.shared.showNotification(title: "錄音筆來源資料夾無法存取，請重新授權", type: .warning, duration: 4)
             return
         }
-        let accessing = folder.startAccessingSecurityScopedResource()
-        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        // Copy the (possibly large) recordings off the main run loop so the UI doesn't freeze while
+        // reprocess is kicked off. All SwiftData / @MainActor state stays on main; only the file copy
+        // is offloaded. Security scope is held for the whole async span (it is process-wide).
+        Task { @MainActor in
+            let accessing = folder.startAccessingSecurityScopedResource()
+            defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
 
-        let urls = ((try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
-            .filter { SupportedMedia.isSupported(url: $0) && fileNames.contains($0.lastPathComponent) }
+            let urls = ((try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
+                .filter { SupportedMedia.isSupported(url: $0) && fileNames.contains($0.lastPathComponent) }
+            guard !urls.isEmpty else { return }
 
-        var enqueued = 0
-        for url in urls {
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            let alreadyProcessed = ImportLedger.shared.hasQuickMatch(
-                fileName: url.lastPathComponent, byteSize: size, in: modelContext)
+            // Immediate feedback: copying a large recording into app storage takes tens of seconds
+            // before it reaches the queue, so signal "準備中" up front instead of a blank gap.
+            preparingDeviceIds.insert(device.id)
+            defer { preparingDeviceIds.remove(device.id) }
+            NotificationManager.shared.showNotification(title: "正在準備 \(urls.count) 個檔案…", type: .info, duration: 3)
 
-            let fingerprint: String
-            let displayName: String
-            if alreadyProcessed {
-                fingerprint = "reprocess-\(UUID().uuidString)"   // unique → bypass content dedup
-                displayName = serialNumberedName(base: url.lastPathComponent, in: modelContext)
-            } else if let real = try? ImportLedger.shared.contentFingerprint(for: url) {
-                fingerprint = real
-                displayName = url.lastPathComponent
-            } else { continue }
+            var enqueued = 0
+            for url in urls {
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let alreadyProcessed = ImportLedger.shared.hasQuickMatch(
+                    fileName: url.lastPathComponent, byteSize: size, in: modelContext)
 
-            if inFlight.contains(fingerprint) { continue }
-            guard let copied = copyIntoAppStorage(url) else { continue }
-            inFlight.insert(fingerprint)
-            // NOTE: deliberately not setting originalURLs → reprocess never deletes the device original.
-            pendingMeta[fingerprint] = (displayName, size)
-            AudioTranscriptionManager.shared.addToQueue(urls: [copied],
-                origin: .recorderImport(deviceId: device.id, fingerprint: fingerprint))
-            enqueued += 1
+                let fingerprint: String
+                let displayName: String
+                if alreadyProcessed {
+                    fingerprint = "reprocess-\(UUID().uuidString)"   // unique → bypass content dedup
+                    displayName = serialNumberedName(base: url.lastPathComponent, in: modelContext)
+                } else if let real = try? ImportLedger.shared.contentFingerprint(for: url) {
+                    fingerprint = real
+                    displayName = url.lastPathComponent
+                } else { continue }
+
+                if inFlight.contains(fingerprint) { continue }
+                inFlight.insert(fingerprint)   // reserve before the async copy (closes the await gap)
+                guard let copied = await copyIntoAppStorage(url) else { inFlight.remove(fingerprint); continue }
+                // NOTE: deliberately not setting originalURLs → reprocess never deletes the device original.
+                pendingMeta[fingerprint] = (displayName, size)
+                AudioTranscriptionManager.shared.addToQueue(urls: [copied],
+                    origin: .recorderImport(deviceId: device.id, fingerprint: fingerprint))
+                enqueued += 1
+            }
+            guard enqueued > 0 else { return }
+            let recorderMode = RecorderTranscriptionConfig.current()
+            AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
+            NotificationManager.shared.showNotification(title: "重新處理 \(enqueued) 個檔案", type: .info, duration: 3)
         }
-        guard enqueued > 0 else { return }
-        let recorderMode = RecorderTranscriptionConfig.current()
-        AudioTranscriptionManager.shared.startProcessing(modelContext: modelContext, engine: engine, mode: recorderMode)
-        NotificationManager.shared.showNotification(title: "重新處理 \(enqueued) 個檔案", type: .info, duration: 3)
     }
 
     /// Next unused `stem (n).ext` (n≥2) so a reprocessed duplicate doesn't collide in the ledger.
@@ -211,13 +237,23 @@ final class RecorderImportService: NSObject, ObservableObject {
         return out.sorted { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
     }
 
-    private func copyIntoAppStorage(_ src: URL) -> URL? {
+    /// Copy `src` into app storage, running the (potentially large) file copy off the main actor so
+    /// the UI never freezes while a recording is copied during import/reprocess. Returns the
+    /// destination URL, or nil on failure.
+    private func copyIntoAppStorage(_ src: URL) async -> URL? {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.prakashjoshipax.VoiceInk").appendingPathComponent("RecorderImports")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let dst = dir.appendingPathComponent("\(UUID().uuidString)-\(src.lastPathComponent)")
-        do { try FileManager.default.copyItem(at: src, to: dst); return dst }
-        catch { logger.error("Copy failed: \(error, privacy: .public)"); return nil }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: src, to: dst)
+            }.value
+            return dst
+        } catch {
+            logger.error("Copy failed: \(error, privacy: .public)")
+            return nil
+        }
     }
 
     @objc private func onTranscriptionCreated(_ note: Notification) {

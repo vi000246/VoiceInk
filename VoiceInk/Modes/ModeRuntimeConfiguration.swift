@@ -16,7 +16,8 @@ struct TranscriptionRuntimeConfiguration {
     var requestContext: TranscriptionRequestContext {
         TranscriptionRequestContext(
             language: language,
-            prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt")
+            prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt"),
+            noVerbatim: mode?.noVerbatim ?? false
         )
     }
 }

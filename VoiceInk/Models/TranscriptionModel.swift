@@ -33,12 +33,23 @@ enum ModelProvider: String, Codable, Hashable, CaseIterable {
 }
 
 extension ModelProvider {
-    /// Providers that upload the audio to a remote API (subject to ~25MB request limits), as
-    /// opposed to on-device transcription. Long recordings must be chunked before upload.
+    /// Providers that upload the audio to a remote API, as opposed to on-device transcription.
     var usesCloudUpload: Bool {
         switch self {
         case .whisper, .fluidAudio, .nativeApple: return false
         default: return true
+        }
+    }
+
+    /// Max audio bytes accepted per transcription request. Long recordings are split into WAV chunks
+    /// only when the whole file exceeds this. ElevenLabs accepts very large files (docs: up to 5GB)
+    /// and diarizes long audio natively, so it effectively never chunks — the recorder relies on this
+    /// so a long recording is transcribed + diarized as ONE file with consistent speakers. Whisper-
+    /// style APIs (OpenAI/Groq/…) cap around 25MB, so they still chunk.
+    var maxUploadBytes: Int {
+        switch self {
+        case .elevenLabs: return 2 * 1024 * 1024 * 1024   // 2GB — effectively "never chunk"
+        default: return 25 * 1024 * 1024                  // ~25MB whisper-style request cap
         }
     }
 }
