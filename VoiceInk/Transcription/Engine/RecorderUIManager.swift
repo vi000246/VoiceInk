@@ -31,6 +31,11 @@ protocol RecorderPanelPresenting: AnyObject {
 
 @MainActor
 class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
+    /// The app's single instance, for callers outside the DI graph (App Intents, the
+    /// audio-device monitor). Typed replacement for the old .toggleRecorderPanel /
+    /// .dismissRecorderPanel notifications, whose handler was invisible to the compiler.
+    static private(set) weak var current: RecorderUIManager?
+
     @Published var recorderPanelStyle: RecorderPanelStyle = .stored {
         didSet {
             guard oldValue != recorderPanelStyle else { return }
@@ -64,13 +69,14 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderUIManager")
 
-    init() {}
+    init() {
+        Self.current = self
+    }
 
     /// Call after VoiceInkEngine is created to break the circular init dependency.
     func configure(engine: VoiceInkEngine, recorder: Recorder) {
         self.engine = engine
         self.recorder = recorder
-        setupNotifications()
     }
 
     // MARK: - Recorder Panel Management
@@ -211,30 +217,16 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         await dismissRecorderPanel()
     }
 
-    // MARK: - Notification Handling
+    // MARK: - External Requests (App Intents, device monitor)
 
-    private func setupNotifications() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleToggleRecorderPanelNotification),
-            name: .toggleRecorderPanel,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleDismissRecorderPanelNotification),
-            name: .dismissRecorderPanel,
-            object: nil
-        )
-    }
-
-    @objc public func handleToggleRecorderPanelNotification() {
+    func requestTogglePanel() {
         Task {
             await toggleRecorderPanel()
         }
     }
 
-    @objc public func handleDismissRecorderPanelNotification() {
+    /// Dismiss request that cancels first when a session is in flight.
+    func requestDismissOrCancel() {
         Task {
             switch engine?.recordingState {
             case .starting, .recording, .transcribing, .enhancing:

@@ -446,7 +446,9 @@ class AudioDeviceManager: ObservableObject {
                         )
                     } else {
                         self.logger.error("No audio input devices available!")
-                        NotificationCenter.default.post(name: .toggleRecorderPanel, object: nil)
+                        Task { @MainActor in
+                            RecorderUIManager.current?.requestTogglePanel()
+                        }
                     }
                 }
                 return

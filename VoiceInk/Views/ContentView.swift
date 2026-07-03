@@ -41,12 +41,13 @@ struct ContentView: View {
         .onDisappear {
             logger.notice("ContentView disappeared")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .navigateToDestination)) { notification in
-            if let destination = notification.userInfo?["destination"] as? String,
-               let viewType = ViewType.allCases.first(where: { $0.rawValue == destination }) {
-                logger.notice("navigateToDestination received: \(destination, privacy: .public)")
-                selectedView = viewType
-            }
+        .onReceive(AppNavigator.shared.$pendingDestination) { destination in
+            guard let destination else { return }
+            logger.notice("navigate to \(destination.rawValue, privacy: .public)")
+            selectedView = destination
+            // Consume asynchronously: mutating the publisher inside its own emission would
+            // re-enter, and a consumed value must not replay on the next window re-open.
+            DispatchQueue.main.async { AppNavigator.shared.consumePendingDestination() }
         }
     }
 

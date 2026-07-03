@@ -10,8 +10,8 @@ struct ToggleMiniRecorderIntent: AppIntent {
     
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        NotificationCenter.default.post(name: .toggleRecorderPanel, object: nil)
-        
+        RecorderUIManager.current?.requestTogglePanel()
+
         let dialog: IntentDialog = "VoiceInk recorder toggled"
         return .result(dialog: dialog)
     }

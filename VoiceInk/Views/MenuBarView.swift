@@ -43,7 +43,7 @@ struct MenuBarView: View {
     private var completedOnboardingMenu: some View {
         Group {
             Button("Toggle Recorder") {
-                recorderUIManager.handleToggleRecorderPanelNotification()
+                recorderUIManager.requestTogglePanel()
             }
 
             Divider()
@@ -66,11 +66,11 @@ struct MenuBarView: View {
                 Divider()
 
                 Button("Manage Modes") {
-                    menuBarManager.openMainWindowAndNavigate(to: "Modes")
+                    menuBarManager.openMainWindowAndNavigate(to: .modes)
                 }
 
                 Button("Manage Models") {
-                    menuBarManager.openMainWindowAndNavigate(to: "AI Models")
+                    menuBarManager.openMainWindowAndNavigate(to: .models)
                 }
             } label: {
                 HStack {
@@ -141,7 +141,7 @@ struct MenuBarView: View {
             Divider()
 
             Button("Settings") {
-                menuBarManager.openMainWindowAndNavigate(to: "Settings")
+                menuBarManager.openMainWindowAndNavigate(to: .settings)
             }
             .keyboardShortcut(",", modifiers: .command)
 

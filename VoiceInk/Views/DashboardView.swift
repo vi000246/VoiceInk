@@ -16,10 +16,6 @@ struct DashboardView: View {
     }
 
     private func navigateToLicenseManagement() {
-        NotificationCenter.default.post(
-            name: .navigateToDestination,
-            object: nil,
-            userInfo: ["destination": "VoiceInk Pro"]
-        )
+        AppNavigator.shared.navigate(to: .license)
     }
 }

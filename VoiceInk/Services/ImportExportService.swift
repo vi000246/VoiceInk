@@ -343,11 +343,7 @@ class ImportExportService {
             
             let response = alert.runModal()
             if needsAPIKeyReminder && response == .alertSecondButtonReturn {
-                NotificationCenter.default.post(
-                    name: .navigateToDestination,
-                    object: nil,
-                    userInfo: ["destination": "AI Models"]
-                )
+                AppNavigator.shared.navigate(to: .models)
             }
         }
     }

@@ -10,8 +10,8 @@ struct DismissMiniRecorderIntent: AppIntent {
     
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        NotificationCenter.default.post(name: .dismissRecorderPanel, object: nil)
-        
+        RecorderUIManager.current?.requestDismissOrCancel()
+
         let dialog: IntentDialog = "VoiceInk recorder dismissed"
         return .result(dialog: dialog)
     }

@@ -80,21 +80,16 @@ class MenuBarManager: ObservableObject {
         }
     }
     
-    func openMainWindowAndNavigate(to destination: String) {
+    func openMainWindowAndNavigate(to destination: ViewType) {
         NSApplication.shared.setActivationPolicy(.regular)
 
         guard WindowManager.shared.showMainWindow() != nil else {
             return
         }
 
-        // Post a notification to navigate to the desired destination
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NotificationCenter.default.post(
-                name: .navigateToDestination,
-                object: nil,
-                userInfo: ["destination": destination]
-            )
-        }
+        // AppNavigator replays the latest request, so no timing delay is needed even when
+        // ContentView is still being created by the window above.
+        AppNavigator.shared.navigate(to: destination)
     }
 
     func openHistoryWindow() {
