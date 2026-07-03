@@ -64,6 +64,12 @@ enum DiarizationCoordinator {
                         detectSpeakerRoles: Bool = false) async -> Outcome? {
         let urls = audioURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !urls.isEmpty else { return nil }
+        // Reuse segments the recorder's transcription step already produced in its single diarized
+        // call (see transcribeAndDiarizeForRecorder) — avoids transcribing the whole recording twice.
+        if let cached = consumeCachedSegments(for: urls) {
+            logger.notice("Diarization reused \(cached.count, privacy: .public) segments from the transcription call")
+            return Outcome(segments: cached, isNative: true)
+        }
         guard let model = nativeModel(matching: transcriptionModelName) else {
             logger.notice("Diarization skipped — model has no native diarization (local fallback was removed)")
             return nil
@@ -102,11 +108,48 @@ enum DiarizationCoordinator {
         }.value
     }
 
+    // MARK: - Single-call merge (recorder)
+
+    /// Segments produced by the recorder's transcription step, keyed by audio-file path, waiting for
+    /// `diarize` to pick them up. Consumed (removed) on read; @MainActor so no locking needed.
+    private static var cachedSegments: [String: [SpeakerSegment]] = [:]
+
+    /// One diarized ElevenLabs call used AS the recorder's transcription: returns the transcript text
+    /// AND caches the speaker segments keyed by `wavURL`, so the post-processing `diarize` reuses them
+    /// instead of transcribing the whole recording a second time. nil (→ caller falls back to a plain
+    /// transcription) on missing key / unreadable audio / API error.
+    static func transcribeAndDiarizeForRecorder(
+        wavURL: URL, modelId: String, language: String?, expectedSpeakers: Int?,
+        detectSpeakerRoles: Bool, noVerbatim: Bool) async -> (text: String, segments: [SpeakerSegment])? {
+        guard let result = await nativeElevenLabsResult(
+            audioURL: wavURL, modelId: modelId, language: language, expectedSpeakers: expectedSpeakers,
+            detectSpeakerRoles: detectSpeakerRoles, noVerbatim: noVerbatim) else { return nil }
+        cachedSegments[wavURL.path] = result.segments
+        return (result.text, result.segments)
+    }
+
+    /// Read + remove any cached segments for these audio files (see transcribeAndDiarizeForRecorder).
+    private static func consumeCachedSegments(for urls: [URL]) -> [SpeakerSegment]? {
+        for url in urls {
+            if let segs = cachedSegments.removeValue(forKey: url.path) { return segs }
+        }
+        return nil
+    }
+
     /// ElevenLabs native diarization of a single (whole-recording) file → merged speaker segments.
-    /// nil on missing key / unreadable audio / API error so the caller degrades to a plain transcript.
     private static func nativeElevenLabs(audioURL: URL, modelId: String,
                                          language: String?, expectedSpeakers: Int?,
                                          detectSpeakerRoles: Bool) async -> [SpeakerSegment]? {
+        await nativeElevenLabsResult(audioURL: audioURL, modelId: modelId, language: language,
+                                     expectedSpeakers: expectedSpeakers, detectSpeakerRoles: detectSpeakerRoles,
+                                     noVerbatim: false)?.segments
+    }
+
+    /// One ElevenLabs diarized transcription (text + merged segments). nil on missing key / unreadable
+    /// audio / API error so the caller degrades to a plain transcript.
+    private static func nativeElevenLabsResult(
+        audioURL: URL, modelId: String, language: String?, expectedSpeakers: Int?,
+        detectSpeakerRoles: Bool, noVerbatim: Bool) async -> ElevenLabsDiarizingClient.Result? {
         guard let apiKey = APIKeyManager.shared.getAPIKey(forProvider: "ElevenLabs"), !apiKey.isEmpty else {
             logger.notice("Native diarization skipped — no ElevenLabs API key")
             return nil
@@ -127,9 +170,10 @@ enum DiarizationCoordinator {
                 language: (language == "auto" ? nil : language),
                 numSpeakers: expectedSpeakers,
                 detectSpeakerRoles: detectSpeakerRoles,
+                noVerbatim: noVerbatim,
                 timeout: CloudTranscriptionTimeout.forAudio(audioData))
             logger.notice("Native diarization produced \(result.segments.count, privacy: .public) segments")
-            return result.segments
+            return result
         } catch {
             logger.error("Native diarization failed: \(error.localizedDescription, privacy: .public)")
             return nil

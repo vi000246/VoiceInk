@@ -1,6 +1,13 @@
 import Foundation
 import os
 
+/// Unit for the "skip files smaller than N" auto-import filter.
+enum FileSizeUnit: String, CaseIterable, Codable {
+    case kb = "KB"
+    case mb = "MB"
+    var bytesPerUnit: Int { self == .mb ? 1_048_576 : 1024 }
+}
+
 @MainActor
 final class RecorderConfigStore: ObservableObject {
     static let shared = RecorderConfigStore()
@@ -29,8 +36,11 @@ final class RecorderConfigStore: ObservableObject {
     /// Expected number of speakers, forwarded to the diarizer. nil → let the model decide.
     @Published private(set) var recorderExpectedSpeakerCount: Int?
     /// ElevenLabs native only: label speakers as agent/customer roles (`detect_speaker_roles`).
-    /// Requires diarize=true; +10% transcription cost. Ignored by the local FluidAudio fallback.
+    /// Requires diarize=true; +10% transcription cost.
     @Published private(set) var recorderDetectSpeakerRoles: Bool = false
+    /// Convert the recorder transcript (and speaker segments) to Traditional Chinese via OpenCC.
+    /// Applied once in RecorderPostProcessor so display, analysis, and export are all 繁中. Default off.
+    @Published private(set) var recorderConvertToTraditional: Bool = false
     /// ElevenLabs scribe_v2 only: drop filler words / false starts / non-speech sounds from the
     /// transcript (`no_verbatim`). No extra cost. Ignored by every other model.
     @Published private(set) var recorderNoVerbatim: Bool = false
@@ -40,6 +50,11 @@ final class RecorderConfigStore: ObservableObject {
     /// Timeout (seconds) for a recorder analysis call. Analysis output is long and local models are
     /// slow, so this is far higher than the voice-dictation default (7s). User-adjustable.
     @Published private(set) var recorderAnalysisTimeoutSeconds: Int = 120
+    /// Auto-import size floor: files smaller than this are ignored by the mount/folder watchers so
+    /// tiny stray recordings (e.g. accidental 1-second taps) don't get transcribed. Manual reprocess
+    /// bypasses it. Stored as value + unit; default 500 KB. Value 0 disables the filter.
+    @Published private(set) var recorderMinImportSizeValue: Int = 500
+    @Published private(set) var recorderMinImportSizeUnit: FileSizeUnit = .kb
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let recorderPromptsKey = "recorderCategoryPromptsV1"
@@ -54,10 +69,13 @@ final class RecorderConfigStore: ObservableObject {
     private let recDiarizationKey = "recorderDiarizationEnabledV1"
     private let recExpectedSpeakersKey = "recorderExpectedSpeakerCountV1"
     private let recDetectSpeakerRolesKey = "recorderDetectSpeakerRolesV1"
+    private let recConvertTraditionalKey = "recorderConvertToTraditionalV1"
     private let recNoVerbatimKey = "recorderNoVerbatimV1"
     private let recClassifierProviderKey = "recorderClassifierProviderV1"
     private let recClassifierModelKey = "recorderClassifierModelV1"
     private let recAnalysisTimeoutKey = "recorderAnalysisTimeoutV1"
+    private let recMinImportSizeValueKey = "recorderMinImportSizeValueV1"
+    private let recMinImportSizeUnitKey = "recorderMinImportSizeUnitV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -86,11 +104,28 @@ final class RecorderConfigStore: ObservableObject {
         let storedSpeakers = UserDefaults.standard.integer(forKey: recExpectedSpeakersKey)
         recorderExpectedSpeakerCount = storedSpeakers > 0 ? storedSpeakers : nil
         recorderDetectSpeakerRoles = UserDefaults.standard.bool(forKey: recDetectSpeakerRolesKey)
+        recorderConvertToTraditional = UserDefaults.standard.bool(forKey: recConvertTraditionalKey)
         recorderNoVerbatim = UserDefaults.standard.bool(forKey: recNoVerbatimKey)
         recorderClassifierProviderName = UserDefaults.standard.string(forKey: recClassifierProviderKey)
         recorderClassifierModelName = UserDefaults.standard.string(forKey: recClassifierModelKey)
         let storedTimeout = UserDefaults.standard.integer(forKey: recAnalysisTimeoutKey)
         recorderAnalysisTimeoutSeconds = storedTimeout > 0 ? storedTimeout : 120
+        // 0 is a valid value (= filter off), so distinguish "never set" via object presence.
+        recorderMinImportSizeValue = (UserDefaults.standard.object(forKey: recMinImportSizeValueKey) as? Int) ?? 500
+        recorderMinImportSizeUnit = (UserDefaults.standard.string(forKey: recMinImportSizeUnitKey))
+            .flatMap(FileSizeUnit.init(rawValue:)) ?? .kb
+    }
+
+    /// Byte threshold below which auto-import skips a file. 0 → no filter.
+    var recorderMinImportSizeBytes: Int {
+        max(0, recorderMinImportSizeValue) * recorderMinImportSizeUnit.bytesPerUnit
+    }
+
+    func setRecorderMinImportSize(value: Int, unit: FileSizeUnit) {
+        recorderMinImportSizeValue = max(0, value)
+        recorderMinImportSizeUnit = unit
+        UserDefaults.standard.set(recorderMinImportSizeValue, forKey: recMinImportSizeValueKey)
+        UserDefaults.standard.set(unit.rawValue, forKey: recMinImportSizeUnitKey)
     }
 
     /// Clamp to a sane range so a stray value can't disable the timeout or make it uselessly short.
@@ -137,6 +172,10 @@ final class RecorderConfigStore: ObservableObject {
     func setRecorderDetectSpeakerRoles(_ on: Bool) {
         recorderDetectSpeakerRoles = on
         UserDefaults.standard.set(on, forKey: recDetectSpeakerRolesKey)
+    }
+    func setRecorderConvertToTraditional(_ on: Bool) {
+        recorderConvertToTraditional = on
+        UserDefaults.standard.set(on, forKey: recConvertTraditionalKey)
     }
     func setRecorderNoVerbatim(_ on: Bool) {
         recorderNoVerbatim = on

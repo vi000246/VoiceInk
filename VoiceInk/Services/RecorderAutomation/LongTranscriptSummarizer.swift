@@ -10,13 +10,50 @@ final class LongTranscriptSummarizer {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() {}
 
-    /// Above this estimated token count, condense before enhancing.
-    let thresholdTokens = 6000
     /// Chunk size for the map step (chars). ~3000 tokens/chunk at the chars/4 heuristic.
     let maxCharsPerChunk = 12_000
 
-    func needsSummarization(_ text: String) -> Bool {
-        TokenEstimator.estimate(text) > thresholdTokens
+    /// Fraction of a model's context window we allow the input transcript to occupy before
+    /// pre-summarizing. The remainder is headroom for the analysis system prompt and the
+    /// generated output. Deliberately generous — we'd rather send the full transcript and let
+    /// an oversized call surface a context-length error (raw transcript is still preserved and
+    /// exported) than silently summarize away detail on recordings that would have fit.
+    private let inputBudgetFraction = 0.7
+
+    /// Best-effort context-window sizes (input tokens) per enhancement model. The app stores no
+    /// such metadata, so this is a hand-maintained table keyed by provider and refined by model
+    /// name. Unknown/local backends get a conservative value so we summarize rather than risk a
+    /// context overflow. Update alongside `AIProvider.availableModels` when models change.
+    static func contextWindowTokens(provider: AIProvider, modelName: String?) -> Int {
+        let model = (modelName ?? provider.defaultModel).lowercased()
+        switch provider {
+        case .anthropic:
+            return 200_000                                   // Claude 4.x: 200k window
+        case .gemini:
+            return 1_000_000                                 // Gemini 2.5/3.x: 1M window
+        case .openAI:
+            if model.hasPrefix("gpt-4.1") { return 1_000_000 }  // GPT-4.1 family: 1M
+            return 256_000                                   // GPT-5.x: large but unpublished — stay safe
+        case .mistral, .groq, .cerebras, .openRouter:
+            return 128_000                                   // Llama/Qwen/GPT-OSS/Mistral-class: ~128k
+        case .ollama:
+            return 8_000                                     // local models default to a small num_ctx (4–8k)
+        case .localCLI, .custom:
+            return 128_000                                   // unknown backend — assume a modern mid-size window
+        case .elevenLabs, .deepgram, .soniox, .speechmatics, .assemblyAI:
+            return 32_000                                    // transcription-only; never reaches enhancement
+        }
+    }
+
+    /// Estimated-token budget for the transcript we can send verbatim (no pre-summarization),
+    /// derived from the resolved analysis model's real context window.
+    func inputTokenBudget(provider: AIProvider, modelName: String?) -> Int {
+        let context = Self.contextWindowTokens(provider: provider, modelName: modelName)
+        return max(1, Int(Double(context) * inputBudgetFraction))
+    }
+
+    func needsSummarization(_ text: String, provider: AIProvider, modelName: String?) -> Bool {
+        TokenEstimator.estimate(text) > inputTokenBudget(provider: provider, modelName: modelName)
     }
 
     /// Split text into chunks on paragraph/whitespace boundaries, each ≤ maxCharsPerChunk. Pure/testable.
@@ -55,7 +92,7 @@ final class LongTranscriptSummarizer {
         provider: AIProvider,
         modelName: String?
     ) async -> String {
-        guard needsSummarization(text) else { return text }
+        guard needsSummarization(text, provider: provider, modelName: modelName) else { return text }
         let parts = chunks(text)
         var summaries: [String] = []
         for (i, chunk) in parts.enumerated() {
@@ -64,7 +101,7 @@ final class LongTranscriptSummarizer {
                     provider: provider,
                     modelName: modelName,
                     messages: [ChatMessage.user(chunk)],
-                    systemPrompt: "Summarize this transcript segment faithfully and concisely, preserving names, decisions, questions, and key facts. Output prose only.",
+                    systemPrompt: "Summarize this transcript segment faithfully and concisely, preserving speaker attribution (who said what — keep the 講者N／speaker labels or names), names, decisions, questions, and key facts. Output prose only.",
                     timeout: 60
                 )
                 summaries.append("[Segment \(i + 1)]\n\(s)")
@@ -75,13 +112,13 @@ final class LongTranscriptSummarizer {
         }
         let joined = summaries.joined(separator: "\n\n")
         // Reduce step only if the joined map output is itself still large.
-        guard needsSummarization(joined) else { return joined }
+        guard needsSummarization(joined, provider: provider, modelName: modelName) else { return joined }
         do {
             return try await aiService.completeChat(
                 provider: provider,
                 modelName: modelName,
                 messages: [ChatMessage.user(joined)],
-                systemPrompt: "Combine these ordered segment summaries into one coherent, faithful summary. Output prose only.",
+                systemPrompt: "Combine these ordered segment summaries into one coherent, faithful summary, keeping speaker attribution (who said what) wherever the segments carry it. Output prose only.",
                 timeout: 60
             )
         } catch {

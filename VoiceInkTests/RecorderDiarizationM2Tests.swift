@@ -40,6 +40,17 @@ final class RecorderDiarizationM2Tests: XCTestCase {
         XCTAssertFalse(bodyString(detectRoles: false).contains("detect_speaker_roles"))
     }
 
+    /// End-to-end OpenCC: proves the vendored dictionary bundle loads at runtime and actually
+    /// converts Simplified → Traditional. If the dictionaries were missing, the converter would be
+    /// nil and return the input unchanged (still containing 简/转), failing this test.
+    func testTraditionalChineseConversionLoadsDictionaries() {
+        let out = TraditionalChineseConverter.toTraditional("简体字转换测试")
+        XCTAssertFalse(out.contains("简"), "Simplified 简 should have been converted")
+        XCTAssertFalse(out.contains("转"), "Simplified 转 should have been converted")
+        XCTAssertTrue(out.contains("簡"))
+        XCTAssertTrue(out.contains("轉"))
+    }
+
     /// no_verbatim is emitted only when enabled, and the plain client never sends diarize.
     func testScribeClientEmitsNoVerbatimOnlyWhenEnabled() {
         func bodyString(noVerbatim: Bool) -> String {

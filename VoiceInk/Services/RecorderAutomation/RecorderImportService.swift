@@ -41,9 +41,12 @@ final class RecorderImportService: NSObject, ObservableObject {
         var out: [ImportCandidate] = []
         var deferred = 0
         let now = Date()
+        // Skip tiny stray recordings on auto-import (user-configurable floor, default 500 KB).
+        let minSizeBytes = RecorderConfigStore.shared.recorderMinImportSizeBytes
         for url in urls where SupportedMedia.isSupported(url: url) {
             let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = rv?.fileSize ?? 0
+            if minSizeBytes > 0, size > 0, size < minSizeBytes { continue }
             // Cheap (name+size) pre-skip on ALL paths: an already-imported file is skipped WITHOUT
             // hashing. This is what stops every mount from SHA-256'ing the whole device on the main
             // thread (the "app freezes on insert" hitch) — content-hash confirm still runs for new files.

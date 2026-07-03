@@ -10,8 +10,8 @@ struct RecorderModeSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "Recorder Mode",
-                infoMessage: "錄音筆專用設定：用哪個模型把錄音轉成文字、預設用哪個模型分析。與「語音模式」完全分開——改這裡只影響錄音筆。",
+                title: "錄音設定",
+                infoMessage: "錄音專用設定：用哪個模型把錄音轉成文字、預設用哪個模型分析、自動匯入的檔案大小門檻。與「語音模式」完全分開——改這裡只影響錄音。",
                 infoURL: nil
             ) { EmptyView() }
 
@@ -27,6 +27,12 @@ struct RecorderModeSettingsView: View {
                         HStack(spacing: 4) {
                             Text("段落分隔（自動分段）")
                             InfoTip("開啟後用智慧格式化自動判斷斷句，把大段文字分成段落。與語音模式的「Paragraph breaks」是同一套機制。")
+                        }
+                    }
+                    Toggle(isOn: convertTraditionalBinding) {
+                        HStack(spacing: 4) {
+                            Text("輸出繁體中文")
+                            InfoTip("用 OpenCC 把逐字稿與講者分段從簡體轉成繁體（台灣正體），只轉字不改用詞。顯示、分析、匯出都會一致。")
                         }
                     }
                     if noVerbatimSupported {
@@ -81,6 +87,21 @@ struct RecorderModeSettingsView: View {
                     Text("判斷逐字稿屬於哪一類用的模型。每個匯入都會跑一次,選本地 Ollama 可省 token。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("自動匯入") {
+                    HStack {
+                        Text("略過過小檔案")
+                        InfoTip("小於此大小的錄音檔不會自動匯入（避免誤觸產生的極短錄音被轉錄）。設為 0 代表不過濾。手動「重新處理」不受此限制。")
+                        Spacer()
+                        TextField("", value: minSizeValueBinding, format: .number)
+                            .frame(width: 64).multilineTextAlignment(.trailing)
+                        Picker("", selection: minSizeUnitBinding) {
+                            ForEach(FileSizeUnit.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        .labelsHidden().frame(width: 72)
+                    }
+                    Text("目前門檻：小於 \(store.recorderMinImportSizeValue) \(store.recorderMinImportSizeUnit.rawValue) 的檔案不會自動匯入。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("自動化") {
                     Toggle("匯入後自動套範本並匯出 Obsidian", isOn: autoExportBinding)
                     Text("關閉（預設）：匯入只轉錄＋建議分類,套範本與匯出在「錄音管理」手動進行。")
@@ -107,6 +128,14 @@ struct RecorderModeSettingsView: View {
     private var timeoutBinding: Binding<Int> {
         Binding(get: { store.recorderAnalysisTimeoutSeconds }, set: { store.setRecorderAnalysisTimeout($0) })
     }
+    private var minSizeValueBinding: Binding<Int> {
+        Binding(get: { store.recorderMinImportSizeValue },
+                set: { store.setRecorderMinImportSize(value: $0, unit: store.recorderMinImportSizeUnit) })
+    }
+    private var minSizeUnitBinding: Binding<FileSizeUnit> {
+        Binding(get: { store.recorderMinImportSizeUnit },
+                set: { store.setRecorderMinImportSize(value: store.recorderMinImportSizeValue, unit: $0) })
+    }
     private var autoExportBinding: Binding<Bool> {
         Binding(get: { store.recorderAutoExportEnabled }, set: { store.setRecorderAutoExport($0) })
     }
@@ -125,6 +154,10 @@ struct RecorderModeSettingsView: View {
     private var detectSpeakerRolesBinding: Binding<Bool> {
         Binding(get: { store.recorderDetectSpeakerRoles },
                 set: { store.setRecorderDetectSpeakerRoles($0) })
+    }
+    private var convertTraditionalBinding: Binding<Bool> {
+        Binding(get: { store.recorderConvertToTraditional },
+                set: { store.setRecorderConvertToTraditional($0) })
     }
     private var noVerbatimBinding: Binding<Bool> {
         Binding(get: { store.recorderNoVerbatim },

@@ -46,6 +46,9 @@ enum AppTheme {
         static let warning = Color(nsColor: .alternateSelectedControlTextColor).opacity(0.85)
         static let warningStrong = Color(nsColor: .systemOrange)
         static let error = Color(nsColor: .systemRed)
+        /// Darker, heavier red for destructive-delete buttons (刪除範本 等) where a plain systemRed
+        /// reads as too bright/casual for an irreversible action.
+        static let errorStrong = Color(red: 0.62, green: 0.11, blue: 0.11)
     }
 
     enum Data {

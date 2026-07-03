@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreGraphics
 
 @MainActor
 class RecordingShortcutManager: ObservableObject {
@@ -58,6 +59,9 @@ class RecordingShortcutManager: ObservableObject {
     // Middle-click event monitoring
     private var middleClickMonitors: [Any?] = []
     private var middleClickTask: Task<Void, Never>?
+
+    // Latches the "Input Monitoring missing" warning so a failing refresh doesn't spam it.
+    private var didWarnGlobalShortcutInputBlocked = false
 
     enum Mode: String, CaseIterable {
         case toggle = "toggle"
@@ -221,7 +225,7 @@ class RecordingShortcutManager: ObservableObject {
             interruptibleRecordingActions.insert(.secondaryRecording)
         }
 
-        shortcutMonitor.start(
+        let tapInstalled = shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: interruptibleRecordingActions,
             onKeyDown: { [weak self] action, eventTime in
@@ -256,6 +260,44 @@ class RecordingShortcutManager: ObservableObject {
                 }
             }
         )
+
+        let hasRecordingShortcut = primaryShortcut != nil || secondaryShortcut != nil
+        if hasRecordingShortcut {
+            warnIfGlobalShortcutInputBlocked(tapInstalled: tapInstalled)
+        }
+    }
+
+    /// The global recording shortcut is delivered through a `CGEvent` tap, which stays
+    /// completely silent when macOS hasn't granted Input Monitoring (or the tap otherwise
+    /// fails to install). In that state pressing the shortcut does nothing at all — no sound,
+    /// no popup — so proactively tell the user how to fix it instead of leaving them guessing.
+    private func warnIfGlobalShortcutInputBlocked(tapInstalled: Bool) {
+        let hasInputMonitoring = CGPreflightListenEventAccess()
+
+        guard !tapInstalled || !hasInputMonitoring else {
+            // Access looks healthy — clear the latch so we can warn again if it's revoked later.
+            didWarnGlobalShortcutInputBlocked = false
+            return
+        }
+
+        guard !didWarnGlobalShortcutInputBlocked else { return }
+        didWarnGlobalShortcutInputBlocked = true
+
+        NotificationManager.shared.showNotification(
+            title: String(localized: "Recording shortcut needs Input Monitoring permission"),
+            type: .warning,
+            duration: 8.0,
+            actionButton: (String(localized: "Open Settings"), Self.openInputMonitoringSettings)
+        )
+    }
+
+    private static func openInputMonitoringSettings() {
+        // Requesting access first registers VoiceInk in the Input Monitoring list, so the
+        // toggle actually exists when the Settings pane opens.
+        _ = CGRequestListenEventAccess()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func recordingMode(for action: ShortcutAction) -> Mode? {

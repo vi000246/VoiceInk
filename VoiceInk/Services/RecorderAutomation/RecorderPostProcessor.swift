@@ -110,6 +110,21 @@ final class RecorderPostProcessor: ObservableObject {
             }
         }
 
+        // Traditional Chinese: convert the transcript AND the speaker segments once, before
+        // classification/analysis/export, so every downstream consumer sees 繁中 consistently.
+        var rawText = rawText
+        if store.recorderConvertToTraditional {
+            transcription.text = TraditionalChineseConverter.toTraditional(transcription.text)
+            let segs = transcription.speakerSegments
+            if !segs.isEmpty {
+                transcription.speakerSegments = segs.map {
+                    var s = $0; s.text = TraditionalChineseConverter.toTraditional(s.text); return s
+                }
+            }
+            rawText = transcription.text
+            try? modelContext.save()
+        }
+
         await suggestCategory(transcription: transcription, rawText: rawText, modelContext: modelContext,
                               enhancementService: enhancementService, aiService: aiService)
 
@@ -204,8 +219,11 @@ final class RecorderPostProcessor: ObservableObject {
         let model = resolvedAnalysisModel(categoryProvider: category.aiProviderName,
                                           categoryModel: category.aiModelName,
                                           aiService: aiService)
+        // Feed the speaker-labelled transcript (when natively diarized) so templates like meeting
+        // notes can attribute who said what; plain transcript otherwise.
         let analysisInput = await LongTranscriptSummarizer.shared.condense(
-            transcription.text, aiService: aiService, provider: model.provider, modelName: model.modelName)
+            speakerLabeledTranscript(transcription), aiService: aiService,
+            provider: model.provider, modelName: model.modelName)
         transcription.recorderCategoryId = category.id
         transcription.recorderCategoryName = category.name
 
@@ -258,10 +276,21 @@ final class RecorderPostProcessor: ObservableObject {
         let decision = RoutingDecision(category: category,
                                        prompt: store.recorderPrompt(byId: category.customPromptId),
                                        usedFallback: category.isFallback)
-        exportToVault(transcription: transcription, analysis: analysis, rawText: transcription.text,
+        exportToVault(transcription: transcription, analysis: analysis, rawText: speakerLabeledTranscript(transcription),
                       decision: decision, deviceName: deviceName, title: title,
                       vaultRoot: vaultRoot, modelContext: modelContext)
         NotificationManager.shared.showNotification(title: "已匯出：\(category.name)", type: .success, duration: 3)
+    }
+
+    /// The transcript with speaker attribution ("講者N：…") when the recording was natively
+    /// diarized, otherwise the plain transcript. Used both for the exported note's raw-transcript
+    /// section AND as the analysis input, so a template (e.g. meeting notes) sees who said what.
+    private func speakerLabeledTranscript(_ t: Transcription) -> String {
+        let segments = t.speakerSegments
+        guard t.speakerSegmentsAreNative, !segments.isEmpty else { return t.text }
+        return segments
+            .map { "**\(t.displayName(for: $0.speaker))：** \($0.text)" }
+            .joined(separator: "\n\n")
     }
 
     /// Manual re-classify (History badge): apply the chosen category's template + re-export.
@@ -275,22 +304,34 @@ final class RecorderPostProcessor: ObservableObject {
                      enhancementService: enhancementService, aiService: aiService)
     }
 
+    /// The true recording time — parsed from the device filename (e.g. 260701_1258.mp3) via the
+    /// import ledger — falling back to the import/transcription timestamp when the name carries no
+    /// stamp. Keeps the exported note's title and frontmatter date on the recording time, not the
+    /// (possibly much later) import/export time.
+    private func recordingDate(for transcription: Transcription, in modelContext: ModelContext) -> Date {
+        transcription.importFingerprint
+            .flatMap { ImportLedger.shared.fileName(forFingerprint: $0, in: modelContext) }
+            .flatMap { RecorderRecordingTime.parse(fromFileName: $0) }
+            ?? transcription.timestamp
+    }
+
     private func exportToVault(
         transcription: Transcription, analysis: String, rawText: String,
         decision: RoutingDecision, deviceName: String?, title: String?, vaultRoot: URL,
         modelContext: ModelContext
     ) {
+        let recordedAt = recordingDate(for: transcription, in: modelContext)
         let input = VaultExportService.ExportInput(
             analysis: analysis, rawTranscript: rawText,
             categoryName: decision.category.name, deviceName: deviceName,
-            date: transcription.timestamp,
+            date: recordedAt,
             transcriptionModel: transcription.transcriptionModelName,
             enhancementModel: transcription.aiEnhancementModelName,
             confidence: transcription.classificationConfidence)
         let markdown = VaultExportService.shared.buildMarkdown(
             input, includeRawTranscript: RecorderConfigStore.shared.recorderExportIncludeRawTranscript)
         let fileName = VaultExportService.shared.suggestedFileName(
-            date: transcription.timestamp, categoryName: decision.category.name, title: title)
+            date: recordedAt, categoryName: decision.category.name, title: title)
         do {
             let url = try VaultExportService.shared.export(
                 markdown: markdown, fileName: fileName, vaultRoot: vaultRoot,

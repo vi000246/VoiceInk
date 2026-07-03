@@ -130,6 +130,33 @@ final class RecorderPipelineTests: XCTestCase {
     func testShortTextIsSingleChunkAndNotSummarized() {
         let s = LongTranscriptSummarizer.shared
         XCTAssertEqual(s.chunks("hello"), ["hello"])
-        XCTAssertFalse(s.needsSummarization("hello"))
+        XCTAssertFalse(s.needsSummarization("hello", provider: .anthropic, modelName: nil))
+    }
+
+    // MARK: - Model-aware summarization threshold
+    func testSummarizationThresholdScalesWithModelContext() {
+        let s = LongTranscriptSummarizer.shared
+        // ~50k estimated tokens of Latin text (200k chars / 4).
+        let transcript = String(repeating: "word ", count: 40_000)
+        // Fits a 200k-context model (budget ~140k) → sent verbatim.
+        XCTAssertFalse(s.needsSummarization(transcript, provider: .anthropic, modelName: nil))
+        // Overflows a small local model (8k context, budget ~5.6k) → summarize.
+        XCTAssertTrue(s.needsSummarization(transcript, provider: .ollama, modelName: nil))
+    }
+
+    func testContextWindowIsModelAware() {
+        XCTAssertEqual(LongTranscriptSummarizer.contextWindowTokens(provider: .anthropic, modelName: nil), 200_000)
+        XCTAssertEqual(LongTranscriptSummarizer.contextWindowTokens(provider: .gemini, modelName: nil), 1_000_000)
+        XCTAssertEqual(LongTranscriptSummarizer.contextWindowTokens(provider: .openAI, modelName: "gpt-4.1"), 1_000_000)
+        XCTAssertEqual(LongTranscriptSummarizer.contextWindowTokens(provider: .ollama, modelName: nil), 8_000)
+    }
+
+    // MARK: - CJK token estimation
+    func testCJKEstimatedHigherThanLatin() {
+        // 100 Chinese chars ≈ ~100 tokens; 100 Latin chars ≈ ~25 tokens.
+        let cjk = TokenEstimator.estimate(String(repeating: "字", count: 100))
+        let latin = TokenEstimator.estimate(String(repeating: "a", count: 100))
+        XCTAssertGreaterThan(cjk, latin)
+        XCTAssertGreaterThanOrEqual(cjk, 100)
     }
 }

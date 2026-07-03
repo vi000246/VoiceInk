@@ -338,6 +338,19 @@ class AudioTranscriptionManager: ObservableObject {
             let url = recordingsDirectory.appendingPathComponent("transcribed_\(UUID().uuidString).wav")
             try audioProcessor.saveSamplesAsWav(samples: samples, to: url)
             try Task.checkCancellation()
+            // Recorder + diarization: ONE ElevenLabs diarized call serves as both the transcript and
+            // the speaker segments (cached for RecorderPostProcessor to reuse), instead of transcribing
+            // the whole recording twice. Falls through to a normal transcription if it returns nil.
+            if case .recorderImport = item.origin,
+               RecorderConfigStore.shared.recorderDiarizationEnabled,
+               DiarizationCoordinator.supportsNativeDiarization(modelName: model.name),
+               let combined = await DiarizationCoordinator.transcribeAndDiarizeForRecorder(
+                    wavURL: url, modelId: model.name, language: requestContext.language,
+                    expectedSpeakers: RecorderConfigStore.shared.recorderExpectedSpeakerCount,
+                    detectSpeakerRoles: RecorderConfigStore.shared.recorderDetectSpeakerRoles,
+                    noVerbatim: requestContext.noVerbatim) {
+                return (combined.text, [url])
+            }
             let text = try await registry.transcribe(audioURL: url, model: model, context: requestContext)
             return (text, [url])
         }

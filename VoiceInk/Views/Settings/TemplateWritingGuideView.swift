@@ -13,7 +13,7 @@ struct TemplateWritingGuideView: View {
             ) { EmptyView() }
 
             ScrollView {
-                MarkdownContentView(Self.guide, fontSize: 14, foregroundColor: AppTheme.Text.primary)
+                MarkdownContentView(Self.guide, fontSize: 14, foregroundColor: AppTheme.Text.primary, copyableCodeBlocks: true)
                     .padding(20)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(AppCardBackground(cornerRadius: 10))

@@ -17,6 +17,8 @@ struct RecorderHistoryView: View {
     @State private var categoryFilter: String?   // nil = 全部
     @State private var selectedIds: Set<UUID> = []
     @State private var confirmBatchDelete = false
+    /// Anchor for Shift-click range selection (the last row whose checkbox was clicked).
+    @State private var lastToggledId: UUID?
 
     private static let dateSearchFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
@@ -45,7 +47,7 @@ struct RecorderHistoryView: View {
         VStack(spacing: 0) {
             AppScreenHeader(
                 title: "Recording Management",
-                infoMessage: "錄音筆匯入的原始檔（音檔＋逐字稿永遠保留）。挑一個錄音筆範本 → 套用 → 預覽 → 匯出到 Obsidian;可只刪音檔或刪整筆。",
+                infoMessage: "錄音匯入的原始檔（音檔＋逐字稿永遠保留）。挑一個錄音範本 → 套用 → 預覽 → 匯出到 Obsidian;可只刪音檔或刪整筆。勾選多筆可批次刪除，按住 Shift 點選可範圍選取。",
                 infoURL: nil
             ) { EmptyView() }
 
@@ -135,7 +137,16 @@ struct RecorderHistoryView: View {
     }
 
     private func toggle(_ id: UUID) {
-        if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
+        // Shift-click extends selection from the last-clicked row to this one (selects the whole span).
+        if NSEvent.modifierFlags.contains(.shift), let anchor = lastToggledId, anchor != id,
+           let a = filteredItems.firstIndex(where: { $0.id == anchor }),
+           let b = filteredItems.firstIndex(where: { $0.id == id }) {
+            let range = a <= b ? a...b : b...a
+            selectedIds.formUnion(filteredItems[range].map { $0.id })
+        } else {
+            if selectedIds.contains(id) { selectedIds.remove(id) } else { selectedIds.insert(id) }
+        }
+        lastToggledId = id
     }
 
     private func batchDelete() {
@@ -287,8 +298,11 @@ private struct RecordingCard: View {
                 .frame(width: 32, height: 32)
                 .background(AppTheme.Sidebar.fallback, in: RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 3) {
-                Text(displayTitle)
-                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(displayTitle)
+                        .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    favoriteButton
+                }
                 HStack(spacing: 6) {
                     Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
                         .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -369,9 +383,17 @@ private struct RecordingCard: View {
                 Button { export() } label: { Label("匯出到 Obsidian", systemImage: "square.and.arrow.up") }
                     .disabled(busy || !hasAnalysis)
                 if let path = transcription.exportedFilePath {
-                    Button { NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "") } label: {
-                        Label("在 Vault 顯示", systemImage: "folder")
-                    }.buttonStyle(.plain).foregroundStyle(.secondary).help(path)
+                    if FileManager.default.fileExists(atPath: path) {
+                        Button { NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "") } label: {
+                            Label("在 Vault 顯示", systemImage: "folder")
+                        }.buttonStyle(.plain).foregroundStyle(.secondary).help(path)
+                    } else {
+                        // Exported file was moved/renamed in the vault — just show it WAS exported
+                        // (so you know to re-export rather than hunt for a dead path).
+                        Label("已匯出", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                            .help("已匯出過；原檔已移動或改名，找不到了。可再匯出一次。")
+                    }
                 }
                 Spacer()
                 Button(role: .destructive) { confirmDeleteAudio = true } label: { Label("刪除音檔", systemImage: "speaker.slash") }
@@ -422,7 +444,24 @@ private struct RecordingCard: View {
         NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
     }
 
+    private func toggleFavorite() {
+        transcription.recorderFavorite.toggle()
+        try? modelContext.save()
+    }
+
     // MARK: - Bits
+
+    /// Yellow star next to the title marking a "favorite" recording — a reminder not to delete it.
+    /// Tap to toggle. Dimmed outline when off, filled yellow when on.
+    private var favoriteButton: some View {
+        Button(action: toggleFavorite) {
+            Image(systemName: transcription.recorderFavorite ? "star.fill" : "star")
+                .font(.system(size: 12))
+                .foregroundStyle(transcription.recorderFavorite ? Color.yellow : Color.secondary.opacity(0.5))
+        }
+        .buttonStyle(.plain)
+        .help(transcription.recorderFavorite ? "已標記為喜歡（提醒：不要刪除）" : "標記為喜歡")
+    }
 
     private func tab(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -485,15 +524,29 @@ private struct TranscriptSheet: View {
 
     private var hasAnalysis: Bool { analysisText?.isEmpty == false }
     private var text: String { (showAnalysis ? analysisText : rawText) ?? rawText }
-    /// Show speaker-grouped blocks only for the raw-transcript tab of a *natively* diarized recording.
-    /// Native segment text (ElevenLabs) IS the real transcript; the local FluidAudio fallback's text
-    /// comes from Parakeet ASR and may not match the recording's language, so for it we fall through
-    /// to the plain original transcript instead of replacing it with mismatched segment text.
-    private var showsSpeakers: Bool {
-        !showAnalysis && transcription.speakerSegmentsAreNative && !transcription.speakerSegments.isEmpty
+
+    /// id → display name, computed ONCE from an already-decoded segment array. Mirrors
+    /// `Transcription.displayName(for:)` but avoids that path's per-call JSON re-decode (which made
+    /// rendering a long diarized transcript O(n²) and janked the sheet open).
+    private func speakerNameMap(_ segments: [SpeakerSegment]) -> [String: String] {
+        var ordered: [String] = []
+        for s in segments where !ordered.contains(s.speaker) { ordered.append(s.speaker) }
+        let names = transcription.speakerNames
+        var map: [String: String] = [:]
+        for (idx, id) in ordered.enumerated() {
+            if let n = names[id], !n.isEmpty { map[id] = n }
+            else if id == "agent" { map[id] = "客服" }
+            else if id == "customer" { map[id] = "客戶" }
+            else { map[id] = "講者\(idx + 1)" }
+        }
+        return map
     }
 
     var body: some View {
+        // Decode segments ONCE per render (the accessor re-decodes JSON on every call).
+        let segments = transcription.speakerSegments
+        let showSpeakers = !showAnalysis && transcription.speakerSegmentsAreNative && !segments.isEmpty
+        let nameMap = showSpeakers ? speakerNameMap(segments) : [:]
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(title).font(.headline).lineLimit(1)
@@ -511,17 +564,18 @@ private struct TranscriptSheet: View {
             .padding(.horizontal).padding(.vertical, 8)
             Divider()
             ScrollView {
-                if showsSpeakers {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(transcription.speakerSegments.enumerated()), id: \.offset) { _, seg in
+                if showSpeakers {
+                    // LazyVStack: only render on-screen speaker blocks (a 1-hr transcript has hundreds).
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(spacing: 6) {
-                                    Text(transcription.displayName(for: seg.speaker))
+                                    Text(nameMap[seg.speaker] ?? seg.speaker)
                                         .font(.system(size: 12, weight: .semibold))
                                         .foregroundStyle(AppTheme.Text.secondary)
                                     Button {
                                         renameSpeakerId = seg.speaker
-                                        renameSpeakerText = transcription.displayName(for: seg.speaker)
+                                        renameSpeakerText = nameMap[seg.speaker] ?? seg.speaker
                                         showSpeakerRename = true
                                     } label: {
                                         Image(systemName: "pencil").font(.system(size: 10))
@@ -536,8 +590,15 @@ private struct TranscriptSheet: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
-                } else {
+                } else if showAnalysis {
+                    // Applied note is Markdown → render it; raw transcript is plain text (below).
                     MarkdownContentView(text, fontSize: 14, foregroundColor: AppTheme.Text.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                } else {
+                    // Raw transcript is plain text — skip Markdown parsing (heavy on long transcripts).
+                    Text(rawText).font(.system(size: 14)).foregroundStyle(AppTheme.Text.primary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()

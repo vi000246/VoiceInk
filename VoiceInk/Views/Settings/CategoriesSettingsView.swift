@@ -38,8 +38,8 @@ struct CategoriesSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "Recorder Prompts",
-                infoMessage: "錄音筆匯入後，會自動分類到下列其中一類，套用該類別的範本做分析，並輸出到 Vault 對應子資料夾。「通用」為無法分類時的預設，不可刪除。",
+                title: "錄音範本",
+                infoMessage: "錄音匯入後，會自動分類到下列其中一類，套用該類別的範本做分析，並輸出到 Vault 對應子資料夾。「通用」為無法分類時的預設，不可刪除。",
                 infoURL: nil
             ) {
                 AppIconButton(systemName: "square.and.arrow.down.on.square", help: "載入預設類別與範本") {
@@ -140,6 +140,7 @@ private struct CategoryEditorPanel: View {
     @State private var aiProviderName: String?
     @State private var aiModelName: String?
     @State private var showingPromptEditor = false
+    @State private var showDeletePromptConfirmation = false
 
     private let existingId: UUID?
     private let isFallback: Bool
@@ -220,9 +221,9 @@ private struct CategoryEditorPanel: View {
                     }
                     if boundPrompt != nil {
                         Button("刪除範本", role: .destructive) {
-                            if let p = boundPrompt { store.removeRecorderPrompt(p.id) }
-                            customPromptId = nil
+                            showDeletePromptConfirmation = true
                         }
+                        .tint(AppTheme.Status.errorStrong)
                     }
                 }
                 Section {
@@ -235,12 +236,28 @@ private struct CategoryEditorPanel: View {
             .formStyle(.grouped)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .confirmationDialog(
+            "刪除範本？",
+            isPresented: $showDeletePromptConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("刪除範本", role: .destructive) {
+                if let p = boundPrompt { store.removeRecorderPrompt(p.id) }
+                customPromptId = nil
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(boundPrompt.map { String(format: "確定要刪除範本「%@」嗎？此動作無法復原，綁定此範本的類別會改為輸出原始逐字稿。", $0.title) }
+                 ?? "確定要刪除此範本嗎？此動作無法復原。")
+        }
         .sheet(isPresented: $showingPromptEditor) {
             PromptEditorView(
                 mode: boundPrompt.map { .edit($0) } ?? .add,
                 allowsSystemTemplateToggle: true,
                 defaultUseSystemTemplate: false,
                 showsStarterTemplateMenu: false,
+                saveButtonTitle: "存檔",
+                requiresTitle: false,
                 onDismiss: { showingPromptEditor = false },
                 onSave: { prompt in
                     store.upsertRecorderPrompt(prompt)

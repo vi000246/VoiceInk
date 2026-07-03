@@ -1,5 +1,5 @@
 {
-  "originHash" : "e805a0083f11b367299be0271a4145f9bf45e8082ce8569f5321bb4caa759816",
+  "originHash" : "b80e0de20f9cf3bc9f82de12d3baf150058bf530eb1173ccf2f64c9e4500e6fc",
   "pins" : [
     {
       "identity" : "axswift",
@@ -107,6 +107,15 @@
       "state" : {
         "revision" : "5f613358148239d0292c0cef674a3c2314737f9e",
         "version" : "2.4.1"
+      }
+    },
+    {
+      "identity" : "swiftyopencc",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ddddxxx/SwiftyOpenCC.git",
+      "state" : {
+        "revision" : "64a4534c17480b15b87cfa114ffcc5aa26a2d35f",
+        "version" : "1.0.1"
       }
     },
     {

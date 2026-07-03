@@ -25,6 +25,12 @@ struct PromptEditorView: View {
     var defaultUseSystemTemplate: Bool = true
     /// Show the voice starter-template menu (add mode). Hidden for recorder analysis prompts.
     var showsStarterTemplateMenu: Bool = true
+    /// Overrides the save button label. Voice prompts keep the default "Create/Save & Select";
+    /// recorder templates pass a plain "存檔" since there is no separate "select" step for them.
+    var saveButtonTitleOverride: LocalizedStringKey? = nil
+    /// When false, the title is optional — saving is allowed with an empty name (auto-derived from
+    /// the prompt) so the recorder template editor isn't blocked by the easily-missed name field.
+    var requiresTitle: Bool = true
     @EnvironmentObject private var enhancementService: AIEnhancementService
     let onDismiss: () -> Void
     let onSave: (CustomPrompt) -> Void
@@ -33,9 +39,27 @@ struct PromptEditorView: View {
     @State private var promptText: String
     @State private var useSystemInstructions: Bool
     @State private var showDeleteConfirmation = false
+    @State private var showDiscardConfirmation = false
 
     private var saveButtonTitle: LocalizedStringKey {
-        mode == .add ? "Create & Select" : "Save & Select"
+        if let saveButtonTitleOverride { return saveButtonTitleOverride }
+        return mode == .add ? "Create & Select" : "Save & Select"
+    }
+
+    private var titlePlaceholder: LocalizedStringKey {
+        requiresTitle ? "Prompt name" : "Prompt name (optional)"
+    }
+
+    /// The title to persist: the typed name, or — when a name isn't required and was left blank —
+    /// the prompt's first non-empty line (capped), falling back to a generic label.
+    private func resolvedTitle() -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        let firstLine = promptText
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return firstLine.isEmpty ? String(localized: "Untitled Template") : String(firstLine.prefix(20))
     }
 
     private var editingPrompt: CustomPrompt? {
@@ -50,8 +74,11 @@ struct PromptEditorView: View {
     }
 
     private var isSaveDisabled: Bool {
-        return title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-            promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let promptEmpty = promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if requiresTitle {
+            return promptEmpty || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return promptEmpty
     }
     
     init(
@@ -59,6 +86,8 @@ struct PromptEditorView: View {
         allowsSystemTemplateToggle: Bool = true,
         defaultUseSystemTemplate: Bool = true,
         showsStarterTemplateMenu: Bool = true,
+        saveButtonTitle: LocalizedStringKey? = nil,
+        requiresTitle: Bool = true,
         onDismiss: @escaping () -> Void,
         onSave: @escaping (CustomPrompt) -> Void,
         onDelete: ((CustomPrompt) -> Void)? = nil
@@ -67,6 +96,8 @@ struct PromptEditorView: View {
         self.allowsSystemTemplateToggle = allowsSystemTemplateToggle
         self.defaultUseSystemTemplate = defaultUseSystemTemplate
         self.showsStarterTemplateMenu = showsStarterTemplateMenu
+        self.saveButtonTitleOverride = saveButtonTitle
+        self.requiresTitle = requiresTitle
         self.onDismiss = onDismiss
         self.onSave = onSave
         self.onDelete = onDelete
@@ -84,6 +115,26 @@ struct PromptEditorView: View {
     
     private func dismissPanel() {
         onDismiss()
+    }
+
+    /// Has the user entered/changed anything that would be lost on close?
+    private var isDirty: Bool {
+        switch mode {
+        case .add:
+            return !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .edit(let prompt):
+            let originalUsesSystem = allowsSystemTemplateToggle ? prompt.useSystemInstructions : false
+            return title != prompt.title
+                || promptText != prompt.promptText
+                || useSystemInstructions != originalUsesSystem
+        }
+    }
+
+    /// Close request from Back / Cancel / Escape — confirm first if there are unsaved changes so a
+    /// half-written template isn't lost. Saving uses `dismissPanel()` directly and never prompts.
+    private func attemptDismiss() {
+        if isDirty { showDiscardConfirmation = true } else { onDismiss() }
     }
 
     var body: some View {
@@ -118,12 +169,22 @@ struct PromptEditorView: View {
         } message: {
             Text(String(format: String(localized: "Are you sure you want to delete '%@'? This action cannot be undone."), title))
         }
+        .confirmationDialog(
+            "尚未儲存，確定要離開嗎？",
+            isPresented: $showDiscardConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("捨棄變更", role: .destructive) { onDismiss() }
+            Button("繼續編輯", role: .cancel) { }
+        } message: {
+            Text("你對這個範本做的變更尚未儲存，離開後會遺失。")
+        }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
             Button {
-                dismissPanel()
+                attemptDismiss()
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 14, weight: .semibold))
@@ -136,7 +197,7 @@ struct PromptEditorView: View {
             .keyboardShortcut(.escape, modifiers: [])
             .help("Back")
 
-            TextField("Prompt name", text: $title)
+            TextField(titlePlaceholder, text: $title)
                 .textFieldStyle(.plain)
                 .font(.system(size: 16, weight: .semibold))
 
@@ -213,10 +274,10 @@ struct PromptEditorView: View {
                         .frame(minWidth: 90)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(AppTheme.Status.error)
+                .tint(AppTheme.Status.errorStrong)
             } else {
                 Button("Cancel") {
-                    dismissPanel()
+                    attemptDismiss()
                 }
                 .keyboardShortcut(.escape, modifiers: [])
                 .buttonStyle(.plain)
@@ -251,17 +312,18 @@ struct PromptEditorView: View {
     }
 
     private func save() -> CustomPrompt? {
+        let finalTitle = resolvedTitle()
         switch mode {
         case .add:
             return enhancementService.addPrompt(
-                title: title,
+                title: finalTitle,
                 promptText: promptText,
                 useSystemInstructions: useSystemInstructions
             )
         case .edit(let prompt):
             let updatedPrompt = CustomPrompt(
                 id: prompt.id,
-                title: title,
+                title: finalTitle,
                 promptText: promptText,
                 useSystemInstructions: useSystemInstructions
             )

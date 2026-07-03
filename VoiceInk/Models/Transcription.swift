@@ -36,6 +36,9 @@ final class Transcription {
     var recorderCategoryId: UUID?
     /// Recorder display title: `yyyyMMdd HHmm <≤10-char AI summary>`, generated at classification.
     var recorderTitle: String?
+    /// User-marked "favorite" recording (yellow star in Recording Management) — a reminder that this
+    /// record shouldn't be deleted. Default false; new column so SwiftData lightweight-migrates.
+    var recorderFavorite: Bool = false
     var classificationConfidence: Double?
     var exportedFilePath: String?
     var speakerLabeled: Bool = false
