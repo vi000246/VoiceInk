@@ -2,7 +2,18 @@ import SwiftUI
 import AppKit
 import MarkdownUI
 
-struct MarkdownContentView: View {
+/// Equatable so SwiftUI skips body (= a full Markdown AST re-parse) when a parent
+/// invalidates for unrelated reasons — e.g. the recorder overlay's live meter/transcript.
+struct MarkdownContentView: View, Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.text == rhs.text
+            && lhs.fontSize == rhs.fontSize
+            && lhs.foregroundColor == rhs.foregroundColor
+            && lhs.alignment.horizontal == rhs.alignment.horizontal
+            && lhs.alignment.vertical == rhs.alignment.vertical
+            && lhs.copyableCodeBlocks == rhs.copyableCodeBlocks
+    }
+
     let text: String
     var fontSize: CGFloat
     var foregroundColor: Color

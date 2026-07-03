@@ -55,45 +55,15 @@ struct ModelPerformancePanel: View {
     }
 }
 
-// MARK: - Content (owns @Query, reacts to filter)
+// MARK: - Content (loads aggregates off-main, reacts to filter)
 
 private struct ModelPerformancePanelContent: View {
-    @Query private var metrics: [SessionMetric]
+    @Environment(\.modelContext) private var modelContext
+    let filter: DashboardProductivityPeriod
 
-    init(filter: DashboardProductivityPeriod) {
-        if let predicate = filter.sessionMetricPredicate {
-            _metrics = Query(filter: predicate)
-        } else {
-            _metrics = Query()
-        }
-    }
-
-    private var modelStats: [ModelPerformanceStat] {
-        var accumulators: [String: ModelPerformanceAccumulator] = [:]
-        for metric in metrics {
-            guard let name = metric.transcriptionModelName,
-                  let processingDuration = metric.transcriptionDuration,
-                  processingDuration > 0 else { continue }
-            accumulators[name, default: ModelPerformanceAccumulator()].add(
-                audioDuration: metric.audioDuration,
-                processingDuration: processingDuration
-            )
-        }
-        return accumulators.map { name, acc in acc.stat(named: name) }
-            .sorted { $0.avgProcessingTime < $1.avgProcessingTime }
-    }
-
-    private var enhancementStats: [EnhancementStat] {
-        var accumulators: [String: EnhancementAccumulator] = [:]
-        for metric in metrics {
-            guard let name = metric.aiEnhancementModelName,
-                  let duration = metric.enhancementDuration,
-                  duration > 0 else { continue }
-            accumulators[name, default: EnhancementAccumulator()].add(duration: duration)
-        }
-        return accumulators.map { name, acc in acc.stat(named: name) }
-            .sorted { $0.avgDuration < $1.avgDuration }
-    }
+    @State private var modelStats: [ModelPerformanceStat] = []
+    @State private var enhancementStats: [EnhancementStat] = []
+    @State private var isLoading = true
 
     private let gridColumns = [
         GridItem(.flexible(), spacing: 12),
@@ -101,20 +71,37 @@ private struct ModelPerformancePanelContent: View {
     ]
 
     var body: some View {
-        if modelStats.isEmpty && enhancementStats.isEmpty {
-            emptyState
-        } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if !modelStats.isEmpty {
-                        modelsSection
+        Group {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if modelStats.isEmpty && enhancementStats.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        if !modelStats.isEmpty {
+                            modelsSection
+                        }
+                        if !enhancementStats.isEmpty {
+                            enhancementSection
+                        }
                     }
-                    if !enhancementStats.isEmpty {
-                        enhancementSection
-                    }
+                    .padding(16)
                 }
-                .padding(16)
             }
+        }
+        .task(id: filter) {
+            // Aggregate on a background ModelContext like DashboardStatsLoader — an unbounded
+            // @Query here used to load the whole SessionMetric table on the main thread.
+            let result = try? await ModelPerformanceStatsLoader.load(
+                from: modelContext.container,
+                predicate: filter.sessionMetricPredicate
+            )
+            modelStats = result?.models ?? []
+            enhancementStats = result?.enhancements ?? []
+            isLoading = false
         }
     }
 
@@ -253,6 +240,75 @@ private struct ModelPerformancePanelContent: View {
         formatter.allowedUnits = [.minute, .second]
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: duration) ?? "0s"
+    }
+}
+
+// MARK: - Background aggregation
+
+enum ModelPerformanceStatsLoader {
+    struct Output: Sendable {
+        let models: [ModelPerformanceStat]
+        let enhancements: [EnhancementStat]
+    }
+
+    static func load(
+        from modelContainer: ModelContainer,
+        predicate: Predicate<SessionMetric>?
+    ) async throws -> Output {
+        let task = Task.detached(priority: .utility) { () -> Output in
+            let backgroundContext = ModelContext(modelContainer)
+            let count = try backgroundContext.fetchCount(FetchDescriptor<SessionMetric>(predicate: predicate))
+
+            var modelAccumulators: [String: ModelPerformanceAccumulator] = [:]
+            var enhancementAccumulators: [String: EnhancementAccumulator] = [:]
+            let batchSize = 500
+            var offset = 0
+
+            while offset < count {
+                try Task.checkCancellation()
+
+                var descriptor = FetchDescriptor<SessionMetric>(
+                    predicate: predicate,
+                    sortBy: [SortDescriptor(\SessionMetric.timestamp, order: .forward)]
+                )
+                descriptor.fetchLimit = batchSize
+                descriptor.fetchOffset = offset
+
+                let records = try backgroundContext.fetch(descriptor)
+                if records.isEmpty { break }
+
+                for metric in records {
+                    if let name = metric.transcriptionModelName,
+                       let processingDuration = metric.transcriptionDuration,
+                       processingDuration > 0 {
+                        modelAccumulators[name, default: ModelPerformanceAccumulator()].add(
+                            audioDuration: metric.audioDuration,
+                            processingDuration: processingDuration
+                        )
+                    }
+                    if let name = metric.aiEnhancementModelName,
+                       let duration = metric.enhancementDuration,
+                       duration > 0 {
+                        enhancementAccumulators[name, default: EnhancementAccumulator()].add(duration: duration)
+                    }
+                }
+
+                offset += records.count
+            }
+
+            return Output(
+                models: modelAccumulators.map { name, acc in acc.stat(named: name) }
+                    .sorted { $0.avgProcessingTime < $1.avgProcessingTime },
+                enhancements: enhancementAccumulators.map { name, acc in acc.stat(named: name) }
+                    .sorted { $0.avgDuration < $1.avgDuration }
+            )
+        }
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 }
 

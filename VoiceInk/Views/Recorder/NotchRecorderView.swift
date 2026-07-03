@@ -2,7 +2,9 @@ import SwiftUI
 
 struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     @ObservedObject var stateProvider: S
-    @ObservedObject var recorder: Recorder
+    // Plain `let`: the meter publishes ~59×/s while recording; only the leaf
+    // RecorderMeterStatusView observes it, so this body stays off that hot path.
+    let recorder: Recorder
     @ObservedObject var assistantSession: AssistantSession
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
@@ -172,9 +174,9 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
-                RecorderStatusDisplay(
+                RecorderMeterStatusView(
+                    recorder: recorder,
                     currentState: stateProvider.recordingState,
-                    audioMeter: recorder.audioMeter,
                     menuBarHeight: notchHeight
                 )
             }

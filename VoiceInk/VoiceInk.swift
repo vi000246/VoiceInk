@@ -82,7 +82,11 @@ struct VoiceInkApp: App {
         }
 
         container = resolvedContainer
-        DictionaryService.removeExactDuplicateContent(context: resolvedContainer.mainContext, source: "launch")
+        // Duplicate cleanup fetches BOTH full (CloudKit-synced) dictionary tables — run it on a
+        // background context after launch instead of blocking app init on the main thread.
+        Task.detached(priority: .utility) {
+            DictionaryService.removeExactDuplicateContent(context: ModelContext(resolvedContainer), source: "launch")
+        }
 
         // Initialize services with proper sharing of instances
         let aiService = AIService()

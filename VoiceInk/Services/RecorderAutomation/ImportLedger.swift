@@ -12,10 +12,19 @@ final class ImportLedger {
     /// Cheap pre-filter key (no file read).
     func quickKey(fileName: String, byteSize: Int) -> String { "\(fileName)|\(byteSize)" }
 
-    /// SHA-256 hex of the file's bytes.
-    func contentFingerprint(for url: URL) throws -> String {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    /// SHA-256 hex of the file's bytes, streamed in 4 MB chunks so a multi-GB recording never
+    /// sits fully in RAM. nonisolated static: import scans must hash OFF the main actor — device
+    /// files are routinely hundreds of MB and hashing them on main froze the UI on insert.
+    nonisolated static func contentFingerprint(for url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = try autoreleasepool { try handle.read(upToCount: 4 << 20) ?? Data() }
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     func isImported(fingerprint: String, in context: ModelContext) -> Bool {

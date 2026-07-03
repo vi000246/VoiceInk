@@ -3,6 +3,9 @@ import SwiftData
 
 @Model
 final class SessionMetric {
+    // transcriptionId: per-save dedup lookup; timestamp: dashboard range queries.
+    #Index<SessionMetric>([\.transcriptionId], [\.timestamp])
+
     var id: UUID = UUID()
     var transcriptionId: UUID = UUID()
     var timestamp: Date = Date()

@@ -24,6 +24,10 @@ class Recorder: NSObject, ObservableObject {
     private let smoothedValuesLock = NSLock()
     private var smoothedAverage: Float = 0
     private var smoothedPeak: Float = 0
+    // Last values actually published to `audioMeter` (guarded by smoothedValuesLock) —
+    // lets silence skip the 59 fps main-thread publish entirely.
+    private var lastPublishedAverage: Float = -1
+    private var lastPublishedPeak: Float = -1
 
     /// Audio chunk callback for streaming. Can be updated while recording;
     /// changes are forwarded to the live CoreAudioRecorder.
@@ -228,6 +232,10 @@ class Recorder: NSObject, ObservableObject {
     }
 
     private func startAudioMeterTimer() {
+        smoothedValuesLock.lock()
+        lastPublishedAverage = -1   // force the first tick of a new session to publish
+        lastPublishedPeak = -1
+        smoothedValuesLock.unlock()
         let timer = DispatchSource.makeTimerSource(queue: audioMeterQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(17)) 
         timer.setEventHandler { [weak self] in
@@ -294,8 +302,18 @@ class Recorder: NSObject, ObservableObject {
         smoothedValuesLock.lock()
         smoothedAverage = smoothedAverage * 0.6 + normalizedAverage * 0.4
         smoothedPeak = smoothedPeak * 0.6 + normalizedPeak * 0.4
+        // Skip the publish when nothing visibly changed (< 1% of the meter range): during
+        // silence this drops the main-thread hop + SwiftUI invalidation from ~59/s to zero.
+        let visiblyChanged = abs(smoothedAverage - lastPublishedAverage) >= 0.01
+            || abs(smoothedPeak - lastPublishedPeak) >= 0.01
+        if visiblyChanged {
+            lastPublishedAverage = smoothedAverage
+            lastPublishedPeak = smoothedPeak
+        }
         let newAudioMeter = AudioMeter(averagePower: Double(smoothedAverage), peakPower: Double(smoothedPeak))
         smoothedValuesLock.unlock()
+
+        guard visiblyChanged else { return }
 
         // Dispatch to main queue for UI updates (more efficient than Task)
         DispatchQueue.main.async { [weak self] in

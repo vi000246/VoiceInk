@@ -42,7 +42,15 @@ final class WhisperModelWarmupCoordinator: ObservableObject {
             modelsDirectory: whisperModelManager.modelsDirectory,
             modelProvider: whisperModelManager
         )
-        _ = try await service.transcribe(audioURL: sampleURL, model: model)
+        // Transient service: release its cached context so warmup never keeps a second model resident.
+        var warmupError: Error?
+        do {
+            _ = try await service.transcribe(audioURL: sampleURL, model: model)
+        } catch {
+            warmupError = error
+        }
+        await service.cleanup()
+        if let warmupError { throw warmupError }
     }
 
     private func warmupSampleURL() -> URL? {

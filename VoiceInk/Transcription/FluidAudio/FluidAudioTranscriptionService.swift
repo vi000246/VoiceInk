@@ -236,14 +236,9 @@ class FluidAudioTranscriptionService: TranscriptionService {
                 throw ASRError.invalidAudioData
             }
 
-            let floats = stride(from: 44, to: data.count, by: 2).map {
-                return data[$0..<$0 + 2].withUnsafeBytes {
-                    let short = Int16(littleEndian: $0.load(as: Int16.self))
-                    return max(-1.0, min(Float(short) / 32767.0, 1.0))
-                }
-            }
-
-            return floats
+            // Skip the 44-byte WAV header; single-pass decode (a per-sample Data slice here cost
+            // ~1M allocations per minute of audio).
+            return PCMAudioConverter.float32Samples(fromPCM16Data: data.dropFirst(44))
         } catch {
             throw ASRError.invalidAudioData
         }

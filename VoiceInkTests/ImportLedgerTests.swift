@@ -15,7 +15,7 @@ final class ImportLedgerTests: XCTestCase {
         try Data("hello".utf8).write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
         // sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-        XCTAssertEqual(try ImportLedger.shared.contentFingerprint(for: tmp),
+        XCTAssertEqual(try ImportLedger.contentFingerprint(for: tmp),
                        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
     }
 

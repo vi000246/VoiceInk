@@ -34,7 +34,7 @@ final class RecorderImportService: NSObject, ObservableObject {
     ///   they may still be copying in — and report them as `deferredCount` so the caller can re-check.
     ///   0 (mount path) keeps the original behaviour: device files are already complete on mount.
     func newImportableFiles(in folder: URL, context: ModelContext,
-                            minimumStableAge: TimeInterval = 0) -> (candidates: [ImportCandidate], deferredCount: Int) {
+                            minimumStableAge: TimeInterval = 0) async -> (candidates: [ImportCandidate], deferredCount: Int) {
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles])) ?? []
@@ -48,18 +48,26 @@ final class RecorderImportService: NSObject, ObservableObject {
             let size = rv?.fileSize ?? 0
             if minSizeBytes > 0, size > 0, size < minSizeBytes { continue }
             // Cheap (name+size) pre-skip on ALL paths: an already-imported file is skipped WITHOUT
-            // hashing. This is what stops every mount from SHA-256'ing the whole device on the main
-            // thread (the "app freezes on insert" hitch) — content-hash confirm still runs for new files.
+            // hashing. Content-hash confirm still runs for new files, off the main actor (below).
             if ImportLedger.shared.hasQuickMatch(fileName: url.lastPathComponent, byteSize: size, in: context) { continue }
             if minimumStableAge > 0, let mod = rv?.contentModificationDate, now.timeIntervalSince(mod) < minimumStableAge {
                 deferred += 1; continue
             }
-            guard let fp = try? ImportLedger.shared.contentFingerprint(for: url) else { continue }
+            guard let fp = try? await Self.fingerprintOffMain(url) else { continue }
             if inFlight.contains(fp) { continue }
             if ImportLedger.shared.isImported(fingerprint: fp, in: context) { continue }
             out.append(ImportCandidate(url: url, fingerprint: fp, fileName: url.lastPathComponent, byteSize: size))
         }
         return (out, deferred)
+    }
+
+    /// Content-hash on a background thread. Hashing a new multi-hundred-MB recording on the main
+    /// actor froze the UI on device insert — the quick-match pre-skip only spares files that are
+    /// ALREADY in the ledger, so every genuinely new file used to pay this cost on main.
+    nonisolated private static func fingerprintOffMain(_ url: URL) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            try ImportLedger.contentFingerprint(for: url)
+        }.value
     }
 
     /// Filter out candidates shorter than the configured auto-import length floor. Files whose
@@ -94,7 +102,7 @@ final class RecorderImportService: NSObject, ObservableObject {
 
             // Watched folders may hold files mid-copy; give them a few seconds to settle, then re-check.
             let stableAge: TimeInterval = device.kind == .folder ? 4 : 0
-            let (sizeFiltered, deferred) = newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
+            let (sizeFiltered, deferred) = await newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
             if deferred > 0 { RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id) }
             guard !sizeFiltered.isEmpty else { return }
 
@@ -170,7 +178,7 @@ final class RecorderImportService: NSObject, ObservableObject {
                 if alreadyProcessed {
                     fingerprint = "reprocess-\(UUID().uuidString)"   // unique → bypass content dedup
                     displayName = serialNumberedName(base: url.lastPathComponent, in: modelContext)
-                } else if let real = try? ImportLedger.shared.contentFingerprint(for: url) {
+                } else if let real = try? await Self.fingerprintOffMain(url) {
                     fingerprint = real
                     displayName = url.lastPathComponent
                 } else { continue }

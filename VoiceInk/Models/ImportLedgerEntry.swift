@@ -3,6 +3,10 @@ import SwiftData
 
 @Model
 final class ImportLedgerEntry {
+    // fingerprint: content-dedup lookup; (fileName, byteSize): quick-match pre-skip —
+    // both run once per device file on every mount/folder scan.
+    #Index<ImportLedgerEntry>([\.fingerprint], [\.fileName, \.byteSize])
+
     var fingerprint: String = ""   // sha256(content) — primary dedup key
     var fileName: String = ""
     var byteSize: Int = 0

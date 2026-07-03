@@ -337,6 +337,29 @@ struct LiveTranscriptView: View {
 
 // MARK: - Recorder Status Display
 
+/// Leaf observer of the ~59 fps `audioMeter` publisher. The overlay roots hold `Recorder`
+/// as a plain `let` and route it here, so each meter tick re-evaluates only this small
+/// subtree — not the whole notch/mini pill (whose body queries NSScreen geometry).
+struct RecorderMeterStatusView: View {
+    @ObservedObject var recorder: Recorder
+    let currentState: RecordingState
+    let menuBarHeight: CGFloat?
+
+    init(recorder: Recorder, currentState: RecordingState, menuBarHeight: CGFloat? = nil) {
+        self.recorder = recorder
+        self.currentState = currentState
+        self.menuBarHeight = menuBarHeight
+    }
+
+    var body: some View {
+        RecorderStatusDisplay(
+            currentState: currentState,
+            audioMeter: recorder.audioMeter,
+            menuBarHeight: menuBarHeight
+        )
+    }
+}
+
 struct RecorderStatusDisplay: View {
     let currentState: RecordingState
     let audioMeter: AudioMeter

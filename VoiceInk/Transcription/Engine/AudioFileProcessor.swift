@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 import os
 
 class AudioProcessor {
@@ -55,91 +56,109 @@ class AudioProcessor {
             throw AudioProcessingError.unsupportedFormat
         }
         
-        let chunkSize: AVAudioFrameCount = 50_000_000
+        // ~22 s @ 48 kHz per read: bounds peak memory to a few MB per buffer instead of
+        // materializing the whole decoded file (the previous 50M-frame "chunk").
+        let chunkSize: AVAudioFrameCount = 1_048_576
+        let needsConversion = !(sampleRate == AudioFormat.targetSampleRate && channels == AudioFormat.targetChannels)
+        let ratio = AudioFormat.targetSampleRate / sampleRate
+
+        // One converter for the whole file: its resampler state carries across chunks, so
+        // chunk boundaries don't lose the filter tail (a fresh converter per chunk did).
+        var converter: AVAudioConverter?
+        if needsConversion {
+            guard let created = AVAudioConverter(from: format, to: outputFormat) else {
+                throw AudioProcessingError.conversionFailed
+            }
+            converter = created
+        }
+
         var allSamples: [Float] = []
+        allSamples.reserveCapacity(Int(Double(totalFrames) * (needsConversion ? ratio : 1)) + 1024)
         var currentFrame: AVAudioFramePosition = 0
-        
+
         while currentFrame < totalFrames {
             let remainingFrames = totalFrames - currentFrame
             let framesToRead = min(chunkSize, AVAudioFrameCount(remainingFrames))
-            
+
             guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else {
                 throw AudioProcessingError.conversionFailed
             }
-            
+
             audioFile.framePosition = currentFrame
             try audioFile.read(into: inputBuffer, frameCount: framesToRead)
-            
-            if sampleRate == AudioFormat.targetSampleRate && channels == AudioFormat.targetChannels {
-                let chunkSamples = convertToWhisperFormat(inputBuffer)
-                allSamples.append(contentsOf: chunkSamples)
-            } else {
-                guard let converter = AVAudioConverter(from: format, to: outputFormat) else {
-                    throw AudioProcessingError.conversionFailed
-                }
-                
-                let ratio = AudioFormat.targetSampleRate / sampleRate
-                let outputFrameCount = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio)
-                
+            currentFrame += AVAudioFramePosition(framesToRead)
+
+            if let converter {
+                let isLastChunk = currentFrame >= totalFrames
+                let outputFrameCount = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio) + 64
+
                 guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outputFrameCount) else {
                     throw AudioProcessingError.conversionFailed
                 }
-                
+
                 var error: NSError?
+                var consumedInput = false
                 let status = converter.convert(
                     to: outputBuffer,
                     error: &error,
-                    withInputFrom: { inNumPackets, outStatus in
+                    withInputFrom: { _, outStatus in
+                        // Hand the chunk over exactly once; afterwards tell the converter to wait
+                        // for the next chunk (or drain, at end of file).
+                        if consumedInput {
+                            outStatus.pointee = isLastChunk ? .endOfStream : .noDataNow
+                            return nil
+                        }
+                        consumedInput = true
                         outStatus.pointee = .haveData
                         return inputBuffer
                     }
                 )
-                
-                if let error = error {
+
+                if error != nil || status == .error {
                     throw AudioProcessingError.conversionFailed
                 }
-                
-                if status == .error {
-                    throw AudioProcessingError.conversionFailed
-                }
-                
-                let chunkSamples = convertToWhisperFormat(outputBuffer)
-                allSamples.append(contentsOf: chunkSamples)
+
+                appendMonoSamples(from: outputBuffer, to: &allSamples)
+            } else {
+                appendMonoSamples(from: inputBuffer, to: &allSamples)
             }
-            
-            currentFrame += AVAudioFramePosition(framesToRead)
         }
-        
+
+        normalizeInPlace(&allSamples)
         return allSamples
     }
-    
-    private func convertToWhisperFormat(_ buffer: AVAudioPCMBuffer) -> [Float] {
-        guard let channelData = buffer.floatChannelData else {
-            return []
-        }
-        
+
+    /// Mixes the buffer down to mono and appends it — no per-chunk normalization (gain is applied
+    /// once, globally, in `normalizeInPlace`; per-chunk peaks gave each chunk a different gain).
+    private func appendMonoSamples(from buffer: AVAudioPCMBuffer, to samples: inout [Float]) {
+        guard let channelData = buffer.floatChannelData else { return }
+
         let channelCount = Int(buffer.format.channelCount)
         let frameLength = Int(buffer.frameLength)
-        var samples = Array(repeating: Float(0), count: frameLength)
-        
+        guard frameLength > 0 else { return }
+
         if channelCount == 1 {
-            samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
+            samples.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameLength))
         } else {
-            for frame in 0..<frameLength {
-                var sum: Float = 0
-                for channel in 0..<channelCount {
-                    sum += channelData[channel][frame]
-                }
-                samples[frame] = sum / Float(channelCount)
+            var mixed = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
+            for channel in 1..<channelCount {
+                vDSP_vadd(mixed, 1, channelData[channel], 1, &mixed, 1, vDSP_Length(frameLength))
             }
+            var scale = 1 / Float(channelCount)
+            vDSP_vsmul(mixed, 1, &scale, &mixed, 1, vDSP_Length(frameLength))
+            samples.append(contentsOf: mixed)
         }
-        
-        let maxSample = samples.map(abs).max() ?? 1
-        if maxSample > 0 {
-            samples = samples.map { $0 / maxSample }
-        }
-        
-        return samples
+    }
+
+    /// Peak-normalizes in place with a single vectorized pass (the old `.map(abs).max()` +
+    /// `.map { $0 / max }` allocated two full-size throwaway arrays).
+    private func normalizeInPlace(_ samples: inout [Float]) {
+        guard !samples.isEmpty else { return }
+        var peak: Float = 0
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(samples.count))
+        guard peak > 0 else { return }
+        var scale = 1 / peak
+        vDSP_vsmul(samples, 1, &scale, &samples, 1, vDSP_Length(samples.count))
     }
     func saveSamplesAsWav(samples: [Float], to url: URL) throws {
         let outputFormat = AVAudioFormat(

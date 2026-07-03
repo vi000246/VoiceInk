@@ -14,8 +14,13 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
     private var audioBuffer: [Float] = []
     private let bufferLock = NSLock()
     private let sampleRate: Double = 16000.0
-    // Samples trimmed from buffer front; subtract from absolute indices for buffer-relative access.
+    // Samples trimmed from the logical buffer front; subtract from absolute indices for
+    // buffer-relative access.
     private var trimmedSampleCount: Int = 0
+    // Physical lag of the logical front inside `audioBuffer`: trims only advance this offset
+    // (O(1)) and the array is compacted occasionally — `removeFirst` shifted the whole
+    // remaining tail under the lock on every pass. Guarded by bufferLock.
+    private var bufferHeadOffset: Int = 0
 
     private var asrManager: AsrManager?
     private var decoderLayerCount: Int = 0
@@ -57,6 +62,7 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         agreementEngine.reset()
         audioBuffer = []
         trimmedSampleCount = 0
+        bufferHeadOffset = 0
         lastTranscribedSampleCount = 0
 
         startTranscriptionLoop()
@@ -95,6 +101,7 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         bufferLock.lock()
         audioBuffer = []
         trimmedSampleCount = 0
+        bufferHeadOffset = 0
         bufferLock.unlock()
         agreementEngine.reset()
 
@@ -125,7 +132,7 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         guard let asrManager else { return }
 
         bufferLock.lock()
-        let absoluteSampleCount = trimmedSampleCount + audioBuffer.count
+        let absoluteSampleCount = trimmedSampleCount + (audioBuffer.count - bufferHeadOffset)
         bufferLock.unlock()
 
         guard absoluteSampleCount - lastTranscribedSampleCount >= minNewSamples else { return }
@@ -142,12 +149,12 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
 
         bufferLock.lock()
         let bufferRelativeSeek = max(0, seekSample - trimmedSampleCount)
-        let sliceEnd = audioBuffer.count
-        guard bufferRelativeSeek < sliceEnd else {
+        let logicalCount = audioBuffer.count - bufferHeadOffset
+        guard bufferRelativeSeek < logicalCount else {
             bufferLock.unlock()
             return
         }
-        var audioSlice = Array(audioBuffer[bufferRelativeSeek..<sliceEnd])
+        var audioSlice = Array(audioBuffer[(bufferHeadOffset + bufferRelativeSeek)...])
         bufferLock.unlock()
 
         // Pad with 1s trailing silence for punctuation capture
@@ -196,9 +203,15 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
                 let samplesToTrim = safeTrimPoint - trimmedSampleCount
                 if samplesToTrim > 0 {
                     bufferLock.lock()
-                    let actualTrim = min(samplesToTrim, audioBuffer.count)
-                    audioBuffer.removeFirst(actualTrim)
+                    let actualTrim = min(samplesToTrim, audioBuffer.count - bufferHeadOffset)
+                    bufferHeadOffset += actualTrim
                     trimmedSampleCount += actualTrim
+                    // Compact only when the dead front dominates the array (≥16 s and ≥half),
+                    // making the shift O(1) amortized instead of per-pass.
+                    if bufferHeadOffset > 262_144, bufferHeadOffset >= audioBuffer.count / 2 {
+                        audioBuffer.removeFirst(bufferHeadOffset)
+                        bufferHeadOffset = 0
+                    }
                     bufferLock.unlock()
                 }
             }
@@ -220,11 +233,12 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
 
         bufferLock.lock()
         let bufferRelativeSeek = max(0, seekSample - trimmedSampleCount)
-        guard bufferRelativeSeek < audioBuffer.count else {
+        let logicalCount = audioBuffer.count - bufferHeadOffset
+        guard bufferRelativeSeek < logicalCount else {
             bufferLock.unlock()
             return nil
         }
-        var samples = Array(audioBuffer[bufferRelativeSeek...])
+        var samples = Array(audioBuffer[(bufferHeadOffset + bufferRelativeSeek)...])
         bufferLock.unlock()
 
         guard samples.count >= minimumAudioSamples else { return nil }

@@ -10,6 +10,10 @@ enum TranscriptionStatus: String, Codable {
 
 @Model
 final class Transcription {
+    // timestamp: sort/cursor key for history pagination and cleanup predicates;
+    // importFingerprint: filter key for Recording Management.
+    #Index<Transcription>([\.timestamp], [\.importFingerprint])
+
     static let canceledTranscriptionText = "The transcription was canceled."
 
     var id: UUID = UUID()
@@ -64,14 +68,28 @@ final class Transcription {
     /// JSON-encoded `[speakerId: displayName]` rename map; nil = all anonymous.
     var speakerNamesRaw: String?
 
+    // Decode caches, keyed on the raw JSON they were decoded from (a raw-string compare is
+    // orders of magnitude cheaper than re-running JSONDecoder). Calling these accessors per
+    // segment while rendering used to be O(n²) — views had to hand-roll their own caches.
+    @Transient private var segmentsCacheRaw: String? = nil
+    @Transient private var segmentsCacheValue: [SpeakerSegment] = []
+    @Transient private var namesCacheRaw: String? = nil
+    @Transient private var namesCacheValue: [String: String] = [:]
+
     /// Per-speaker segments. Setting a non-empty value flips `speakerLabeled` to true.
     var speakerSegments: [SpeakerSegment] {
         get {
             guard let raw = speakerSegmentsRaw, let data = raw.data(using: .utf8) else { return [] }
-            return (try? JSONDecoder().decode([SpeakerSegment].self, from: data)) ?? []
+            if segmentsCacheRaw == raw { return segmentsCacheValue }
+            let decoded = (try? JSONDecoder().decode([SpeakerSegment].self, from: data)) ?? []
+            segmentsCacheRaw = raw
+            segmentsCacheValue = decoded
+            return decoded
         }
         set {
             speakerSegmentsRaw = (try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) }
+            segmentsCacheRaw = speakerSegmentsRaw
+            segmentsCacheValue = speakerSegmentsRaw == nil ? [] : newValue
             speakerLabeled = !newValue.isEmpty
         }
     }
@@ -80,10 +98,16 @@ final class Transcription {
     var speakerNames: [String: String] {
         get {
             guard let raw = speakerNamesRaw, let data = raw.data(using: .utf8) else { return [:] }
-            return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+            if namesCacheRaw == raw { return namesCacheValue }
+            let decoded = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+            namesCacheRaw = raw
+            namesCacheValue = decoded
+            return decoded
         }
         set {
             speakerNamesRaw = (try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) }
+            namesCacheRaw = speakerNamesRaw
+            namesCacheValue = speakerNamesRaw == nil ? [:] : newValue
         }
     }
 

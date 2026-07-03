@@ -53,9 +53,9 @@ class AudioCleanupManager {
         }
 
         do {
-            // Execute SwiftData operations on the main thread
-            return try await MainActor.run {
-                // Create a predicate to find transcriptions with audio files older than the cutoff date
+            // SwiftData fetch stays on the main actor; the per-file stat calls run off it —
+            // with a large history they were a main-thread hitch on every appear/daily tick.
+            let candidates: [(transcription: Transcription, path: String)] = try await MainActor.run {
                 let descriptor = FetchDescriptor<Transcription>(
                     predicate: #Predicate<Transcription> { transcription in
                         transcription.timestamp < cutoffDate &&
@@ -63,32 +63,58 @@ class AudioCleanupManager {
                         transcription.recorderSourceDeviceId == nil
                     }
                 )
+                return try modelContext.fetch(descriptor).compactMap { t in
+                    guard let urlString = t.audioFileURL, let url = URL(string: urlString) else { return nil }
+                    return (t, url.path)
+                }
+            }
 
-                let transcriptions = try modelContext.fetch(descriptor)
-
-                // Calculate stats (can be done on any thread)
-                var fileCount = 0
-                var totalSize: Int64 = 0
-                var eligibleTranscriptions: [Transcription] = []
-
-                for transcription in transcriptions {
-                    if let urlString = transcription.audioFileURL,
-                       let url = URL(string: urlString),
-                       FileManager.default.fileExists(atPath: url.path) {
-                        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-                           let fileSize = attributes[.size] as? Int64 {
-                            totalSize += fileSize
-                            fileCount += 1
-                            eligibleTranscriptions.append(transcription)
-                        }
+            let paths = candidates.map { $0.path }
+            let sizeByPath: [String: Int64] = await Task.detached(priority: .utility) {
+                var out: [String: Int64] = [:]
+                for path in paths {
+                    // attributesOfItem throws for missing files, so this doubles as the existence check
+                    if let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                       let fileSize = attributes[.size] as? Int64 {
+                        out[path] = fileSize
                     }
                 }
+                return out
+            }.value
 
-                return (fileCount, totalSize, eligibleTranscriptions)
+            var fileCount = 0
+            var totalSize: Int64 = 0
+            var eligibleTranscriptions: [Transcription] = []
+            for candidate in candidates {
+                if let fileSize = sizeByPath[candidate.path] {
+                    totalSize += fileSize
+                    fileCount += 1
+                    eligibleTranscriptions.append(candidate.transcription)
+                }
             }
+            return (fileCount, totalSize, eligibleTranscriptions)
         } catch {
             return (0, 0, [])
         }
+    }
+
+    /// Deletes the given files off the main actor. Returns the paths actually removed and the
+    /// number of failures (missing files count as neither).
+    private static func deleteFiles(atPaths paths: [String]) async -> (deleted: Set<String>, errorCount: Int) {
+        await Task.detached(priority: .utility) {
+            var deleted = Set<String>()
+            var errorCount = 0
+            for path in paths {
+                guard FileManager.default.fileExists(atPath: path) else { continue }
+                do {
+                    try FileManager.default.removeItem(atPath: path)
+                    deleted.insert(path)
+                } catch {
+                    errorCount += 1
+                }
+            }
+            return (deleted, errorCount)
+        }.value
     }
     
     /// Perform the cleanup operation
@@ -107,9 +133,8 @@ class AudioCleanupManager {
         }
 
         do {
-            // Execute SwiftData operations on the main thread
-            try await MainActor.run {
-                // Create a predicate to find transcriptions with audio files older than the cutoff date
+            // Fetch on the main actor, delete files off it, then hop back to null the URLs.
+            let transcriptionByPath: [String: Transcription] = try await MainActor.run {
                 let descriptor = FetchDescriptor<Transcription>(
                     predicate: #Predicate<Transcription> { transcription in
                         transcription.timestamp < cutoffDate &&
@@ -117,27 +142,20 @@ class AudioCleanupManager {
                         transcription.recorderSourceDeviceId == nil
                     }
                 )
-
-                let transcriptions = try modelContext.fetch(descriptor)
-                var deletedCount = 0
-
-                for transcription in transcriptions {
-                    if let urlString = transcription.audioFileURL,
-                       let url = URL(string: urlString),
-                       FileManager.default.fileExists(atPath: url.path) {
-                        do {
-                            try FileManager.default.removeItem(at: url)
-                            transcription.audioFileURL = nil
-                            deletedCount += 1
-                        } catch {
-                            // Skip this file - don't update audioFileURL if deletion failed
-                        }
-                    }
+                var map: [String: Transcription] = [:]
+                for t in try modelContext.fetch(descriptor) {
+                    if let urlString = t.audioFileURL, let url = URL(string: urlString) { map[url.path] = t }
                 }
+                return map
+            }
 
-                if deletedCount > 0 {
-                    try modelContext.save()
-                }
+            let (deleted, _) = await Self.deleteFiles(atPaths: Array(transcriptionByPath.keys))
+            guard !deleted.isEmpty else { return }
+
+            await MainActor.run {
+                // Only clear audioFileURL for files that were actually removed
+                for path in deleted { transcriptionByPath[path]?.audioFileURL = nil }
+                try? modelContext.save()
             }
         } catch {
             // Silently fail - cleanup is non-critical
@@ -159,35 +177,25 @@ class AudioCleanupManager {
     
     /// Run cleanup on the specified transcriptions
     func runCleanupForTranscriptions(modelContext: ModelContext, transcriptions: [Transcription]) async -> (deletedCount: Int, errorCount: Int) {
-        do {
-            // Execute SwiftData operations on the main thread
-            return try await MainActor.run {
-                var deletedCount = 0
-                var errorCount = 0
-
-                for transcription in transcriptions {
-                    if let urlString = transcription.audioFileURL,
-                       let url = URL(string: urlString),
-                       FileManager.default.fileExists(atPath: url.path) {
-                        do {
-                            try FileManager.default.removeItem(at: url)
-                            transcription.audioFileURL = nil
-                            deletedCount += 1
-                        } catch {
-                            errorCount += 1
-                        }
-                    }
-                }
-
-                if deletedCount > 0 || errorCount > 0 {
-                    try? modelContext.save()
-                }
-
-                return (deletedCount, errorCount)
+        // Model access on the main actor, file deletion off it.
+        let transcriptionByPath: [String: Transcription] = await MainActor.run {
+            var map: [String: Transcription] = [:]
+            for t in transcriptions {
+                if let urlString = t.audioFileURL, let url = URL(string: urlString) { map[url.path] = t }
             }
-        } catch {
-            return (0, 0)
+            return map
         }
+
+        let (deleted, errorCount) = await Self.deleteFiles(atPaths: Array(transcriptionByPath.keys))
+
+        await MainActor.run {
+            for path in deleted { transcriptionByPath[path]?.audioFileURL = nil }
+            if !deleted.isEmpty || errorCount > 0 {
+                try? modelContext.save()
+            }
+        }
+
+        return (deleted.count, errorCount)
     }
     
     /// Format file size in human-readable form

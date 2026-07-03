@@ -14,6 +14,11 @@ struct RecorderHistoryView: View {
     @State private var byteSizeByFingerprint: [String: Int] = [:]
     @State private var expandedId: UUID?
     @State private var searchText = ""
+    /// The query actually applied to the filter — trails `searchText` by a 250 ms debounce so
+    /// typing doesn't re-scan every transcript on each keystroke (the query is unbounded: this
+    /// view keeps all imported recordings forever).
+    @State private var debouncedQuery = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
     @State private var categoryFilter: String?   // nil = 全部
     @State private var selectedIds: Set<UUID> = []
     @State private var confirmBatchDelete = false
@@ -30,16 +35,19 @@ struct RecorderHistoryView: View {
     }
 
     private var filteredItems: [Transcription] {
-        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = debouncedQuery
         return items.filter { t in
             if let categoryFilter, t.recorderCategoryName != categoryFilter { return false }
             guard !q.isEmpty else { return true }
+            // Short-circuit field by field: no joined+lowercased copy of the (possibly huge)
+            // transcript is allocated, and cheap fields match without touching the text at all.
             let name = t.importFingerprint.flatMap { fileNameByFingerprint[$0] } ?? ""
-            let haystack = [
-                name, t.text, t.enhancedText ?? "", t.recorderCategoryName ?? "",
-                Self.dateSearchFormatter.string(from: t.timestamp)
-            ].joined(separator: "\n").lowercased()
-            return haystack.contains(q)
+            if name.localizedCaseInsensitiveContains(q) { return true }
+            if let cat = t.recorderCategoryName, cat.localizedCaseInsensitiveContains(q) { return true }
+            if Self.dateSearchFormatter.string(from: t.timestamp).contains(q) { return true }
+            if t.text.localizedCaseInsensitiveContains(q) { return true }
+            if let enhanced = t.enhancedText, enhanced.localizedCaseInsensitiveContains(q) { return true }
+            return false
         }
     }
 
@@ -88,6 +96,15 @@ struct RecorderHistoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: loadFileNames)
         .onChange(of: items.count) { _, _ in loadFileNames() }
+        .onChange(of: searchText) { _, newValue in
+            searchDebounceTask?.cancel()
+            let q = newValue.trimmingCharacters(in: .whitespaces)
+            searchDebounceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                debouncedQuery = q
+            }
+        }
         .confirmationDialog("刪除所選 \(selectedIds.count) 筆？音檔與逐字稿都會移除。", isPresented: $confirmBatchDelete) {
             Button("刪除所選", role: .destructive) { batchDelete() }
         }
