@@ -62,6 +62,21 @@ final class RecorderImportService: NSObject, ObservableObject {
         return (out, deferred)
     }
 
+    /// Filter out candidates shorter than the configured auto-import length floor. Files whose
+    /// duration can't be read (probe returns 0) are kept — a failed probe must never silently drop a
+    /// recording. Returns the input unchanged when the filter is off (threshold 0).
+    private func candidatesPassingMinDuration(_ candidates: [ImportCandidate]) async -> [ImportCandidate] {
+        let minSeconds = RecorderConfigStore.shared.recorderMinImportDurationSeconds
+        guard minSeconds > 0 else { return candidates }
+        var kept: [ImportCandidate] = []
+        for c in candidates {
+            let seconds = await AudioFileMetadata.duration(for: c.url)
+            if seconds > 0, seconds < Double(minSeconds) { continue }   // too short → skip auto-import
+            kept.append(c)
+        }
+        return kept
+    }
+
     /// Import any new files sitting in the device's source folder. Triggered by the mount monitor
     /// (`.volume`) or the folder watcher (`.folder`). Copies into app storage, never mutates the source
     /// until a successful delete-after-import.
@@ -79,8 +94,14 @@ final class RecorderImportService: NSObject, ObservableObject {
 
             // Watched folders may hold files mid-copy; give them a few seconds to settle, then re-check.
             let stableAge: TimeInterval = device.kind == .folder ? 4 : 0
-            let (candidates, deferred) = newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
+            let (sizeFiltered, deferred) = newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
             if deferred > 0 { RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id) }
+            guard !sizeFiltered.isEmpty else { return }
+
+            // Length floor, OR-combined with the size floor already applied in newImportableFiles:
+            // skip recordings shorter than the configured minimum. Probing needs an AVAsset load, so
+            // it runs only for the files that already passed the (cheap) size test.
+            let candidates = await candidatesPassingMinDuration(sizeFiltered)
             guard !candidates.isEmpty else { return }
 
             // Signal "準備中" while the (possibly large) files copy into app storage — the queue
@@ -238,6 +259,99 @@ final class RecorderImportService: NSObject, ObservableObject {
                                         processed: processed))
         }
         return out.sorted { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
+    }
+
+    /// Probe the play length (seconds) of every supported file in the device's source folder, keyed
+    /// by file name. Each probe is an async AVAsset load, so this is called off the initial (instant)
+    /// file-list scan to fill in durations progressively. Files whose length can't be read are omitted.
+    func deviceFileDurations(for device: RecorderDevice) async -> [String: Double] {
+        guard let folder = resolveSourceFolder(device) else { return [:] }
+        let accessing = folder.startAccessingSecurityScopedResource()
+        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [:] }
+        var map: [String: Double] = [:]
+        for url in urls where SupportedMedia.isSupported(url: url) {
+            let seconds = await AudioFileMetadata.duration(for: url)
+            if seconds > 0 { map[url.lastPathComponent] = seconds }
+        }
+        return map
+    }
+
+    // MARK: - Device capacity & cleanup
+
+    /// Total / available bytes of the volume backing a device's source folder. nil if unreachable.
+    struct DeviceCapacity {
+        let totalBytes: Int64
+        let availableBytes: Int64
+        var usedBytes: Int64 { max(0, totalBytes - availableBytes) }
+        var usedFraction: Double { totalBytes > 0 ? Double(usedBytes) / Double(totalBytes) : 0 }
+    }
+
+    func deviceCapacity(for device: RecorderDevice) -> DeviceCapacity? {
+        guard let folder = resolveSourceFolder(device) else { return nil }
+        let accessing = folder.startAccessingSecurityScopedResource()
+        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        guard FileManager.default.fileExists(atPath: folder.path),
+              let rv = try? folder.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey]),
+              let total = rv.volumeTotalCapacity, let avail = rv.volumeAvailableCapacity else { return nil }
+        return DeviceCapacity(totalBytes: Int64(total), availableBytes: Int64(avail))
+    }
+
+    /// A source-folder audio file considered for cleanup. `durationSeconds` is nil when not probed
+    /// (the caller only probes when a length criterion is active) or when the probe failed.
+    struct CleanupFile: Identifiable {
+        let id = UUID()
+        let fileName: String
+        let byteSize: Int
+        let modified: Date?
+        let durationSeconds: Double?
+    }
+
+    /// Enumerate the device's supported audio files for cleanup. Probes each file's duration only
+    /// when `probeDuration` is true (a length criterion is active), since that needs an AVAsset load.
+    /// Returns nil when the device is unreachable.
+    func cleanupScan(for device: RecorderDevice, probeDuration: Bool) async -> [CleanupFile]? {
+        guard let folder = resolveSourceFolder(device) else { return nil }
+        let accessing = folder.startAccessingSecurityScopedResource()
+        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        guard FileManager.default.fileExists(atPath: folder.path),
+              let urls = try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]) else { return nil }
+        var out: [CleanupFile] = []
+        for url in urls where SupportedMedia.isSupported(url: url) {
+            let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let duration = probeDuration ? await AudioFileMetadata.duration(for: url) : nil
+            out.append(CleanupFile(fileName: url.lastPathComponent, byteSize: rv?.fileSize ?? 0,
+                                   modified: rv?.contentModificationDate,
+                                   durationSeconds: (duration ?? 0) > 0 ? duration : nil))
+        }
+        return out.sorted { ($0.modified ?? .distantPast) < ($1.modified ?? .distantPast) }
+    }
+
+    /// Delete the named files from the device's source folder. Returns how many were removed and the
+    /// total bytes freed. Only matches by exact file name within the resolved source folder.
+    @discardableResult
+    func deleteDeviceFiles(fileNames: Set<String>, on device: RecorderDevice) -> (deleted: Int, freedBytes: Int64) {
+        guard !fileNames.isEmpty, let folder = resolveSourceFolder(device) else { return (0, 0) }
+        let accessing = folder.startAccessingSecurityScopedResource()
+        defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else { return (0, 0) }
+        var deleted = 0
+        var freed: Int64 = 0
+        for url in urls where fileNames.contains(url.lastPathComponent) {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            do {
+                try FileManager.default.removeItem(at: url)
+                deleted += 1; freed += Int64(size)
+            } catch {
+                logger.error("Cleanup delete failed for \(url.lastPathComponent, privacy: .public): \(error, privacy: .public)")
+            }
+        }
+        logger.notice("Cleanup removed \(deleted) file(s), freed \(freed) bytes from device \(device.displayName, privacy: .public)")
+        return (deleted, freed)
     }
 
     /// Copy `src` into app storage, running the (potentially large) file copy off the main actor so

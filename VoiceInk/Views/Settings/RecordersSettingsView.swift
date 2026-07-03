@@ -128,6 +128,9 @@ private struct RecorderDeviceCard: View {
     @State private var scanning = false
     @State private var selectedFiles: Set<String> = []
     @State private var confirmReprocess = false
+    @State private var capacity: RecorderImportService.DeviceCapacity?
+    @State private var showCleanup = false
+    @State private var durations: [String: Double] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -156,6 +159,8 @@ private struct RecorderDeviceCard: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: onEdit)
 
+            capacitySection
+
             Button {
                 expanded.toggle()
                 if expanded { scan() }
@@ -180,9 +185,39 @@ private struct RecorderDeviceCard: View {
         .overlay(RoundedRectangle(cornerRadius: 12)
             .strokeBorder(isHovering ? AppTheme.Accent.primary.opacity(0.4) : AppTheme.Border.control, lineWidth: 0.5))
         .onHover { isHovering = $0 }
-        .onAppear { connected = RecorderImportService.shared.isDeviceConnected(device) }
+        .onAppear { refreshConnectivity() }
         .onReceive(NotificationCenter.default.publisher(for: .recorderDeviceConnectivityChanged)) { _ in
-            connected = RecorderImportService.shared.isDeviceConnected(device)
+            refreshConnectivity()
+        }
+        .sheet(isPresented: $showCleanup) {
+            RecorderDeviceCleanupSheet(device: device) { refreshConnectivity(); if expanded { scan() } }
+        }
+    }
+
+    private func refreshConnectivity() {
+        connected = RecorderImportService.shared.isDeviceConnected(device)
+        capacity = connected ? RecorderImportService.shared.deviceCapacity(for: device) : nil
+    }
+
+    /// Volume usage bar for the backing disk — a red/orange/accent fill by fullness — plus a cleanup
+    /// entry point so the user can free space without leaving the app.
+    @ViewBuilder private var capacitySection: some View {
+        if connected, let cap = capacity, cap.totalBytes > 0 {
+            let frac = cap.usedFraction
+            let tint: Color = frac >= 0.9 ? AppTheme.Status.error
+                : (frac >= 0.75 ? Color.orange : AppTheme.Accent.primary)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Image(systemName: "internaldrive").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("裝置容量").font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Text("\(Self.sizeText(Int(cap.usedBytes))) / \(Self.sizeText(Int(cap.totalBytes)))（\(Int((frac * 100).rounded()))%）")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Button("清理選項…") { showCleanup = true }.controlSize(.small)
+                }
+                ProgressView(value: min(max(frac, 0), 1)).progressViewStyle(.linear).tint(tint)
+            }
+            .padding(.top, 10)
         }
     }
 
@@ -297,6 +332,18 @@ private struct RecorderDeviceCard: View {
                         }.controlSize(.mini)
                         Button("重新整理") { scan() }.controlSize(.mini)
                     }
+                    // Column header — widths mirror the rows below so 長度/大小/時間/狀態 line up.
+                    HStack(spacing: 8) {
+                        Color.clear.frame(width: Self.checkColWidth)
+                        Color.clear.frame(width: Self.statusIconColWidth)
+                        Text("檔名").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("長度").frame(width: Self.durationColWidth, alignment: .trailing)
+                        Text("大小").frame(width: Self.sizeColWidth, alignment: .trailing)
+                        Text("時間").frame(width: Self.dateColWidth, alignment: .trailing)
+                        Text("狀態").frame(width: Self.statusColWidth, alignment: .trailing)
+                    }
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 8).padding(.top, 2)
                     ForEach(files) { f in
                         let isSel = selectedFiles.contains(f.fileName)
                         Button { toggleSelect(f.fileName) } label: {
@@ -304,20 +351,26 @@ private struct RecorderDeviceCard: View {
                                 Image(systemName: isSel ? "checkmark.square.fill" : "square")
                                     .font(.system(size: 13))
                                     .foregroundStyle(isSel ? AppTheme.Accent.primary : Color.secondary)
+                                    .frame(width: Self.checkColWidth)
                                 Image(systemName: f.processed ? "checkmark.circle.fill" : "circle")
                                     .font(.system(size: 12))
                                     .foregroundStyle(f.processed ? AppTheme.Status.success : Color.secondary)
-                                Text(f.fileName).font(.system(size: 12)).lineLimit(1)
-                                Spacer()
+                                    .frame(width: Self.statusIconColWidth)
+                                Text(f.fileName).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(durationLabel(f.fileName))
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                                    .frame(width: Self.durationColWidth, alignment: .trailing)
                                 Text(Self.sizeText(f.byteSize))
                                     .font(.system(size: 10)).foregroundStyle(.secondary)
-                                if let m = f.modified {
-                                    Text(m, format: .dateTime.month(.abbreviated).day().hour().minute())
-                                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                                }
+                                    .frame(width: Self.sizeColWidth, alignment: .trailing)
+                                Text(f.modified.map { Self.rowDateFormatter.string(from: $0) } ?? "—")
+                                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                                    .frame(width: Self.dateColWidth, alignment: .trailing)
                                 Text(f.processed ? "已處理" : "未處理")
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(f.processed ? AppTheme.Status.success : .secondary)
+                                    .frame(width: Self.statusColWidth, alignment: .trailing)
                             }
                             .contentShape(Rectangle())
                             .padding(.vertical, 3).padding(.horizontal, 8)
@@ -348,9 +401,24 @@ private struct RecorderDeviceCard: View {
     private func scan() {
         scanning = true
         connected = RecorderImportService.shared.isDeviceConnected(device)
+        capacity = connected ? RecorderImportService.shared.deviceCapacity(for: device) : nil
         files = RecorderImportService.shared.deviceFiles(for: device, context: modelContext)
         selectedFiles = selectedFiles.intersection(Set(files?.map { $0.fileName } ?? []))
         scanning = false
+        // Durations need an async AVAsset load each — fetch them off the instant list scan so the
+        // 長度 column fills in progressively rather than blocking the file list from appearing.
+        if connected {
+            Task { durations = await RecorderImportService.shared.deviceFileDurations(for: device) }
+        } else {
+            durations = [:]
+        }
+    }
+
+    /// Compact play-length label (m:ss) for the file list, or "—" until the async probe lands.
+    private func durationLabel(_ fileName: String) -> String {
+        guard let seconds = durations[fileName] else { return "—" }
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private func toggleSelect(_ name: String) {
@@ -383,6 +451,19 @@ private struct RecorderDeviceCard: View {
     static func sizeText(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
+
+    // Fixed column widths so the file list's 長度/大小/時間/狀態 columns line up across rows and header.
+    static let checkColWidth: CGFloat = 16
+    static let statusIconColWidth: CGFloat = 14
+    static let durationColWidth: CGFloat = 46
+    static let sizeColWidth: CGFloat = 66
+    static let dateColWidth: CGFloat = 94
+    static let statusColWidth: CGFloat = 44
+
+    /// Fixed-width numeric date (MM/dd HH:mm) so the 時間 column aligns regardless of locale.
+    static let rowDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM/dd HH:mm"; return f
+    }()
 }
 
 // MARK: - Device Editor (slide-out panel)
@@ -517,5 +598,158 @@ private struct RecorderDeviceEditorPanel: View {
     private func deleteDevice() {
         if let id = existingId { store.remove(id) }
         onDismiss()
+    }
+}
+
+// MARK: - Device Cleanup Sheet
+
+/// Free space on a recorder device by deleting source files matching either criterion (OR): older
+/// than N days, or shorter than a chosen length. Deletes the on-device originals only — imported
+/// records (audio copy + transcript in the app) are untouched.
+private struct RecorderDeviceCleanupSheet: View {
+    let device: RecorderDevice
+    let onDone: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var olderEnabled = true
+    @State private var olderDays = 30
+    @State private var shorterEnabled = false
+    @State private var shorterValue = 10
+    @State private var shorterUnit: DurationUnit = .seconds
+
+    @State private var scannedFiles: [RecorderImportService.CleanupFile]?
+    @State private var scanning = false
+    @State private var confirmDelete = false
+
+    private var shorterSeconds: Int { max(0, shorterValue) * shorterUnit.secondsPerUnit }
+
+    private func matches(_ f: RecorderImportService.CleanupFile) -> Bool {
+        var hit = false
+        if olderEnabled, olderDays > 0, let mod = f.modified {
+            if mod < Date().addingTimeInterval(-Double(olderDays) * 86_400) { hit = true }
+        }
+        if shorterEnabled, shorterSeconds > 0, let d = f.durationSeconds {
+            if d < Double(shorterSeconds) { hit = true }
+        }
+        return hit
+    }
+
+    private var matchedFiles: [RecorderImportService.CleanupFile] {
+        (scannedFiles ?? []).filter(matches)
+    }
+    private var matchedBytes: Int64 { matchedFiles.reduce(0) { $0 + Int64($1.byteSize) } }
+    private var noCriteria: Bool { !(olderEnabled && olderDays > 0) && !(shorterEnabled && shorterSeconds > 0) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("清理裝置檔案").font(.headline)
+                Spacer()
+                Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding()
+            Divider()
+
+            Form {
+                Section("清理條件（符合任一項即刪除）") {
+                    Toggle(isOn: $olderEnabled) {
+                        HStack {
+                            Text("刪除早於")
+                            TextField("", value: $olderDays, format: .number)
+                                .frame(width: 56).multilineTextAlignment(.trailing)
+                                .disabled(!olderEnabled)
+                            Text("天前的檔案")
+                        }
+                    }
+                    Toggle(isOn: $shorterEnabled) {
+                        HStack {
+                            Text("刪除短於")
+                            TextField("", value: $shorterValue, format: .number)
+                                .frame(width: 56).multilineTextAlignment(.trailing)
+                                .disabled(!shorterEnabled)
+                            Picker("", selection: $shorterUnit) {
+                                ForEach(DurationUnit.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            }
+                            .labelsHidden().frame(width: 76).disabled(!shorterEnabled)
+                            Text("的檔案")
+                        }
+                    }
+                }
+
+                Section {
+                    if scanning {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small); Text("掃描中…").foregroundStyle(.secondary) }
+                    } else if noCriteria {
+                        Text("請至少啟用一個條件。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    } else if let scannedFiles {
+                        Text("符合 \(matchedFiles.count) / \(scannedFiles.count) 檔，可釋出約 \(RecorderDeviceCard.sizeText(Int(matchedBytes)))")
+                            .font(.system(size: 12, weight: .medium))
+                        ForEach(matchedFiles.prefix(50)) { f in
+                            HStack(spacing: 8) {
+                                Text(f.fileName).font(.system(size: 11)).lineLimit(1)
+                                Spacer()
+                                if let d = f.durationSeconds {
+                                    Text(Self.durationText(d)).font(.system(size: 10)).foregroundStyle(.secondary)
+                                }
+                                if let m = f.modified {
+                                    Text(m, format: .dateTime.year().month(.abbreviated).day())
+                                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                                }
+                                Text(RecorderDeviceCard.sizeText(f.byteSize)).font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                        }
+                        if matchedFiles.count > 50 {
+                            Text("…另有 \(matchedFiles.count - 50) 檔").font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("按「掃描」列出符合的檔案。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    Button { rescan() } label: { Label("掃描符合檔案", systemImage: "magnifyingglass") }
+                        .disabled(scanning || noCriteria)
+                    Button(role: .destructive) { confirmDelete = true } label: {
+                        Label("刪除符合的 \(matchedFiles.count) 檔", systemImage: "trash")
+                    }
+                    .tint(AppTheme.Status.errorStrong)
+                    .disabled(scanning || matchedFiles.isEmpty)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 560, height: 560)
+        .onAppear { rescan() }
+        .onChange(of: shorterEnabled) { _, _ in rescan() }
+        .confirmationDialog("刪除符合的 \(matchedFiles.count) 檔？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("刪除 \(matchedFiles.count) 檔", role: .destructive) { performDelete() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("這會從裝置上永久刪除這些錄音原始檔（釋出約 \(RecorderDeviceCard.sizeText(Int(matchedBytes)))）。已匯入的音檔副本與逐字稿不受影響，無法復原。")
+        }
+    }
+
+    private func rescan() {
+        guard !noCriteria else { scannedFiles = []; return }
+        scanning = true
+        Task {
+            let result = await RecorderImportService.shared.cleanupScan(for: device, probeDuration: shorterEnabled)
+            scannedFiles = result ?? []
+            scanning = false
+        }
+    }
+
+    private func performDelete() {
+        let names = Set(matchedFiles.map { $0.fileName })
+        let (deleted, freed) = RecorderImportService.shared.deleteDeviceFiles(fileNames: names, on: device)
+        NotificationManager.shared.showNotification(
+            title: "已清理 \(deleted) 檔，釋出 \(RecorderDeviceCard.sizeText(Int(freed)))", type: .success, duration: 3)
+        onDone()
+        rescan()
+    }
+
+    private static func durationText(_ seconds: Double) -> String {
+        let s = Int(seconds.rounded())
+        return s >= 60 ? "\(s / 60)分\(s % 60)秒" : "\(s)秒"
     }
 }

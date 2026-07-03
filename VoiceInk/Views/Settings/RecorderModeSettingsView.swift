@@ -99,7 +99,18 @@ struct RecorderModeSettingsView: View {
                         }
                         .labelsHidden().frame(width: 72)
                     }
-                    Text("目前門檻：小於 \(store.recorderMinImportSizeValue) \(store.recorderMinImportSizeUnit.rawValue) 的檔案不會自動匯入。")
+                    HStack {
+                        Text("略過過短錄音")
+                        InfoTip("短於此長度的錄音檔不會自動匯入。設為 0 代表不過濾。手動「重新處理」不受此限制。")
+                        Spacer()
+                        TextField("", value: minDurationValueBinding, format: .number)
+                            .frame(width: 64).multilineTextAlignment(.trailing)
+                        Picker("", selection: minDurationUnitBinding) {
+                            ForEach(DurationUnit.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        .labelsHidden().frame(width: 72)
+                    }
+                    Text(autoImportFilterSummary)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("自動化") {
@@ -135,6 +146,26 @@ struct RecorderModeSettingsView: View {
     private var minSizeUnitBinding: Binding<FileSizeUnit> {
         Binding(get: { store.recorderMinImportSizeUnit },
                 set: { store.setRecorderMinImportSize(value: store.recorderMinImportSizeValue, unit: $0) })
+    }
+    private var minDurationValueBinding: Binding<Int> {
+        Binding(get: { store.recorderMinImportDurationValue },
+                set: { store.setRecorderMinImportDuration(value: $0, unit: store.recorderMinImportDurationUnit) })
+    }
+    private var minDurationUnitBinding: Binding<DurationUnit> {
+        Binding(get: { store.recorderMinImportDurationUnit },
+                set: { store.setRecorderMinImportDuration(value: store.recorderMinImportDurationValue, unit: $0) })
+    }
+    /// Human summary of the two OR-combined auto-import filters (whichever matches skips the file).
+    private var autoImportFilterSummary: String {
+        var clauses: [String] = []
+        if store.recorderMinImportSizeValue > 0 {
+            clauses.append("小於 \(store.recorderMinImportSizeValue) \(store.recorderMinImportSizeUnit.rawValue)")
+        }
+        if store.recorderMinImportDurationValue > 0 {
+            clauses.append("短於 \(store.recorderMinImportDurationValue) \(store.recorderMinImportDurationUnit.rawValue)")
+        }
+        guard !clauses.isEmpty else { return "目前未設定過濾，所有錄音檔都會自動匯入。" }
+        return "符合任一條件即略過自動匯入：" + clauses.joined(separator: "，或") + "。"
     }
     private var autoExportBinding: Binding<Bool> {
         Binding(get: { store.recorderAutoExportEnabled }, set: { store.setRecorderAutoExport($0) })

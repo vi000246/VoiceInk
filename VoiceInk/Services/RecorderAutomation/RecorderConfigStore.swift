@@ -8,6 +8,13 @@ enum FileSizeUnit: String, CaseIterable, Codable {
     var bytesPerUnit: Int { self == .mb ? 1_048_576 : 1024 }
 }
 
+/// Unit for the "skip files shorter than N" auto-import filter.
+enum DurationUnit: String, CaseIterable, Codable {
+    case seconds = "秒"
+    case minutes = "分鐘"
+    var secondsPerUnit: Int { self == .minutes ? 60 : 1 }
+}
+
 @MainActor
 final class RecorderConfigStore: ObservableObject {
     static let shared = RecorderConfigStore()
@@ -55,6 +62,10 @@ final class RecorderConfigStore: ObservableObject {
     /// bypasses it. Stored as value + unit; default 500 KB. Value 0 disables the filter.
     @Published private(set) var recorderMinImportSizeValue: Int = 500
     @Published private(set) var recorderMinImportSizeUnit: FileSizeUnit = .kb
+    /// Auto-import length floor: recordings shorter than this are ignored. OR-combined with the size
+    /// floor — a file is skipped if it fails EITHER test. Stored as value + unit; default 0 (= off).
+    @Published private(set) var recorderMinImportDurationValue: Int = 0
+    @Published private(set) var recorderMinImportDurationUnit: DurationUnit = .seconds
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let recorderPromptsKey = "recorderCategoryPromptsV1"
@@ -76,6 +87,8 @@ final class RecorderConfigStore: ObservableObject {
     private let recAnalysisTimeoutKey = "recorderAnalysisTimeoutV1"
     private let recMinImportSizeValueKey = "recorderMinImportSizeValueV1"
     private let recMinImportSizeUnitKey = "recorderMinImportSizeUnitV1"
+    private let recMinImportDurationValueKey = "recorderMinImportDurationValueV1"
+    private let recMinImportDurationUnitKey = "recorderMinImportDurationUnitV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -114,6 +127,9 @@ final class RecorderConfigStore: ObservableObject {
         recorderMinImportSizeValue = (UserDefaults.standard.object(forKey: recMinImportSizeValueKey) as? Int) ?? 500
         recorderMinImportSizeUnit = (UserDefaults.standard.string(forKey: recMinImportSizeUnitKey))
             .flatMap(FileSizeUnit.init(rawValue:)) ?? .kb
+        recorderMinImportDurationValue = (UserDefaults.standard.object(forKey: recMinImportDurationValueKey) as? Int) ?? 0
+        recorderMinImportDurationUnit = (UserDefaults.standard.string(forKey: recMinImportDurationUnitKey))
+            .flatMap(DurationUnit.init(rawValue:)) ?? .seconds
     }
 
     /// Byte threshold below which auto-import skips a file. 0 → no filter.
@@ -121,11 +137,23 @@ final class RecorderConfigStore: ObservableObject {
         max(0, recorderMinImportSizeValue) * recorderMinImportSizeUnit.bytesPerUnit
     }
 
+    /// Length (seconds) below which auto-import skips a file. 0 → no filter.
+    var recorderMinImportDurationSeconds: Int {
+        max(0, recorderMinImportDurationValue) * recorderMinImportDurationUnit.secondsPerUnit
+    }
+
     func setRecorderMinImportSize(value: Int, unit: FileSizeUnit) {
         recorderMinImportSizeValue = max(0, value)
         recorderMinImportSizeUnit = unit
         UserDefaults.standard.set(recorderMinImportSizeValue, forKey: recMinImportSizeValueKey)
         UserDefaults.standard.set(unit.rawValue, forKey: recMinImportSizeUnitKey)
+    }
+
+    func setRecorderMinImportDuration(value: Int, unit: DurationUnit) {
+        recorderMinImportDurationValue = max(0, value)
+        recorderMinImportDurationUnit = unit
+        UserDefaults.standard.set(recorderMinImportDurationValue, forKey: recMinImportDurationValueKey)
+        UserDefaults.standard.set(unit.rawValue, forKey: recMinImportDurationUnitKey)
     }
 
     /// Clamp to a sane range so a stray value can't disable the timeout or make it uselessly short.
