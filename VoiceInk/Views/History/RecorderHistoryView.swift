@@ -167,14 +167,8 @@ struct RecorderHistoryView: View {
     }
 
     private func batchDelete() {
-        let targets = items.filter { selectedIds.contains($0.id) }
-        for t in targets {
-            RecordingAudioFiles.removeAll(for: t)
-            modelContext.delete(t)
-        }
-        try? modelContext.save()
+        TranscriptionStore.delete(items.filter { selectedIds.contains($0.id) }, in: modelContext)
         selectedIds.removeAll()
-        NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
     }
 
     private func loadFileNames() {
@@ -248,16 +242,22 @@ private struct RecordingCard: View {
     private var displayText: String {
         (showAnalysis ? transcription.enhancedText : transcription.text) ?? transcription.text
     }
-    private var audioURL: URL? {
-        guard let s = transcription.audioFileURL, let u = URL(string: s),
-              FileManager.default.fileExists(atPath: u.path) else { return nil }
-        return u
+    /// Resolved when the card expands (and when the stored paths change) — computed properties
+    /// here stat'ed the disk (once per chunk!) on every body evaluation of the expanded card.
+    @State private var resolvedAudioURL: URL?
+    @State private var resolvedChunkURLs: [URL] = []
+    private var hasAudio: Bool { resolvedAudioURL != nil || !resolvedChunkURLs.isEmpty }
+
+    private func resolveAudioFiles() {
+        if let s = transcription.audioFileURL, let u = URL(string: s),
+           FileManager.default.fileExists(atPath: u.path) {
+            resolvedAudioURL = u
+        } else {
+            resolvedAudioURL = nil
+        }
+        // Playable split chunks (long recordings), filtered to those still on disk.
+        resolvedChunkURLs = transcription.audioChunkURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
-    /// Playable split chunks (long recordings), filtered to those still on disk.
-    private var chunkURLs: [URL] {
-        transcription.audioChunkURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
-    }
-    private var hasAudio: Bool { audioURL != nil || !chunkURLs.isEmpty }
     private var selectedCategory: RecorderCategory? {
         selectedCategoryId.flatMap { store.category(byId: $0) } ?? store.categories.first { $0.isFallback }
     }
@@ -265,7 +265,13 @@ private struct RecordingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if isExpanded { expandedContent.padding(.top, 10) }
+            if isExpanded {
+                expandedContent
+                    .padding(.top, 10)
+                    .onAppear(perform: resolveAudioFiles)
+                    .onChange(of: transcription.audioFileURL) { _, _ in resolveAudioFiles() }
+                    .onChange(of: transcription.audioChunkPathsRaw) { _, _ in resolveAudioFiles() }
+            }
         }
         .padding(14)
         .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
@@ -383,10 +389,10 @@ private struct RecordingCard: View {
             }
             .buttonStyle(.plain)
 
-            if chunkURLs.count > 1 {
+            if resolvedChunkURLs.count > 1 {
                 Divider()
-                RecorderChunkPlayerView(urls: chunkURLs).padding(.vertical, 4)
-            } else if let url = audioURL {
+                RecorderChunkPlayerView(urls: resolvedChunkURLs).padding(.vertical, 4)
+            } else if let url = resolvedAudioURL {
                 Divider()
                 AudioPlayerView(url: url, transcription: transcription, showsEnhancementControls: false)
                     .padding(.vertical, 4)
@@ -455,10 +461,7 @@ private struct RecordingCard: View {
     }
 
     private func deleteRecord() {
-        RecordingAudioFiles.removeAll(for: transcription)
-        modelContext.delete(transcription)
-        try? modelContext.save()
-        NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
+        TranscriptionStore.delete(transcription, in: modelContext)
     }
 
     private func toggleFavorite() {
@@ -514,17 +517,6 @@ private struct RecordingCard: View {
 }
 
 /// Removes every on-disk audio file backing a recording — the single WAV and any split chunks.
-enum RecordingAudioFiles {
-    static func removeAll(for transcription: Transcription) {
-        if let s = transcription.audioFileURL, let u = URL(string: s) {
-            try? FileManager.default.removeItem(at: u)
-        }
-        for url in transcription.audioChunkURLs {
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-}
-
 /// Full-screen-ish popup showing a recording's complete transcript (raw or applied), for the
 /// long multi-line transcripts that don't fit the card's inline preview.
 private struct TranscriptSheet: View {

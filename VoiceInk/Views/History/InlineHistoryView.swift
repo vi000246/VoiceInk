@@ -405,44 +405,25 @@ struct InlineHistoryView: View {
         }
     }
 
-    private func performDeletion(for transcription: Transcription) {
-        if let urlString = transcription.audioFileURL,
-           let url = URL(string: urlString),
-           FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                print("Error deleting audio file: \(error.localizedDescription)")
-            }
-        }
-
-        if expandedId == transcription.id {
-            expandedId = nil
-        }
-        if panelTranscriptionId == transcription.id {
-            panelTranscriptionId = nil
-            closePanel()
-        }
-
-        selectedTranscriptions.remove(transcription)
-        modelContext.delete(transcription)
-    }
-
     private func deleteSelectedTranscriptions() {
-        for transcription in selectedTranscriptions {
-            performDeletion(for: transcription)
+        let targets = Array(selectedTranscriptions)
+        for transcription in targets {
+            if expandedId == transcription.id {
+                expandedId = nil
+            }
+            if panelTranscriptionId == transcription.id {
+                panelTranscriptionId = nil
+                closePanel()
+            }
         }
         selectedTranscriptions.removeAll()
 
+        // TranscriptionStore owns file removal (incl. chunks), row deletion, save, and the
+        // .transcriptionDeleted post — this view only cleans its own selection state.
+        TranscriptionStore.delete(targets, in: modelContext)
+
         Task {
-            do {
-                try modelContext.save()
-                NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
-                await loadInitialContent()
-            } catch {
-                print("Error saving deletion: \(error.localizedDescription)")
-                await loadInitialContent()
-            }
+            await loadInitialContent()
         }
     }
 
@@ -506,13 +487,18 @@ private struct HistoryCardRow: View {
         }
     }
 
-    private var hasAudioFile: Bool {
+    /// Resolved when the row expands (and when the stored URL changes) — a computed property
+    /// here stat'ed the disk on every body evaluation of the expanded row.
+    @State private var resolvedAudioURL: URL?
+
+    private func resolveAudioURL() {
         if let urlString = transcription.audioFileURL,
            let url = URL(string: urlString),
            FileManager.default.fileExists(atPath: url.path) {
-            return true
+            resolvedAudioURL = url
+        } else {
+            resolvedAudioURL = nil
         }
-        return false
     }
 
     var body: some View {
@@ -557,6 +543,8 @@ private struct HistoryCardRow: View {
             if isExpanded {
                 expandedContent
                     .padding(.top, 10)
+                    .onAppear(perform: resolveAudioURL)
+                    .onChange(of: transcription.audioFileURL) { _, _ in resolveAudioURL() }
             }
         }
         .contextMenu {
@@ -629,8 +617,7 @@ private struct HistoryCardRow: View {
             .frame(maxHeight: 350)
             .hoverCopyButton(textToCopy: displayText)
 
-            if hasAudioFile, let urlString = transcription.audioFileURL,
-               let url = URL(string: urlString) {
+            if let url = resolvedAudioURL {
                 Divider()
                 AudioPlayerView(url: url, transcription: transcription, onInfoTap: onShowInfo)
                     .padding(.vertical, 4)

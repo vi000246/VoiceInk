@@ -4,14 +4,9 @@ struct TranscriptionDetailView: View {
     let transcription: Transcription
     var onInfoTap: (() -> Void)?
 
-    private var hasAudioFile: Bool {
-        if let urlString = transcription.audioFileURL,
-           let url = URL(string: urlString),
-           FileManager.default.fileExists(atPath: url.path) {
-            return true
-        }
-        return false
-    }
+    /// Resolved once per selection (and when the stored URL changes) — a computed property here
+    /// stat'ed the disk on every body evaluation.
+    @State private var audioURL: URL?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -34,8 +29,7 @@ struct TranscriptionDetailView: View {
                 .padding(16)
             }
 
-            if hasAudioFile, let urlString = transcription.audioFileURL,
-               let url = URL(string: urlString) {
+            if let url = audioURL {
                 VStack(spacing: 0) {
                     Divider()
 
@@ -56,6 +50,18 @@ struct TranscriptionDetailView: View {
             }
         }
         .padding(.vertical, 12)
+        .onAppear(perform: resolveAudioURL)
+        .onChange(of: transcription.audioFileURL) { _, _ in resolveAudioURL() }
+    }
+
+    private func resolveAudioURL() {
+        if let urlString = transcription.audioFileURL,
+           let url = URL(string: urlString),
+           FileManager.default.fileExists(atPath: url.path) {
+            audioURL = url
+        } else {
+            audioURL = nil
+        }
     }
 }
 

@@ -4,7 +4,18 @@ import os
 
 @MainActor
 class TranscriptionModelManager: ObservableObject {
-    @Published var currentTranscriptionModel: (any TranscriptionModel)?
+    /// Single source of truth for the selected model. Persistence is write-through in didSet —
+    /// every mutation path (select, clear, delete-handling, refresh) used to write UserDefaults
+    /// by hand, and a missed write desynced the UI from the persisted selection.
+    @Published var currentTranscriptionModel: (any TranscriptionModel)? {
+        didSet {
+            if let model = currentTranscriptionModel {
+                UserDefaults.standard.set(model.name, forKey: "CurrentTranscriptionModel")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "CurrentTranscriptionModel")
+            }
+        }
+    }
     @Published var allAvailableModels: [any TranscriptionModel] = TranscriptionModelRegistry.models
 
     private weak var whisperModelManager: WhisperModelManager?
@@ -70,8 +81,7 @@ class TranscriptionModelManager: ObservableObject {
         if let savedModelName = UserDefaults.standard.string(forKey: "CurrentTranscriptionModel"),
            let savedModel = allAvailableModels.first(where: { $0.name == savedModelName }) {
             guard isAvailableOnCurrentOS(savedModel) else {
-                UserDefaults.standard.removeObject(forKey: "CurrentTranscriptionModel")
-                currentTranscriptionModel = nil
+                currentTranscriptionModel = nil   // didSet clears the persisted key
                 return
             }
 
@@ -92,7 +102,6 @@ class TranscriptionModelManager: ObservableObject {
         }
 
         self.currentTranscriptionModel = model
-        UserDefaults.standard.set(model.name, forKey: "CurrentTranscriptionModel")
         ensureSelectedLanguageIsSupported(by: model)
 
         if model.provider != .whisper {
@@ -138,8 +147,7 @@ class TranscriptionModelManager: ObservableObject {
     // MARK: - Clear current model
 
     func clearCurrentTranscriptionModel() {
-        currentTranscriptionModel = nil
-        UserDefaults.standard.removeObject(forKey: "CurrentTranscriptionModel")
+        currentTranscriptionModel = nil   // didSet clears the persisted key
     }
 
     // MARK: - Handle model deletion callback
@@ -147,11 +155,9 @@ class TranscriptionModelManager: ObservableObject {
     /// Called by WhisperModelManager.onModelDeleted or FluidAudioModelManager.onModelDeleted.
     func handleModelDeleted(_ modelName: String) {
         if currentTranscriptionModel?.name == modelName {
-            currentTranscriptionModel = nil
-            UserDefaults.standard.removeObject(forKey: "CurrentTranscriptionModel")
+            currentTranscriptionModel = nil   // didSet clears the persisted key
             whisperModelManager?.loadedWhisperModel = nil
             whisperModelManager?.isModelLoaded = false
-            UserDefaults.standard.removeObject(forKey: "CurrentModel")
         }
         refreshAllAvailableModels()
     }

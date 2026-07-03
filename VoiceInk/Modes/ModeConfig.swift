@@ -261,7 +261,13 @@ struct URLConfig: Codable, Identifiable, Equatable {
 class ModeManager: ObservableObject {
     static let shared = ModeManager()
     @Published var configurations: [ModeConfig] = []
-    @Published var activeConfiguration: ModeConfig?
+    /// Single source of truth for the active mode. Persistence is write-through in didSet so no
+    /// assignment path can leave the stored id out of sync with the published value.
+    @Published var activeConfiguration: ModeConfig? {
+        didSet {
+            UserDefaults.standard.set(activeConfiguration?.id.uuidString, forKey: activeConfigIdKey)
+        }
+    }
 
     private let configKey = "modeConfigurationsV2"
     private let activeConfigIdKey = "activeConfigurationId"
@@ -493,8 +499,7 @@ class ModeManager: ObservableObject {
         } else {
             activeConfiguration = config
         }
-        UserDefaults.standard.set(config?.id.uuidString, forKey: activeConfigIdKey)
-        self.objectWillChange.send()
+        // Persistence happens in activeConfiguration.didSet; @Published already signals observers.
     }
 
     func updateCurrentEffectiveConfiguration(_ update: (inout ModeConfig) -> Void) {

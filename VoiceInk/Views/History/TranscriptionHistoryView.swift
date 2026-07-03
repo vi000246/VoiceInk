@@ -433,44 +433,19 @@ struct TranscriptionHistoryView: View {
         isLoading = false
     }
 
-    private func performDeletion(for transcription: Transcription) {
-        if let urlString = transcription.audioFileURL,
-           let url = URL(string: urlString),
-           FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                print("Error deleting audio file: \(error.localizedDescription)")
-            }
-        }
-
-        if selectedTranscription == transcription {
-            selectedTranscription = nil
-        }
-
-        selectedTranscriptions.remove(transcription)
-        modelContext.delete(transcription)
-    }
-
-    private func saveAndReload() async {
-        do {
-            try modelContext.save()
-            NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
-            await loadInitialContent()
-        } catch {
-            print("Error saving deletion: \(error.localizedDescription)")
-            await loadInitialContent()
-        }
-    }
-
     private func deleteSelectedTranscriptions() {
-        for transcription in selectedTranscriptions {
-            performDeletion(for: transcription)
+        let targets = Array(selectedTranscriptions)
+        if let selected = selectedTranscription, targets.contains(where: { $0 === selected }) {
+            selectedTranscription = nil
         }
         selectedTranscriptions.removeAll()
 
+        // TranscriptionStore owns file removal (incl. chunks), row deletion, save, and the
+        // .transcriptionDeleted post — this view only cleans its own selection state.
+        TranscriptionStore.delete(targets, in: modelContext)
+
         Task {
-            await saveAndReload()
+            await loadInitialContent()
         }
     }
     
