@@ -8,10 +8,17 @@ class TranscriptionAutoCleanupService {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionAutoCleanupService")
     private var modelContext: ModelContext?
 
-    private var recordingsDirectory: URL {
+    private var appSupportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("com.prakashjoshipax.VoiceInk")
-            .appendingPathComponent("Recordings")
+    }
+
+    private var recordingsDirectory: URL {
+        appSupportDirectory.appendingPathComponent("Recordings")
+    }
+
+    private var recorderImportsDirectory: URL {
+        appSupportDirectory.appendingPathComponent("RecorderImports")
     }
 
     private init() {}
@@ -32,6 +39,14 @@ class TranscriptionAutoCleanupService {
                 await self.sweepOldTranscriptions(modelContext: modelContext)
                 await self.cleanupOrphanAudioFiles(modelContext: modelContext)
             }
+        }
+
+        // Always-on, unlike the sweeps above: it only removes files no Transcription references,
+        // so no user data is at risk. Without it every recorder import leaks its RecorderImports/
+        // staging copy forever, and failed pipeline runs leak transcoded WAVs in Recordings/.
+        Task { [weak self] in
+            guard let self = self, let modelContext = self.modelContext else { return }
+            await self.reclaimUnreferencedAudioFiles(modelContext: modelContext)
         }
     }
 
@@ -126,6 +141,28 @@ class TranscriptionAutoCleanupService {
         }
     }
 
+    /// Every audio filename any Transcription references: the main file (`audioFileURL`) AND the
+    /// split chunks (`audioChunkPathsRaw`). Chunks 2…N of a long recording are referenced ONLY via
+    /// the chunk list — an orphan sweep that ignores it deletes live data.
+    private func referencedAudioFileNames(in context: ModelContext) throws -> Set<String> {
+        var descriptor = FetchDescriptor<Transcription>()
+        descriptor.propertiesToFetch = [\.audioFileURL, \.audioChunkPathsRaw]
+
+        let transcriptions = try context.fetch(descriptor)
+        var referenced = Set<String>()
+        for transcription in transcriptions {
+            if let urlString = transcription.audioFileURL, let url = URL(string: urlString) {
+                referenced.insert(url.lastPathComponent)
+            }
+            if let raw = transcription.audioChunkPathsRaw, !raw.isEmpty {
+                for path in raw.split(separator: "\n") {
+                    referenced.insert(URL(fileURLWithPath: String(path)).lastPathComponent)
+                }
+            }
+        }
+        return referenced
+    }
+
     /// Deletes audio files in Recordings directory that have no corresponding Transcription record
     private func cleanupOrphanAudioFiles(modelContext: ModelContext) async {
         guard UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled) else {
@@ -136,16 +173,7 @@ class TranscriptionAutoCleanupService {
 
         do {
             let backgroundContext = ModelContext(modelContainer)
-
-            var descriptor = FetchDescriptor<Transcription>()
-            descriptor.propertiesToFetch = [\.audioFileURL]
-
-            let transcriptions = try backgroundContext.fetch(descriptor)
-            let referencedFiles = Set(transcriptions.compactMap { transcription -> String? in
-                guard let urlString = transcription.audioFileURL,
-                      let url = URL(string: urlString) else { return nil }
-                return url.lastPathComponent
-            })
+            let referencedFiles = try referencedAudioFileNames(in: backgroundContext)
 
             guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else { return }
             let filesInDirectory = try FileManager.default.contentsOfDirectory(
@@ -167,6 +195,60 @@ class TranscriptionAutoCleanupService {
             }
         } catch {
             logger.error("Failed during orphan audio cleanup: \(error, privacy: .public)")
+        }
+    }
+
+    /// Minimum age before an unreferenced file is reclaimed. The transcription queue is in-memory
+    /// (doesn't survive relaunch) and this sweep runs at launch, so anything unreferenced AND older
+    /// than a day cannot belong to an in-flight import.
+    private static let orphanReclaimMinimumAge: TimeInterval = 24 * 60 * 60
+
+    /// Always-on disk reclamation for files no Transcription references:
+    /// - `RecorderImports/`: the staging copy of every device recording. Nothing ever referenced or
+    ///   deleted these — each import leaked a full recording's worth of disk permanently.
+    /// - `Recordings/`: transcoded WAVs whose pipeline failed before creating a row.
+    /// Only files older than `orphanReclaimMinimumAge` are touched, so queued/in-flight imports are
+    /// never at risk.
+    private func reclaimUnreferencedAudioFiles(modelContext: ModelContext) async {
+        let modelContainer = await MainActor.run { modelContext.container }
+
+        do {
+            let backgroundContext = ModelContext(modelContainer)
+            let referencedFiles = try referencedAudioFileNames(in: backgroundContext)
+            let cutoff = Date().addingTimeInterval(-Self.orphanReclaimMinimumAge)
+
+            var deletedCount = 0
+            var freedBytes: Int64 = 0
+
+            for directory in [recorderImportsDirectory, recordingsDirectory] {
+                guard FileManager.default.fileExists(atPath: directory.path) else { continue }
+                let files = try FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                )
+
+                for fileURL in files {
+                    guard !referencedFiles.contains(fileURL.lastPathComponent) else { continue }
+                    let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    guard let modified = values?.contentModificationDate, modified < cutoff else { continue }
+
+                    do {
+                        try FileManager.default.removeItem(at: fileURL)
+                        deletedCount += 1
+                        freedBytes += Int64(values?.fileSize ?? 0)
+                    } catch {
+                        logger.error("Failed to reclaim orphan \(fileURL.lastPathComponent, privacy: .public): \(error, privacy: .public)")
+                    }
+                }
+            }
+
+            if deletedCount > 0 {
+                let freed = ByteCountFormatter.string(fromByteCount: freedBytes, countStyle: .file)
+                logger.notice("Reclaimed \(deletedCount, privacy: .public) unreferenced audio file(s), freed \(freed, privacy: .public)")
+            }
+        } catch {
+            logger.error("Failed during unreferenced-audio reclamation: \(error, privacy: .public)")
         }
     }
 }
