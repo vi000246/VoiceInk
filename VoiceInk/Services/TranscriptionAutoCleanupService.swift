@@ -41,6 +41,13 @@ class TranscriptionAutoCleanupService {
             }
         }
 
+        if UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isRecorderCleanupEnabled) {
+            Task { [weak self] in
+                guard let self = self, let modelContext = self.modelContext else { return }
+                await self.sweepOldRecorderImports(modelContext: modelContext)
+            }
+        }
+
         // Always-on, unlike the sweeps above: it only removes files no Transcription references,
         // so no user data is at risk. Without it every recorder import leaks its RecorderImports/
         // staging copy forever, and failed pipeline runs leak transcoded WAVs in Recordings/.
@@ -58,7 +65,19 @@ class TranscriptionAutoCleanupService {
         await sweepOldTranscriptions(modelContext: modelContext)
     }
 
+    func runManualRecorderCleanup(modelContext: ModelContext) async {
+        await sweepOldRecorderImports(modelContext: modelContext)
+    }
+
     @objc private func handleTranscriptionCompleted(_ notification: Notification) {
+        // Recorder retention runs on its own switch, independent of dictation cleanup below.
+        if UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isRecorderCleanupEnabled),
+           let modelContext = self.modelContext {
+            Task { [weak self] in
+                await self?.sweepOldRecorderImports(modelContext: modelContext)
+            }
+        }
+
         let isEnabled = UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled)
         guard isEnabled else { return }
 
@@ -79,15 +98,11 @@ class TranscriptionAutoCleanupService {
             return
         }
 
-        if let urlString = transcription.audioFileURL,
-           let url = URL(string: urlString) {
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                logger.error("Failed to delete audio file: \(error, privacy: .public)")
-            }
-        }
+        // Recorder imports are NEVER part of dictation-history cleanup — Recording Management
+        // promises to keep them; they have their own opt-in sweep (sweepOldRecorderImports).
+        guard transcription.importFingerprint == nil else { return }
 
+        RecordingAudioFiles.removeAll(for: transcription)
         modelContext.delete(transcription)
 
         do {
@@ -113,19 +128,18 @@ class TranscriptionAutoCleanupService {
         do {
             let backgroundContext = ModelContext(modelContainer)
 
+            // Dictation history only: recorder imports (importFingerprint != nil) are managed
+            // exclusively by sweepOldRecorderImports with their own retention setting.
             let descriptor = FetchDescriptor<Transcription>(
                 predicate: #Predicate<Transcription> { transcription in
-                    transcription.timestamp < cutoffDate
+                    transcription.timestamp < cutoffDate &&
+                    transcription.importFingerprint == nil
                 }
             )
             let items = try backgroundContext.fetch(descriptor)
             var deletedCount = 0
             for transcription in items {
-                if let urlString = transcription.audioFileURL,
-                   let url = URL(string: urlString),
-                   FileManager.default.fileExists(atPath: url.path) {
-                    try? FileManager.default.removeItem(at: url)
-                }
+                RecordingAudioFiles.removeAll(for: transcription)
                 backgroundContext.delete(transcription)
                 deletedCount += 1
             }
@@ -138,6 +152,48 @@ class TranscriptionAutoCleanupService {
             }
         } catch {
             logger.error("Failed during transcription cleanup: \(error, privacy: .public)")
+        }
+    }
+
+    /// Opt-in retention sweep for recorder imports. Starred recordings (`recorderFavorite`)
+    /// are NEVER deleted — the star exists precisely to mark "don't delete this".
+    private func sweepOldRecorderImports(modelContext: ModelContext) async {
+        guard UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isRecorderCleanupEnabled) else {
+            return
+        }
+
+        let retentionDays = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.recorderRetentionDays)
+        guard retentionDays > 0 else { return }
+
+        let cutoffDate = Date().addingTimeInterval(TimeInterval(-retentionDays * 24 * 60 * 60))
+        let modelContainer = await MainActor.run { modelContext.container }
+
+        do {
+            let backgroundContext = ModelContext(modelContainer)
+
+            let descriptor = FetchDescriptor<Transcription>(
+                predicate: #Predicate<Transcription> { transcription in
+                    transcription.timestamp < cutoffDate &&
+                    transcription.importFingerprint != nil &&
+                    transcription.recorderFavorite == false
+                }
+            )
+            let items = try backgroundContext.fetch(descriptor)
+            var deletedCount = 0
+            for transcription in items {
+                RecordingAudioFiles.removeAll(for: transcription)
+                backgroundContext.delete(transcription)
+                deletedCount += 1
+            }
+            if deletedCount > 0 {
+                try backgroundContext.save()
+                logger.notice("Cleaned up \(deletedCount, privacy: .public) old recorder import(s)")
+                await MainActor.run {
+                    NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
+                }
+            }
+        } catch {
+            logger.error("Failed during recorder-import cleanup: \(error, privacy: .public)")
         }
     }
 

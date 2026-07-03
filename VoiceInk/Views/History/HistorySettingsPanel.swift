@@ -10,6 +10,8 @@ struct HistorySettingsPanel: View {
     @AppStorage(CleanupSettingsKeys.transcriptionRetentionMinutes) private var transcriptionRetentionMinutes = 24 * 60
     @AppStorage(CleanupSettingsKeys.isAudioCleanupEnabled) private var isAudioCleanupEnabled = false
     @AppStorage(CleanupSettingsKeys.audioRetentionPeriod) private var audioRetentionPeriod = 7
+    @AppStorage(CleanupSettingsKeys.isRecorderCleanupEnabled) private var isRecorderCleanupEnabled = false
+    @AppStorage(CleanupSettingsKeys.recorderRetentionDays) private var recorderRetentionDays = 90
 
     @State private var isPerformingAudioCleanup = false
     @State private var isShowingAudioConfirmation = false
@@ -17,6 +19,7 @@ struct HistorySettingsPanel: View {
     @State private var showAudioCleanupResult = false
     @State private var audioCleanupResult: (deletedCount: Int, errorCount: Int) = (0, 0)
     @State private var showTranscriptCleanupResult = false
+    @State private var showRecorderCleanupResult = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,7 +50,34 @@ struct HistorySettingsPanel: View {
                 } header: {
                     sectionHeader(
                         "Transcript History",
-                        tip: "Delete transcript history and related audio files after the retention period."
+                        tip: "Delete dictation history and related audio files after the retention period. Imported recorder files are never affected — they have their own setting below."
+                    )
+                }
+
+                Section {
+                    Toggle("自動清理錄音筆匯入", isOn: $isRecorderCleanupEnabled)
+
+                    if isRecorderCleanupEnabled {
+                        Picker("保留期限", selection: $recorderRetentionDays) {
+                            Text("30 天").tag(30)
+                            Text("90 天").tag(90)
+                            Text("180 天").tag(180)
+                            Text("1 年").tag(365)
+                        }
+
+                        Button("立即清理") {
+                            Task {
+                                await TranscriptionAutoCleanupService.shared.runManualRecorderCleanup(modelContext: modelContext)
+                                await MainActor.run {
+                                    showRecorderCleanupResult = true
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    sectionHeader(
+                        "錄音筆匯入",
+                        tip: "超過保留期限的錄音筆匯入（音檔＋逐字稿）會被刪除。標記星號 ★ 的錄音永遠不會被清理。預設關閉＝永遠保留。"
                     )
                 }
 
@@ -87,6 +117,11 @@ struct HistorySettingsPanel: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Cleanup complete.")
+        }
+        .alert("錄音筆匯入清理", isPresented: $showRecorderCleanupResult) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("清理完成。星號標記的錄音不受影響。")
         }
         .alert("Audio Cleanup", isPresented: $isShowingAudioConfirmation) {
             Button("Cancel", role: .cancel) { }

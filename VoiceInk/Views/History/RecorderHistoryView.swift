@@ -55,7 +55,7 @@ struct RecorderHistoryView: View {
         VStack(spacing: 0) {
             AppScreenHeader(
                 title: "Recording Management",
-                infoMessage: "錄音匯入的原始檔（音檔＋逐字稿永遠保留）。挑一個錄音範本 → 套用 → 預覽 → 匯出到 Obsidian;可只刪音檔或刪整筆。勾選多筆可批次刪除，按住 Shift 點選可範圍選取。",
+                infoMessage: "錄音匯入的原始檔（預設永遠保留;History 設定可開啟自動清理，星號 ★ 標記的永不刪除）。挑一個錄音範本 → 套用 → 預覽 → 匯出到 Obsidian;可只刪音檔或刪整筆。勾選多筆可批次刪除，按住 Shift 點選可範圍選取。",
                 infoURL: nil
             ) { EmptyView() }
 

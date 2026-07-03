@@ -6,6 +6,10 @@ enum CleanupSettingsKeys {
     static let isAudioCleanupEnabled = "IsAudioCleanupEnabled"
     static let audioRetentionPeriod = "AudioRetentionPeriod"
     static let lastAutomaticAudioCleanupDate = "AudioCleanupLastAutomaticCleanupDate"
+    // Recorder imports have their own independent cleanup: the dictation-history sweep above
+    // never touches them, and starred (recorderFavorite) recordings are never deleted.
+    static let isRecorderCleanupEnabled = "IsRecorderCleanupEnabled"
+    static let recorderRetentionDays = "RecorderRetentionDays"
 }
 
 enum AppDefaults {
@@ -40,6 +44,8 @@ enum AppDefaults {
             CleanupSettingsKeys.transcriptionRetentionMinutes: 1440,
             CleanupSettingsKeys.isAudioCleanupEnabled: false,
             CleanupSettingsKeys.audioRetentionPeriod: 7,
+            CleanupSettingsKeys.isRecorderCleanupEnabled: false,
+            CleanupSettingsKeys.recorderRetentionDays: 90,
 
             // UI & Behavior
             "IsMenuBarOnly": false,
