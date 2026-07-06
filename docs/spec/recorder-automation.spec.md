@@ -6,16 +6,22 @@
 - **Sub-modules**: N/A
 - **Source PRDs**:
   - `docs/prd/recorder-auto-import-and-template-routing.prd.md` — initial creation
+  - `docs/prd/meeting-capture-to-obsidian.prd.md` — meeting capture (2026-07-06)
+  - `docs/prd/icloud-recorder-sources.prd.md` — iCloud sources: JPR / Voice Memos (2026-07-06)
+  - `docs/prd/ask-ai-and-recording-library.prd.md` — Recording Library upgrade, M1 (2026-07-06; M2–3 live in `docs/spec/ask-ai.spec.md`)
 - **Source Linear Issue**: N/A
 - **Owner**: TBD (personal fork — vi000246/VoiceInk)
 - **Status**: ACTIVE — living document
 - **Created**: 2026-06-29
-- **Last Updated**: 2026-07-02
+- **Last Updated**: 2026-07-06
 
 ## Change History
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
+| 2026-07-06 | `docs/prd/meeting-capture-to-obsidian.prd.md` | `docs/srs/recorder-automation-meeting-capture.srs.md` | **Meeting capture spec'd** — one-hotkey system-audio (CoreAudio process tap + private aggregate w/ mic, raw HAL IOProc — NOT AVAudioEngine) mixed mono m4a → existing import pipeline via new `.meetingCapture` origin; optional fixed 「會議」 category skips classifier (`process(fixedCategory:)` seam); new `MeetingCaptureService` + indicator window + `NSAudioCaptureUsageDescription`. Not yet implemented. |
+| 2026-07-06 | `docs/prd/icloud-recorder-sources.prd.md` | `docs/srs/recorder-automation-icloud-sources.srs.md` | **iCloud sources spec'd** — JPR / Voice Memos presets via additive `RecorderDevice` fields (`recursive`/`isICloudSource`/`presetKind`/`defaultCategoryId`; deliberately NO new Kind case); recursive scan + dataless-placeholder download-then-import; `NSMetadataQuery` watcher for iCloud Drive, existing vnode watcher for VM group container; keep-originals forced; path/creation-date recording-time recovery. Not yet implemented. |
+| 2026-07-06 | `docs/prd/ask-ai-and-recording-library.prd.md` | `docs/srs/recorder-automation-recording-library.srs.md` | **Recording Library spec'd** — Recording Management page moves to cursor pagination + predicate-side filters (category/source/status/starred/date) + sort, batch star/reclassify/re-export, new `#Index` on `recorderCategoryId`/`recorderFavorite`/`recorderSourceDeviceId`, page-scoped ledger lookups, and the citation focus hook consumed by the `ask-ai` module. Not yet implemented. |
 | 2026-07-02 | free-form request | N/A | **OpenCC dictionaries vendored (build 207).** SwiftyOpenCC 1.0.1's `Package.swift` declares no SPM resources, so build 206 shipped WITHOUT the `.ocd` dictionaries → `ChineseConverter` init threw → conversion silently no-oped. Fix: vendored the package's prebuilt `OpenCCDictionary.bundle` (Contents/Resources/Dictionary/*.ocd) into `VoiceInk/Resources/`; `TraditionalChineseConverter` loads it via `Bundle.main.url(forResource:"OpenCCDictionary", withExtension:"bundle")`. Verified the `.bundle` copies into the app intact (not flattened) + an end-to-end test proves conversion works. ⚠️ Keep this bundle whenever changing the OpenCC dependency. |
 | 2026-07-02 | free-form request | N/A | **Recorder perf + 繁中 + speaker export (build 206).** (1) **Single diarized call**: the recorder's transcription step now makes ONE ElevenLabs `diarize=true` call that serves as BOTH the transcript and the speaker segments (cached in `DiarizationCoordinator`, consumed by post-processing) — no more transcribing an hour of audio twice. Falls back to a normal transcription if it fails. (2) **Traditional Chinese** via OpenCC (SwiftyOpenCC 1.0.1, product `OpenCC`): `TraditionalChineseConverter` (`.traditionalize + .TWStandard`, no idiom rephrasing) converts transcript + speaker segments once in `RecorderPostProcessor` before classify/analyse/export; Recorder Mode toggle `輸出繁體中文` (`recorderConvertToTraditional`). (3) **Speaker-separated export**: Obsidian `## 原始逐字稿` renders `**講者N：** …` when natively diarized. (4) **TranscriptSheet perf**: decode segments once (was O(n²) via per-segment `displayName`), `LazyVStack`, plain `Text` for the raw transcript (skip Markdown parsing). (5) **Reveal-in-vault**: `在 Vault 顯示` shows `已匯出` when the exported file was moved/renamed instead of a dead button. |
 | 2026-07-02 | free-form request | N/A | **Chunking made provider-aware — ElevenLabs never chunks.** Recordings were still being split into ~10-min WAV chunks because the chunk gate (`AudioFileTranscriptionManager`) and the `fileTooLarge` guard (`CloudTranscriptionService`) used a fixed 25MB limit for ALL cloud providers. Added `ModelProvider.maxUploadBytes` (ElevenLabs 2GB, others ~25MB); both sites now gate on it, so an ElevenLabs recording is transcribed + diarized as ONE file. Timeout ceiling raised 600s→1800s for large single uploads. Build 204. |
@@ -108,6 +114,12 @@ only thin new services plus two settings pages.
 | Speaker Segment | A `{ speaker, text, start, end }` unit; consecutive same-speaker words/segments merged. Stored as JSON in `Transcription.speakerSegmentsRaw`. |
 | Speaker Id vs Name | Segments carry a stable anonymous id ("1", "2"); a rename map (`speakerNamesRaw`) resolves ids → display names (講者1 → "Logan") at render time. |
 | Speaker Inference (legacy) | Old prompt-driven guess of the speaker; superseded by real diarization above. |
+| Meeting Capture | A system-audio (process tap) + mic mixed recording of an online meeting, entering the pipeline as a `.meetingCapture` queue item — not a `RecorderDevice`. **(spec'd)** |
+| Fixed Category | A category applied without classification: `meetingFixedCategoryId` (meetings) or `RecorderDevice.defaultCategoryId` (per source). Both converge on the `RecorderPostProcessor.process(fixedCategory:)` seam. **(spec'd)** |
+| iCloud Source | A `.folder` device with `isICloudSource = true` — recursive, placeholder-aware, keep-originals forced; watched via `NSMetadataQuery` instead of vnode. **(spec'd)** |
+| Dataless Placeholder | An iCloud file whose content is not local. Today its fingerprint read throws and it is silently skipped; spec'd behavior = trigger download, count as deferred, import after materialization. |
+| Preset Source | A one-tap source template (`presetKind`: `justPressRecord` / `voiceMemos`) that auto-locates its folder and pre-sets safe flags. **(spec'd)** |
+| Recording Library | The scaled Recording Management page: predicate-filtered, cursor-paginated, batch operations, citation-focusable. **(spec'd)** |
 
 ### Domain Events
 | Event | Trigger Condition | Consumers |
@@ -124,7 +136,10 @@ only thin new services plus two settings pages.
 - **In scope**: mount monitoring (`.volume`) **and live folder watching (`.folder`)**; folder scan + dedup + import; raw transcription routing;
   post-transcription classification; template routing to `CustomPrompt`; long-transcript
   summarization; Markdown export to vault; Recorders & Categories settings UI; category badge +
-  manual re-classification; optional delete-after-import; (M5) real diarization.
+  manual re-classification; optional delete-after-import; (M5) real diarization; **(spec'd
+  2026-07-06)** meeting capture (system-audio tap + mic → pipeline), iCloud sources (JPR /
+  Voice Memos presets: recursive + placeholder-aware + keep-originals forced), and the Recording
+  Library upgrade (pagination, predicate filters, batch ops, citation focus hook).
 - **Out of scope**: streaming/real-time classification; cloud sync of config; recorder firmware
   integration; a parallel template system; building a new transcription engine.
 
@@ -138,6 +153,8 @@ only thin new services plus two settings pages.
 | Obsidian vault (filesystem) | External store | Destination for exported Markdown notes |
 | ~~FluidAudio diarizer models~~ | ~~Local ML~~ | **SUPERSEDED (2026-07-02, 方案 C)** — local diarization fallback removed; see Key Decisions. Diarization is ElevenLabs-only. |
 | ElevenLabs STT API | Service | Native diarization (`diarize` param) returned inline with the transcript — the recorder's sole diarization path (whole recording, one request) |
+| Online meeting app (Zoom/Teams/Meet…) | External app | Its audio output is captured via the system-wide process tap during meeting capture **(spec'd)** |
+| JPR / Voice Memos folders (iCloud/CloudKit-synced) | External store | Source folders filled by Apple's sync daemons; JPR = iCloud Drive container (dataless placeholders), VM = local group container **(spec'd)** |
 
 ### External Dependencies
 | Dependency | Purpose | Failure Mode |
@@ -148,6 +165,9 @@ only thin new services plus two settings pages.
 | Security-scoped bookmarks (source folder + vault root) | Sandbox-safe file access | Stale bookmark → prompt user to re-grant in Recorders page |
 | ~~`FluidInference/FluidAudio` Diarizer~~ | ~~Local diarization fallback~~ | **SUPERSEDED (2026-07-02, 方案 C)** — removed for the recorder; see Key Decisions. (FluidAudio still linked for local *transcription*.) |
 | ElevenLabs STT `diarize` (via in-repo `ElevenLabsDiarizingClient`) | Sole diarization path — whole recording in one request | API error / no key → degrade to plain transcript; diarization-off case uses the unchanged LLMkit path |
+| CoreAudio process tap + private aggregate device (macOS 14.2+, TCC bucket `SystemAudioCaptureRequests`, needs `NSAudioCaptureUsageDescription`) **(spec'd)** | Meeting system-audio capture | TCC denied → guidance toast, no recording; tap breaks on output-device change → teardown+rebuild both tap & aggregate, else finalize file + notify (no status API — probe-based detection) |
+| `NSMetadataQuery` (explicit folder scope) + `startDownloadingUbiquitousItem` **(spec'd)** | Watch iCloud Drive sources; materialize dataless placeholders | Query silent/unreliable → wake/activate rescan + manual 「立即掃描」 fallback |
+| Voice Memos group container (`~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings`) **(spec'd)** | VM source folder (plain local, CloudKit-synced) | Unreadable without Full Disk Access → readability probe + guidance UI; path drift across macOS versions → Open Question |
 
 ---
 
@@ -192,11 +212,18 @@ only thin new services plus two settings pages.
 | ~~`FluidAudioDiarizer`~~ | ~~Local diarizer timeline~~ | **DELETED (2026-07-02, 方案 C)** — see Key Decisions |
 | ~~Diarization alignment~~ | ~~token↔timeline max-overlap~~ | **DELETED (2026-07-02, 方案 C)** — `DiarizationAlignment` removed |
 | Recorders / Categories views | Settings UI (cards + ~400pt side panel; category list) | New `ViewType` cases + `AppSidebar` entries |
+| `MeetingCaptureService` **(spec'd)** | Own the tap+mic aggregate capture graph (raw HAL IOProc — NOT AVAudioEngine); mix to mono m4a in staging; teardown+rebuild on device change; finalize on any exit | `@MainActor` singleton: `start() async throws`, `stop() async -> URL?`, `@Published state` |
+| `MeetingIndicatorWindowManager` **(spec'd)** | Floating red-dot + elapsed-timer indicator, decoupled from the dictation `RecordingState` machine | mirrors `MiniWindowManager` (`Views/Recorder/MiniWindowManager.swift`) |
+| `ICloudSourceWatcher` **(spec'd)** | `NSMetadataQuery(searchScopes: [folderURL])` watcher for iCloud Drive sources; debounce → `importNewFiles`; batch download triggers off-main | `start()/sync()` alongside `RecorderFolderWatcher` (which skips `isICloudSource` devices) |
 
 ### Data Flow
-Two entry triggers converge on `RecorderImportService.importNewFiles`: a `.volume` **mount**
-(`NSWorkspace` notification) or a `.folder` **vnode change** (`RecorderFolderWatcher`, debounced,
-with the file-stability gate + `scheduleRecheck` for files still copying). Editing the device list
+Four entry triggers converge on `RecorderImportService`: a `.volume` **mount**
+(`NSWorkspace` notification), a `.folder` **vnode change** (`RecorderFolderWatcher`, debounced,
+with the file-stability gate + `scheduleRecheck` for files still copying), an **iCloud
+metadata-query update** (`ICloudSourceWatcher` — spec'd; recursive scan, dataless placeholders
+downloaded before fingerprinting, deferred via the same recheck loop), or a **meeting-capture
+stop** (`importMeetingFile` — spec'd; staged file, `.meetingCapture` origin, optional fixed
+category skipping the classifier). Editing the device list
 calls `RecorderFolderWatcher.sync()` to rebuild watchers; `VoiceInk.swift` starts the watcher at
 launch alongside the mount monitor. From there: folder scan + dedup (sync, fast) → copy + enqueue (async). The
 transcription queue processes items **sequentially** (existing behavior). For
@@ -294,6 +321,19 @@ struct SpeakerSegment: Codable, Equatable {
     var start: TimeInterval
     var end: TimeInterval
 }
+
+// SPEC'D 2026-07-06 (meeting capture + iCloud sources + Recording Library) — not yet implemented:
+// RecorderDevice additive fields (decodeIfPresent defaults; deliberately NO new Kind case —
+// an old build decoding an unknown Kind raw value fails that element's decode):
+//   var recursive: Bool = false        // enumerator-based scan + recursive watching
+//   var isICloudSource: Bool = false   // placeholder handling + metadata-query watcher + keep-originals forced
+//   var presetKind: String?            // "justPressRecord" | "voiceMemos" (nil = custom)
+//   var defaultCategoryId: UUID?       // skip classifier, apply this category directly
+// RecorderConfigStore new keys: recorderMeetingFixedCategoryIdV1, recorderMeetingMicEnabledV1
+// QueueItemOrigin: new case .meetingCapture(fingerprint: String)   // meetings are not RecorderDevices
+// Transcription: additive optional recorderSourceLabel: String?    // e.g. "會議 · Zoom"
+// ImportLedgerEntry: additive relativePath: String?                // recording-time recovery from date folders
+// Transcription #Index additions: [\.recorderCategoryId], [\.recorderFavorite], [\.recorderSourceDeviceId]
 ```
 
 ### Migration Strategy
@@ -385,6 +425,9 @@ breaking shape changes (mirrors `ModeManager`'s `modeConfigurationsV2`).
 | Sidebar `ViewType` / `AppSidebar` | UI registration | Two new cases + items | Yes — additive |
 | Schema array in `VoiceInk.swift:48-81` | App bootstrap | Add `ImportLedgerEntry` | Yes — additive |
 | `RecorderFolderWatcher.shared.start()` in `VoiceInk.swift` | App bootstrap | Start folder watchers after import service is configured | Yes — additive |
+| `Info.plist` `NSAudioCaptureUsageDescription` **(spec'd)** | App config | TCC usage string for the system-audio tap | Yes — additive |
+| `ShortcutAction` + `RecordingShortcutManager` (`Shortcuts/ShortcutAction.swift:3,29,56,91`; `RecordingShortcutManager.swift:314`) **(spec'd)** | UI registration | New `.toggleMeetingRecording` utility shortcut (must work regardless of dictation state) | Yes — additive |
+| `AppNavigator` focus companion (`pendingFocusTranscriptionId`) **(spec'd)** | In-process nav | Row-level focus into the Recording Library (consumed by `ask-ai` citations) | Yes — additive |
 
 ### Rollout Strategy
 Feature is inert until the user configures ≥1 `RecorderDevice`. No flag needed for personal
@@ -453,6 +496,12 @@ keys (optional fields harmless).
 | Export | Markdown: frontmatter + analysis + collapsible raw | Analysis only; two files | Obsidian-friendly, max info in one file (user decision) |
 | Config storage | JSON in UserDefaults | SwiftData | Mirrors ModeManager; small non-queryable config |
 | Mount detection | `NSWorkspace.didMountNotification` | DiskArbitration/FSEvents | Idiomatic, least code |
+| Meeting capture API **(spec'd)** | CoreAudio process tap + private aggregate (tap + mic ONLY), raw HAL IOProc | ScreenCaptureKit audio-only | Separate TCC bucket (no periodic re-consent nag); no dummy-video hack; ⚠️ AVAudioEngine silently ignores tap-backed aggregates |
+| Meeting file format **(spec'd)** | mono 48 kHz AAC m4a (~45 MB/h) | 16 kHz WAV | Hours-long meetings stay far below the ElevenLabs 2 GB gate — Key Decision #2 upheld, never chunk |
+| Meeting state UI **(spec'd)** | Separate indicator window | New `RecordingState` case | Dictation state machine gates 6+ sites; meeting recording must coexist with dictation |
+| iCloud source modeling **(spec'd)** | Additive fields on `.folder` (`isICloudSource` etc.) | New `Kind.icloudFolder` case | Old builds fail decoding unknown Kind raw values; fields default in safely |
+| iCloud watching **(spec'd)** | `NSMetadataQuery` explicit-folder scope (JPR); vnode kept for VM group container | Ubiquitous-scope constants; pure polling | Own-container-only scopes can't see JPR's container; VM folder is local (CloudKit-synced), not ubiquitous |
+| Library scaling **(spec'd)** | Cursor pagination + predicate filters (mirror `InlineHistoryView.swift:22-59`) | Virtualized custom table; keep in-memory filtering | Proven in-repo pattern; in-memory filtering over an unbounded `@Query` is the measured bottleneck |
 
 ---
 
@@ -465,3 +514,6 @@ keys (optional fields harmless).
 - [ ] Export filename convention + collision policy.
 - [ ] Multiple recorders / rotating source folders — v1 boundary.
 - [ ] Should the classifier see the full transcript or a representative excerpt (cost vs accuracy)?
+- [ ] (meeting) Mono mixdown vs tap-stereo→mono: ElevenLabs diarization quality difference; post-TCC-grant relaunch requirement on macOS 26; echo acceptability on speakers (headphones hint?).
+- [ ] (iCloud) JPR literal container folder name (vendor KB blocked — verify `ls ~/Library/Mobile\ Documents/ | grep -i openplanet`); VM Full Disk Access requirement + Tahoe path + "sync only after VM.app opened" claim; possible `.qta` format from iOS 26 recordings.
+- [ ] (library) SwiftData `#Predicate` optional-UUID equality support; page size 50 vs 20 for card rows.
