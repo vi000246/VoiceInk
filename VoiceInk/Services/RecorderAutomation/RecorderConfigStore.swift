@@ -339,6 +339,15 @@ final class RecorderConfigStore: ObservableObject {
         saveRecorderPrompts()
     }
 
+    /// One-time cleanup: recorder templates created via the category editor used to ALSO be saved
+    /// into the voice library (PromptEditorView persisted unconditionally), so the same prompt id
+    /// exists in both stores. The recorder store is canonical — drop the voice copies.
+    func removeVoicePromptsDuplicatedFromRecorder(from enhancementService: AIEnhancementService) {
+        let recorderIds = Set(recorderPrompts.map { $0.id })
+        let dupes = enhancementService.allPrompts.filter { recorderIds.contains($0.id) }
+        for p in dupes { enhancementService.deletePrompt(p) }
+    }
+
     /// One-time migration: move recorder-default prompts that were previously seeded into the
     /// shared voice library back out into the recorder-prompt store (preserving ids so existing
     /// category bindings keep resolving), then remove them from the voice list.

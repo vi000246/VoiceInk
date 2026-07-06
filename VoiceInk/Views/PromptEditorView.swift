@@ -31,6 +31,10 @@ struct PromptEditorView: View {
     /// When false, the title is optional — saving is allowed with an empty name (auto-derived from
     /// the prompt) so the recorder template editor isn't blocked by the easily-missed name field.
     var requiresTitle: Bool = true
+    /// When true (voice prompts), saving persists into `AIEnhancementService.customPrompts`.
+    /// Recorder templates pass false: the editor only builds the prompt and hands it to `onSave`,
+    /// so recorder prompts never leak into the voice library.
+    var persistsToVoiceLibrary: Bool = true
     @EnvironmentObject private var enhancementService: AIEnhancementService
     let onDismiss: () -> Void
     let onSave: (CustomPrompt) -> Void
@@ -88,6 +92,7 @@ struct PromptEditorView: View {
         showsStarterTemplateMenu: Bool = true,
         saveButtonTitle: LocalizedStringKey? = nil,
         requiresTitle: Bool = true,
+        persistsToVoiceLibrary: Bool = true,
         onDismiss: @escaping () -> Void,
         onSave: @escaping (CustomPrompt) -> Void,
         onDelete: ((CustomPrompt) -> Void)? = nil
@@ -98,6 +103,7 @@ struct PromptEditorView: View {
         self.showsStarterTemplateMenu = showsStarterTemplateMenu
         self.saveButtonTitleOverride = saveButtonTitle
         self.requiresTitle = requiresTitle
+        self.persistsToVoiceLibrary = persistsToVoiceLibrary
         self.onDismiss = onDismiss
         self.onSave = onSave
         self.onDelete = onDelete
@@ -315,6 +321,13 @@ struct PromptEditorView: View {
         let finalTitle = resolvedTitle()
         switch mode {
         case .add:
+            guard persistsToVoiceLibrary else {
+                return CustomPrompt(
+                    title: finalTitle,
+                    promptText: promptText,
+                    useSystemInstructions: useSystemInstructions
+                )
+            }
             return enhancementService.addPrompt(
                 title: finalTitle,
                 promptText: promptText,
@@ -327,7 +340,9 @@ struct PromptEditorView: View {
                 promptText: promptText,
                 useSystemInstructions: useSystemInstructions
             )
-            enhancementService.updatePrompt(updatedPrompt)
+            if persistsToVoiceLibrary {
+                enhancementService.updatePrompt(updatedPrompt)
+            }
             return updatedPrompt
         }
     }

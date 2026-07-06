@@ -219,9 +219,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
     // MARK: - External Requests (App Intents, device monitor)
 
-    func requestTogglePanel() {
+    func requestTogglePanel(modeId: UUID? = nil) {
         Task {
-            await toggleRecorderPanel()
+            await toggleRecorderPanel(modeId: modeId)
         }
     }
 

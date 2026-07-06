@@ -141,9 +141,14 @@ private struct CategoryEditorPanel: View {
     @State private var aiModelName: String?
     @State private var showingPromptEditor = false
     @State private var showDeletePromptConfirmation = false
+    @ObservedObject private var classifierGenerator = ClassifierDescriptionGenerator.shared
 
     private let existingId: UUID?
     private let isFallback: Bool
+    /// Stable id for this category across the panel's lifetime — the existing id, or a pre-assigned
+    /// id for a new draft (used as the save id AND the background-generation key, so an in-flight
+    /// classifier generation can find its category).
+    private let draftId: UUID
 
     init(target: CategoriesSettingsView.CategoryEditTarget, store: RecorderConfigStore, onDismiss: @escaping () -> Void) {
         self.target = target
@@ -152,6 +157,7 @@ private struct CategoryEditorPanel: View {
         switch target {
         case .add:
             existingId = nil; isFallback = false
+            draftId = UUID()
             _name = State(initialValue: "")
             _classifierDescription = State(initialValue: "")
             _subfolderName = State(initialValue: "")
@@ -160,6 +166,7 @@ private struct CategoryEditorPanel: View {
             _aiModelName = State(initialValue: nil)
         case .edit(let c):
             existingId = c.id; isFallback = c.isFallback
+            draftId = c.id
             _name = State(initialValue: c.name)
             _classifierDescription = State(initialValue: c.classifierDescription)
             _subfolderName = State(initialValue: c.subfolderName)
@@ -195,6 +202,31 @@ private struct CategoryEditorPanel: View {
                     TextField("名稱", text: $name)
                     TextField("分類描述（何時使用此類別 — 餵給分類器）", text: $classifierDescription, axis: .vertical)
                         .lineLimit(2...5)
+                    HStack(spacing: 8) {
+                        Button {
+                            guard let prompt = boundPrompt else { return }
+                            classifierGenerator.generate(
+                                categoryId: draftId, categoryName: name, prompt: prompt,
+                                aiService: aiService, store: store)
+                        } label: {
+                            if classifierGenerator.isGenerating(draftId) {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("產生中…（可關閉此頁，完成後自動填入）")
+                                }
+                            } else {
+                                Label("依範本自動產生", systemImage: "sparkles")
+                            }
+                        }
+                        .disabled(boundPrompt == nil || classifierGenerator.isGenerating(draftId))
+                        if boundPrompt == nil {
+                            Text("先在下方綁定分析範本").font(.caption).foregroundStyle(.secondary)
+                        } else if let error = classifierGenerator.errors[draftId] {
+                            Text(error).font(.caption)
+                                .foregroundStyle(AppTheme.Status.errorStrong)
+                        }
+                        Spacer()
+                    }
                 }
                 Section("Vault 子資料夾") {
                     TextField("子資料夾名稱", text: $subfolderName)
@@ -236,6 +268,11 @@ private struct CategoryEditorPanel: View {
             .formStyle(.grouped)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .onReceive(classifierGenerator.$pendingResults) { results in
+            if results[draftId] != nil, let text = classifierGenerator.consumeResult(draftId) {
+                classifierDescription = text
+            }
+        }
         .confirmationDialog(
             "刪除範本？",
             isPresented: $showDeletePromptConfirmation,
@@ -258,6 +295,7 @@ private struct CategoryEditorPanel: View {
                 showsStarterTemplateMenu: false,
                 saveButtonTitle: "存檔",
                 requiresTitle: false,
+                persistsToVoiceLibrary: false,
                 onDismiss: { showingPromptEditor = false },
                 onSave: { prompt in
                     store.upsertRecorderPrompt(prompt)
@@ -272,7 +310,7 @@ private struct CategoryEditorPanel: View {
 
     private func save() {
         let category = RecorderCategory(
-            id: existingId ?? UUID(),
+            id: draftId,
             name: name,
             classifierDescription: classifierDescription,
             customPromptId: customPromptId,

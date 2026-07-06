@@ -146,6 +146,11 @@ struct VoiceInkApp: App {
             RecorderConfigStore.shared.disableSystemTemplateForRecorderPrompts()
             UserDefaults.standard.set(true, forKey: "recorderPromptsNoSystemTemplateV1")
         }
+        // Recorder templates used to double-save into the voice library — drop those voice copies.
+        if !UserDefaults.standard.bool(forKey: "recorderPromptsDedupV1") {
+            RecorderConfigStore.shared.removeVoicePromptsDuplicatedFromRecorder(from: enhancementService)
+            UserDefaults.standard.set(true, forKey: "recorderPromptsDedupV1")
+        }
         // Backfill newly-added default templates (e.g. 獨白記錄) into existing installs.
         // seedDefaultTemplates is idempotent by name/title, so user-edited prompts are untouched.
         if !UserDefaults.standard.bool(forKey: "recorderMonologueTemplateV1") {
