@@ -69,7 +69,8 @@ final class MeetingCaptureController: ObservableObject {
         indicator?.hide()
         isRecording = false
         guard let url = await service.stop() else {
-            NotificationManager.shared.showNotification(title: "會議錄音結束，但沒有產生檔案", type: .warning, duration: 5)
+            // service 已對「零音訊」情境發出帶引導的通知,這裡不重複彈。
+            logger.notice("Meeting stop returned no file (empty recording or no session)")
             return
         }
         RecorderImportService.shared.importMeetingFile(url, sourceLabel: sourceLabel)

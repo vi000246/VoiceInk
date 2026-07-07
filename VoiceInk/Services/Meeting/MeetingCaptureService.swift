@@ -59,6 +59,10 @@ private final class MeetingCaptureContext: @unchecked Sendable {
     /// 避免在 realtime thread 上打 log)。
     var asyncWriteErrorCount: UInt64 = 0
     var lastAsyncWriteStatus: OSStatus = noErr
+    /// IOProc 被 HAL 呼叫的次數(含沒寫入的輪次)。0 = aggregate 從未供料 → 權限/裝置問題。
+    var ioCallbackCount: UInt64 = 0
+    /// 成功送入 ExtAudioFileWriteAsync 的總 frame 數。0 = 檔案必為空殼。
+    var framesWritten: UInt64 = 0
 
     init(extFile: ExtAudioFileRef) {
         self.extFile = extFile
@@ -67,6 +71,7 @@ private final class MeetingCaptureContext: @unchecked Sendable {
     /// IOProc 主體:把這一輪的所有 input stream(tap + 可選 mic)deinterleave 成
     /// 逐聲道緩衝 → 等權混成 mono → 非同步寫入 AAC 檔。
     func handleIO(_ inInputData: UnsafePointer<AudioBufferList>) {
+        ioCallbackCount &+= 1
         let ablPointer = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
         guard ablPointer.count > 0 else { return }
 
@@ -152,6 +157,8 @@ private final class MeetingCaptureContext: @unchecked Sendable {
         if writeStatus != noErr {
             asyncWriteErrorCount += 1
             lastAsyncWriteStatus = writeStatus
+        } else {
+            framesWritten &+= UInt64(frameCount)
         }
     }
 }
@@ -278,6 +285,13 @@ final class MeetingCaptureService: ObservableObject {
         probeTask?.cancel()
         probeTask = nil
 
+        // finalize 會清掉 context — 先抓診斷計數。
+        let ioCallbacks = captureContext?.ioCallbackCount ?? 0
+        let framesWritten = captureContext?.framesWritten ?? 0
+        let writeErrors = captureContext?.asyncWriteErrorCount ?? 0
+        let lastWriteStatus = captureContext?.lastAsyncWriteStatus ?? noErr
+        let peak = captureContext?.tapPeak ?? 0
+
         // AudioDeviceStop → DestroyIOProcID → DestroyAggregateDevice → DestroyProcessTap
         destroyGraph()
         removeOutputDeviceListener()
@@ -288,10 +302,37 @@ final class MeetingCaptureService: ObservableObject {
         outputURL = nil
         state = .idle
 
+        logger.notice("🎬 Meeting capture stopped — ioCallbacks=\(ioCallbacks, privacy: .public) framesWritten=\(framesWritten, privacy: .public) writeErrors=\(writeErrors, privacy: .public) lastWriteStatus=\(lastWriteStatus, privacy: .public) peak=\(peak, privacy: .public)")
+
+        // 防護:一個 frame 都沒寫入 → 檔案是空殼,送轉錄只會換來一個難懂的上游錯誤
+        // (例如空檔上傳被拒的「網路錯誤」)。直接刪檔、給出可行動的提示。
+        if framesWritten == 0 {
+            if let url { try? FileManager.default.removeItem(at: url) }
+            let hint = ioCallbacks == 0
+                ? "系統沒有供應任何音訊——最可能是「螢幕與系統音訊錄製」權限未允許 VoiceInk(允許後請重啟 app)"
+                : "音訊寫入全數失敗(status \(lastWriteStatus))——請回報此代碼"
+            logger.error("🎬 Empty meeting recording discarded — \(hint, privacy: .public)")
+            NotificationManager.shared.showNotification(
+                title: "沒有錄到任何音訊:\(hint)",
+                type: .error, duration: 10,
+                actionButton: ("開啟設定", Self.openAudioCapturePrivacySettings))
+            return nil
+        }
+
         if let url {
             logger.notice("🎬 Meeting capture stopped → \(url.lastPathComponent, privacy: .public)")
         }
         return url
+    }
+
+    /// 系統音訊錄製權限頁(macOS 26:隱私權與安全性 → 螢幕與系統音訊錄製)。
+    /// anchor 若無效 fallback 開 Privacy 根頁。與 MeetingCaptureController 的同名 helper 一致。
+    private static func openAudioCapturePrivacySettings() {
+        let anchored = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture")
+        if let anchored, NSWorkspace.shared.open(anchored) { return }
+        if let root = URL(string: "x-apple.systempreferences:com.apple.preference.security") {
+            NSWorkspace.shared.open(root)
+        }
     }
 
     // MARK: - Graph construction (steps 2–4, 6–7)
