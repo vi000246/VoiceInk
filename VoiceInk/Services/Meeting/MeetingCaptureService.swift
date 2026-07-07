@@ -304,26 +304,42 @@ final class MeetingCaptureService: ObservableObject {
 
         logger.notice("🎬 Meeting capture stopped — ioCallbacks=\(ioCallbacks, privacy: .public) framesWritten=\(framesWritten, privacy: .public) writeErrors=\(writeErrors, privacy: .public) lastWriteStatus=\(lastWriteStatus, privacy: .public) peak=\(peak, privacy: .public)")
 
-        // 防護:一個 frame 都沒寫入 → 檔案是空殼,送轉錄只會換來一個難懂的上游錯誤
-        // (例如空檔上傳被拒的「網路錯誤」)。直接刪檔、給出可行動的提示。
+        // 防護:一個 frame 都沒寫入 → 檔案是空殼,絕不送轉錄(空檔上傳只會換來難懂的上游錯誤)。
+        // 最常見的情境是「當下沒有任何 app 在播聲音」——這是正常狀態,以中性提示呈現,不是錯誤。
         if framesWritten == 0 {
             if let url { try? FileManager.default.removeItem(at: url) }
-            let hint = ioCallbacks == 0
-                ? "系統沒有供應任何音訊——最可能是「螢幕與系統音訊錄製」權限未允許 VoiceInk(允許後請重啟 app)"
-                : "音訊寫入全數失敗(status \(lastWriteStatus))——請回報此代碼"
-            logger.error("🎬 Empty meeting recording discarded — \(hint, privacy: .public)")
-            NotificationManager.shared.showNotification(
-                title: "沒有錄到任何音訊:\(hint)",
-                type: .error, duration: 10,
-                actionButton: ("開啟設定", Self.openAudioCapturePrivacySettings))
+            logger.notice("🎬 Empty meeting recording discarded (no audio during session)")
+            if ioCallbacks > 0 && lastWriteStatus != noErr {
+                // 有供料卻寫入全數失敗 → 真的錯誤,要浮出代碼。
+                NotificationManager.shared.showNotification(
+                    title: "錄音寫入失敗(status \(lastWriteStatus))——請回報此代碼",
+                    type: .error, duration: 10)
+            } else if UserDefaults.standard.bool(forKey: Self.hasEverCapturedKey) {
+                // 曾成功錄過 → 權限一定沒問題,單純是這段期間沒聲音。
+                NotificationManager.shared.showNotification(
+                    title: "這段期間電腦沒有播放任何聲音，未產生錄音。開錄前請確認會議或播放中的 app 有出聲",
+                    type: .warning, duration: 6)
+            } else {
+                // 從未成功錄過 → 沒聲音之外也可能是權限,同時給兩個線索。
+                NotificationManager.shared.showNotification(
+                    title: "沒有錄到聲音：請確認有 app 正在播放音訊；若持續發生，檢查「系統音訊錄製」權限",
+                    type: .warning, duration: 8,
+                    actionButton: ("開啟設定", Self.openAudioCapturePrivacySettings))
+            }
             return nil
         }
+
+        // 成功錄到聲音 → 記住權限已驗證,之後的零音訊提示不再誤導使用者去查權限。
+        UserDefaults.standard.set(true, forKey: Self.hasEverCapturedKey)
 
         if let url {
             logger.notice("🎬 Meeting capture stopped → \(url.lastPathComponent, privacy: .public)")
         }
         return url
     }
+
+    /// 曾經成功錄到音訊(→ 權限已驗證)。零音訊提示據此決定要不要提權限。
+    private static let hasEverCapturedKey = "meetingCaptureHasEverCapturedV1"
 
     /// 系統音訊錄製權限頁(macOS 26:隱私權與安全性 → 螢幕與系統音訊錄製)。
     /// anchor 若無效 fallback 開 Privacy 根頁。與 MeetingCaptureController 的同名 helper 一致。
@@ -684,11 +700,11 @@ final class MeetingCaptureService: ObservableObject {
             guard case .recording = self.state, let context = self.captureContext else { return }
 
             if context.tapPeak < 0.0005 {
-                self.logger.warning("🎬 Zero-signal probe fired: peak=\(context.tapPeak, privacy: .public)")
+                self.logger.notice("🎬 Zero-signal probe: peak=\(context.tapPeak, privacy: .public) — no audio playing yet")
                 NotificationManager.shared.showNotification(
-                    title: "未收到系統音訊——可能未授權或目前沒有聲音",
-                    type: .warning,
-                    duration: 6
+                    title: "錄製中，但目前沒有聽到聲音——確認會議或播放中的 app 有出聲",
+                    type: .info,
+                    duration: 5
                 )
             }
         }
