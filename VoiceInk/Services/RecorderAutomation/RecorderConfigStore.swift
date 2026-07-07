@@ -295,10 +295,12 @@ final class RecorderConfigStore: ObservableObject {
         else { devices.append(device) }
         saveDevices()
         RecorderFolderWatcher.shared.sync()
+        ICloudSourceWatcher.shared.sync()
     }
     func remove(_ id: UUID) {
         devices.removeAll { $0.id == id }; saveDevices()
         RecorderFolderWatcher.shared.sync()
+        ICloudSourceWatcher.shared.sync()
     }
 
     /// First auto-import-enabled device whose match string is contained in the mounted volume name.

@@ -2,7 +2,11 @@ import Foundation
 import SwiftData
 import os
 
-struct ImportCandidate { let url: URL; let fingerprint: String; let fileName: String; let byteSize: Int }
+struct ImportCandidate {
+    let url: URL; let fingerprint: String; let fileName: String; let byteSize: Int
+    /// 相對於來源資料夾的路徑(平面掃描時 == fileName;遞迴時含子資料夾,如 "2026-07-06/14-30-22.m4a")。
+    let relativePath: String
+}
 
 @MainActor
 final class RecorderImportService: NSObject, ObservableObject {
@@ -10,7 +14,7 @@ final class RecorderImportService: NSObject, ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private var inFlight = Set<String>()           // fingerprints enqueued this session
     private var originalURLs: [String: URL] = [:]  // fingerprint → original on-device file (for delete-after-import)
-    private var pendingMeta: [String: (fileName: String, byteSize: Int)] = [:]  // fingerprint → ledger display meta
+    private var pendingMeta: [String: (fileName: String, byteSize: Int, relativePath: String?)] = [:]  // fingerprint → ledger meta
     private weak var engine: VoiceInkEngine?
     private var modelContext: ModelContext?
     /// Devices whose files are being copied into app storage BEFORE they hit the transcription
@@ -33,17 +37,37 @@ final class RecorderImportService: NSObject, ObservableObject {
     /// - `minimumStableAge`: when > 0 (watched-folder path), skip files modified within that window —
     ///   they may still be copying in — and report them as `deferredCount` so the caller can re-check.
     ///   0 (mount path) keeps the original behaviour: device files are already complete on mount.
+    /// iCloud dataless 佔位檔的處置:有本地資料就照常匯入,沒有就「觸發下載＋列為 deferred」——
+    /// 絕不靜默跳過(舊行為:fingerprint 讀取 throw 被 try? 吃掉,檔案就此消失)。
+    enum UbiquityAction: Equatable { case proceed, deferAndDownload }
+
+    nonisolated static func ubiquityAction(for status: URLUbiquitousItemDownloadingStatus?) -> UbiquityAction {
+        guard let status else { return .proceed }                       // 非 iCloud 檔
+        if status == .current || status == .downloaded { return .proceed }
+        return .deferAndDownload                                        // .notDownloaded(dataless)
+    }
+
     func newImportableFiles(in folder: URL, context: ModelContext,
-                            minimumStableAge: TimeInterval = 0) async -> (candidates: [ImportCandidate], deferredCount: Int) {
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles])) ?? []
+                            minimumStableAge: TimeInterval = 0,
+                            recursive: Bool = false,
+                            handleICloudPlaceholders: Bool = false) async -> (candidates: [ImportCandidate], deferredCount: Int) {
+        let urls = Self.audioCandidateURLs(in: folder, recursive: recursive)
         var out: [ImportCandidate] = []
         var deferred = 0
+        var pendingDownloads: [URL] = []
         let now = Date()
         // Skip tiny stray recordings on auto-import (user-configurable floor, default 500 KB).
         let minSizeBytes = RecorderConfigStore.shared.recorderMinImportSizeBytes
         for url in urls where SupportedMedia.isSupported(url: url) {
+            if handleICloudPlaceholders {
+                let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?
+                    .ubiquitousItemDownloadingStatus
+                if Self.ubiquityAction(for: status) == .deferAndDownload {
+                    deferred += 1
+                    pendingDownloads.append(url)
+                    continue
+                }
+            }
             let rv = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = rv?.fileSize ?? 0
             if minSizeBytes > 0, size > 0, size < minSizeBytes { continue }
@@ -56,9 +80,45 @@ final class RecorderImportService: NSObject, ObservableObject {
             guard let fp = try? await Self.fingerprintOffMain(url) else { continue }
             if inFlight.contains(fp) { continue }
             if ImportLedger.shared.isImported(fingerprint: fp, in: context) { continue }
-            out.append(ImportCandidate(url: url, fingerprint: fp, fileName: url.lastPathComponent, byteSize: size))
+            out.append(ImportCandidate(url: url, fingerprint: fp, fileName: url.lastPathComponent,
+                                       byteSize: size, relativePath: Self.relativePath(of: url, under: folder)))
+        }
+        if !pendingDownloads.isEmpty {
+            let toDownload = pendingDownloads
+            logger.notice("Triggering iCloud download for \(toDownload.count) dataless file(s)")
+            // 批次觸發、離主執行緒——metadata callback 風暴下逐檔同步觸發會卡 UI(已知陷阱)。
+            Task.detached(priority: .utility) {
+                for u in toDownload { try? FileManager.default.startDownloadingUbiquitousItem(at: u) }
+            }
         }
         return (out, deferred)
+    }
+
+    /// 掃描來源資料夾:平面(contentsOfDirectory,既有行為)或遞迴(enumerator,iCloud/JPR 的日期子資料夾)。
+    nonisolated private static func audioCandidateURLs(in folder: URL, recursive: Bool) -> [URL] {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
+        guard recursive else {
+            return (try? FileManager.default.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+        }
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
+        var out: [URL] = []
+        for case let url as URL in enumerator {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if !isDirectory { out.append(url) }
+        }
+        return out
+    }
+
+    /// 來源資料夾下的相對路徑(標準化後截掉 folder 前綴;非其子孫時退回 lastPathComponent)。
+    nonisolated private static func relativePath(of url: URL, under folder: URL) -> String {
+        let filePath = url.standardizedFileURL.path
+        let folderPrefix = folder.standardizedFileURL.path.hasSuffix("/")
+            ? folder.standardizedFileURL.path
+            : folder.standardizedFileURL.path + "/"
+        guard filePath.hasPrefix(folderPrefix) else { return url.lastPathComponent }
+        return String(filePath.dropFirst(folderPrefix.count))
     }
 
     /// Content-hash on a background thread. Hashing a new multi-hundred-MB recording on the main
@@ -102,8 +162,17 @@ final class RecorderImportService: NSObject, ObservableObject {
 
             // Watched folders may hold files mid-copy; give them a few seconds to settle, then re-check.
             let stableAge: TimeInterval = device.kind == .folder ? 4 : 0
-            let (sizeFiltered, deferred) = await newImportableFiles(in: folder, context: modelContext, minimumStableAge: stableAge)
-            if deferred > 0 { RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id) }
+            let (sizeFiltered, deferred) = await newImportableFiles(
+                in: folder, context: modelContext, minimumStableAge: stableAge,
+                recursive: device.recursive, handleICloudPlaceholders: device.isICloudSource)
+            if deferred > 0 {
+                // 按來源分流:iCloud 來源的 recheck 由 metadata watcher 排(下載較慢,間隔較寬)。
+                if device.isICloudSource {
+                    ICloudSourceWatcher.shared.scheduleRecheck(deviceId: device.id)
+                } else {
+                    RecorderFolderWatcher.shared.scheduleRecheck(deviceId: device.id)
+                }
+            }
             guard !sizeFiltered.isEmpty else { return }
 
             // Length floor, OR-combined with the size floor already applied in newImportableFiles:
@@ -122,8 +191,9 @@ final class RecorderImportService: NSObject, ObservableObject {
                 if inFlight.contains(c.fingerprint) { continue }
                 inFlight.insert(c.fingerprint)   // reserve before the async copy (closes the await gap)
                 guard let copied = await copyIntoAppStorage(c.url) else { inFlight.remove(c.fingerprint); continue }
-                originalURLs[c.fingerprint] = c.url
-                pendingMeta[c.fingerprint] = (c.fileName, c.byteSize)
+                // 受保護來源(iCloud/preset)絕不記 originalURLs → delete-after-import 永遠碰不到原始檔。
+                if !device.protectsOriginals { originalURLs[c.fingerprint] = c.url }
+                pendingMeta[c.fingerprint] = (c.fileName, c.byteSize, c.relativePath)
                 enqueued.append(copied)
                 AudioTranscriptionManager.shared.addToQueue(urls: [copied],
                     origin: .recorderImport(deviceId: device.id, fingerprint: c.fingerprint))
@@ -156,8 +226,7 @@ final class RecorderImportService: NSObject, ObservableObject {
             let accessing = folder.startAccessingSecurityScopedResource()
             defer { if accessing { folder.stopAccessingSecurityScopedResource() } }
 
-            let urls = ((try? FileManager.default.contentsOfDirectory(
-                at: folder, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
+            let urls = Self.audioCandidateURLs(in: folder, recursive: device.recursive)
                 .filter { SupportedMedia.isSupported(url: $0) && fileNames.contains($0.lastPathComponent) }
             guard !urls.isEmpty else { return }
 
@@ -187,7 +256,7 @@ final class RecorderImportService: NSObject, ObservableObject {
                 inFlight.insert(fingerprint)   // reserve before the async copy (closes the await gap)
                 guard let copied = await copyIntoAppStorage(url) else { inFlight.remove(fingerprint); continue }
                 // NOTE: deliberately not setting originalURLs → reprocess never deletes the device original.
-                pendingMeta[fingerprint] = (displayName, size)
+                pendingMeta[fingerprint] = (displayName, size, Self.relativePath(of: url, under: folder))
                 AudioTranscriptionManager.shared.addToQueue(urls: [copied],
                     origin: .recorderImport(deviceId: device.id, fingerprint: fingerprint))
                 enqueued += 1
@@ -214,7 +283,8 @@ final class RecorderImportService: NSObject, ObservableObject {
     /// the device opts into `deleteAfterImport` AND every stage (import + transcribe + export) succeeded.
     func finalizeImport(fingerprint: String, device: RecorderDevice, exported: Bool) {
         defer { originalURLs[fingerprint] = nil }
-        guard device.deleteAfterImport, exported, let original = originalURLs[fingerprint] else { return }
+        guard device.deleteAfterImport, !device.protectsOriginals, exported,
+              let original = originalURLs[fingerprint] else { return }
         do {
             try FileManager.default.removeItem(at: original)
             logger.notice("Deleted on-device original after successful import: \(original.lastPathComponent, privacy: .public)")
@@ -256,7 +326,7 @@ final class RecorderImportService: NSObject, ObservableObject {
                 return
             }
             inFlight.insert(staged.fingerprint)
-            pendingMeta[staged.fingerprint] = (staged.displayName, staged.byteSize)
+            pendingMeta[staged.fingerprint] = (staged.displayName, staged.byteSize, nil)
             AudioTranscriptionManager.shared.addToQueue(urls: [staged.stagedURL],
                 origin: .meetingCapture(fingerprint: staged.fingerprint, sourceLabel: sourceLabel))
             try? FileManager.default.removeItem(at: src)
@@ -431,7 +501,8 @@ final class RecorderImportService: NSObject, ObservableObject {
         let meta = pendingMeta[fp]
         ImportLedger.shared.record(fingerprint: fp, fileName: meta?.fileName ?? "",
                                    byteSize: meta?.byteSize ?? 0,
-                                   sourceDeviceId: t.recorderSourceDeviceId, transcriptionId: t.id, in: ctx)
+                                   sourceDeviceId: t.recorderSourceDeviceId, transcriptionId: t.id,
+                                   relativePath: meta?.relativePath, in: ctx)
         pendingMeta[fp] = nil
         NotificationCenter.default.post(name: .recorderImportCompleted, object: t)
     }

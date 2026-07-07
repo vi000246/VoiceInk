@@ -56,11 +56,19 @@ final class ImportLedger {
         return ((try? context.fetch(d))?.isEmpty == false)
     }
 
+    /// 該 fingerprint 的來源相對路徑(遞迴來源才有;nil = 平面來源或舊資料)。
+    func relativePath(forFingerprint fingerprint: String, in context: ModelContext) -> String? {
+        var d = FetchDescriptor<ImportLedgerEntry>(predicate: #Predicate { $0.fingerprint == fingerprint })
+        d.fetchLimit = 1
+        return (try? context.fetch(d))?.first?.relativePath
+    }
+
     func record(fingerprint: String, fileName: String, byteSize: Int,
-                sourceDeviceId: UUID?, transcriptionId: UUID?, in context: ModelContext) {
+                sourceDeviceId: UUID?, transcriptionId: UUID?, relativePath: String? = nil,
+                in context: ModelContext) {
         context.insert(ImportLedgerEntry(fingerprint: fingerprint, fileName: fileName,
                                          byteSize: byteSize, sourceDeviceId: sourceDeviceId,
-                                         transcriptionId: transcriptionId))
+                                         transcriptionId: transcriptionId, relativePath: relativePath))
         do { try context.save() } catch { logger.error("Ledger save failed: \(error, privacy: .public)") }
     }
 }

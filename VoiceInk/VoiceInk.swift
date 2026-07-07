@@ -131,6 +131,7 @@ struct VoiceInkApp: App {
         RecorderImportService.shared.configure(engine: engine, modelContext: resolvedContainer.mainContext)
         RecorderDeviceMonitor.shared.start()
         RecorderFolderWatcher.shared.start()
+        ICloudSourceWatcher.shared.start()
         // Seed default categories + recorder prompts once; migrate any previously-shared
         // recorder prompts out of the voice library so the two stay separate.
         if !UserDefaults.standard.bool(forKey: "recorderDefaultsSeededV1") {

@@ -293,6 +293,8 @@ class AudioTranscriptionManager: ObservableObject {
                 let device = RecorderConfigStore.shared.device(byId: deviceId)
                 await RecorderPostProcessor.shared.process(
                     transcription: transcription, rawText: cleanedText, device: device,
+                    // per-device 預設分類:設定時跳過分類器(與會議的固定分類共用同一縫合點)。
+                    fixedCategory: device?.defaultCategory(in: RecorderConfigStore.shared),
                     modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
             }
             // Meeting captures run the same pipeline, but with no source device and (optionally) a

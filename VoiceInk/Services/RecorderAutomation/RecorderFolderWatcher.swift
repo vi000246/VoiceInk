@@ -35,7 +35,8 @@ final class RecorderFolderWatcher {
         for work in debounce.values { work.cancel() }
         debounce.removeAll()
         for device in RecorderConfigStore.shared.devices
-        where device.kind == .folder && device.autoImportEnabled {
+        // iCloud 來源交給 ICloudSourceWatcher(vnode 看不到同步事件與子資料夾)。
+        where device.kind == .folder && device.autoImportEnabled && !device.isICloudSource {
             startWatching(device)
         }
     }

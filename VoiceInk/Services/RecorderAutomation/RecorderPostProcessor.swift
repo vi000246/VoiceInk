@@ -188,12 +188,9 @@ final class RecorderPostProcessor: ObservableObject {
         transcription.recorderCategoryId = decision.category.id
         transcription.recorderCategoryName = decision.category.name
         transcription.classificationConfidence = result.confidence
-        // The recording time lives in the device filename (e.g. 260701_1258.mp3), not the import
-        // timestamp — recover it from the ledger so the title carries the real recording time.
-        let recordingTime = transcription.importFingerprint
-            .flatMap { ImportLedger.shared.fileName(forFingerprint: $0, in: modelContext) }
-            .flatMap { RecorderRecordingTime.parse(fromFileName: $0) }
-            ?? transcription.timestamp
+        // The recording time lives in the device filename / source path, not the import
+        // timestamp — recover it via the parse chain so the title carries the real recording time.
+        let recordingTime = recordingDate(for: transcription, in: modelContext)
         transcription.recorderTitle = await makeRecorderTitle(
             from: rawText, model: classifyModel, aiService: aiService, timestamp: recordingTime)
         try? modelContext.save()
@@ -207,12 +204,8 @@ final class RecorderPostProcessor: ObservableObject {
         transcription.recorderCategoryId = category.id
         transcription.recorderCategoryName = category.name
         transcription.classificationConfidence = nil
-        // Same recording-time recovery as suggestCategory: the source filename (via the import
-        // ledger) wins; fall back to the transcription timestamp.
-        let recordingTime = transcription.importFingerprint
-            .flatMap { ImportLedger.shared.fileName(forFingerprint: $0, in: modelContext) }
-            .flatMap { RecorderRecordingTime.parse(fromFileName: $0) }
-            ?? transcription.timestamp
+        // Same recording-time recovery as suggestCategory (shared parse chain).
+        let recordingTime = recordingDate(for: transcription, in: modelContext)
         if aiService.connectedProviders.isEmpty {
             // 沒有已連接的 AI provider：分類欄位照設，標題退回「日期＋內容前綴」，不打 AI。
             let stamp = RecorderRecordingTime.titleStamp(recordingTime)
@@ -339,14 +332,20 @@ final class RecorderPostProcessor: ObservableObject {
                      enhancementService: enhancementService, aiService: aiService)
     }
 
-    /// The true recording time — parsed from the device filename (e.g. 260701_1258.mp3) via the
-    /// import ledger — falling back to the import/transcription timestamp when the name carries no
-    /// stamp. Keeps the exported note's title and frontmatter date on the recording time, not the
-    /// (possibly much later) import/export time.
+    /// The true recording time, recovered via the parse chain: device filename stamp
+    /// (`260701_1258.mp3`) → JPR-style dated relative path (`2026-07-06/14-30-22.m4a`) →
+    /// source file creation date (Voice Memos 的不透明檔名;copyItem 保留 birth time) →
+    /// import/transcription timestamp. Keeps the exported note's title and frontmatter date on
+    /// the recording time, not the (possibly much later) import/export time.
     private func recordingDate(for transcription: Transcription, in modelContext: ModelContext) -> Date {
-        transcription.importFingerprint
-            .flatMap { ImportLedger.shared.fileName(forFingerprint: $0, in: modelContext) }
-            .flatMap { RecorderRecordingTime.parse(fromFileName: $0) }
+        guard let fp = transcription.importFingerprint else { return transcription.timestamp }
+        let fileName = ImportLedger.shared.fileName(forFingerprint: fp, in: modelContext) ?? ""
+        let relativePath = ImportLedger.shared.relativePath(forFingerprint: fp, in: modelContext)
+        // staging 副本保留原始檔的 creationDate;檔案可能已被保留策略清掉 → nil 安全。
+        let creationDate = diarizationAudioURLs(for: transcription).first
+            .flatMap { try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate }
+        return RecorderRecordingTime.parse(fileName: fileName, relativePath: relativePath,
+                                           fileCreationDate: creationDate)
             ?? transcription.timestamp
     }
 
