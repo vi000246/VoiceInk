@@ -37,9 +37,10 @@ final class RecorderConfigStore: ObservableObject {
     /// Append the full raw transcript to the exported Obsidian note (below a divider). Default off —
     /// the note carries only the analysis.
     @Published private(set) var recorderExportIncludeRawTranscript: Bool = false
-    /// Speaker diarization for recorder transcripts. Default off. Only native-capable models
-    /// (e.g. ElevenLabs Scribe) produce labels in M1; others keep a plain transcript.
-    @Published private(set) var recorderDiarizationEnabled: Bool = false
+    /// Speaker diarization for recorder transcripts. Default ON（2026-07-07 使用者指示）；曾手動
+    /// 關閉者沿用其選擇（load() 以 object-presence 判斷）。Only native-capable models
+    /// (e.g. ElevenLabs Scribe) produce labels; others keep a plain transcript.
+    @Published private(set) var recorderDiarizationEnabled: Bool = true
     /// Expected number of speakers, forwarded to the diarizer. nil → let the model decide.
     @Published private(set) var recorderExpectedSpeakerCount: Int?
     /// ElevenLabs native only: label speakers as agent/customer roles (`detect_speaker_roles`).
@@ -113,7 +114,8 @@ final class RecorderConfigStore: ObservableObject {
         recorderTextFormattingEnabled = UserDefaults.standard.bool(forKey: recFormattingKey)
         recorderAutoExportEnabled = UserDefaults.standard.bool(forKey: recAutoExportKey)
         recorderExportIncludeRawTranscript = UserDefaults.standard.bool(forKey: recExportRawKey)
-        recorderDiarizationEnabled = UserDefaults.standard.bool(forKey: recDiarizationKey)
+        // 預設啟用；只有使用者明確設定過（key 存在）才沿用其值。
+        recorderDiarizationEnabled = (UserDefaults.standard.object(forKey: recDiarizationKey) as? Bool) ?? true
         let storedSpeakers = UserDefaults.standard.integer(forKey: recExpectedSpeakersKey)
         recorderExpectedSpeakerCount = storedSpeakers > 0 ? storedSpeakers : nil
         recorderDetectSpeakerRoles = UserDefaults.standard.bool(forKey: recDetectSpeakerRolesKey)
