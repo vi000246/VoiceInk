@@ -102,7 +102,7 @@ Must 三項：手動一鍵混錄 → 自動出會議筆記。Should/Could 全部
 
 | # | Milestone | User-Visible Value | Status | Depends | SRS | Plan |
 |---|-----------|--------------------|--------|---------|-----|------|
-| 1 | 一鍵錄會議出筆記 | 手動啟停混錄；會後零手動得到分類正確的 Obsidian 會議筆記 | pending | - | - | - |
+| 1 | 一鍵錄會議出筆記 | 手動啟停混錄；會後零手動得到分類正確的 Obsidian 會議筆記 | complete (build 227) | - | docs/srs/completed/recorder-automation-meeting-capture.srs.md | docs/plans/completed/recorder-automation-meeting-capture.plan.md |
 | 2 | 提醒與品質打磨 | 會議 app 偵測提醒開錄；音量平衡／裝置切換情境穩定 | pending | 1 | - | - |
 
 ### Milestone Details
