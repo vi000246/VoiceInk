@@ -305,12 +305,12 @@ final class MeetingCaptureService: ObservableObject {
     /// 失敗時「不」自行清理,由呼叫端統一走 destroyGraph()(它對半成品也安全)。
     private func createTapAndAggregate(micEnabled: Bool) throws -> GraphRates {
         // 2. system-wide tap,排除自身行程(pid → CoreAudio process object)
-        var excludedProcesses: [NSNumber] = []
+        var excludedProcesses: [AudioObjectID] = []
         do {
             let ownProcessObject = try translatePIDToProcessObject(
                 pid: ProcessInfo.processInfo.processIdentifier
             )
-            excludedProcesses = [NSNumber(value: ownProcessObject)]
+            excludedProcesses = [ownProcessObject]
         } catch {
             // 拿不到自身 process object 仍可錄,只是自家提示音也會入鏡。
             logger.warning("🎬 Failed to translate own pid to process object — not excluding self")
@@ -319,7 +319,7 @@ final class MeetingCaptureService: ObservableObject {
         let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: excludedProcesses)
         tapDescription.uuid = UUID()
         tapDescription.isPrivate = true
-        tapDescription.muteBehavior = .unmuted
+        tapDescription.muteBehavior = CATapMuteBehavior.unmuted
 
         var newTapID: AudioObjectID = kAudioObjectUnknown
         var status = AudioHardwareCreateProcessTap(tapDescription, &newTapID)
