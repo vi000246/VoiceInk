@@ -13,6 +13,7 @@ struct MenuBarView: View {
     @EnvironmentObject var aiService: AIService
     @ObservedObject private var modeManager = ModeManager.shared
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
+    @ObservedObject private var meetingController = MeetingCaptureController.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
     @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
     
@@ -44,6 +45,12 @@ struct MenuBarView: View {
         Group {
             Button("Toggle Recorder") {
                 recorderUIManager.requestTogglePanel()
+            }
+
+            Button(meetingController.isRecording
+                   ? "停止會議錄製（\(meetingController.elapsedText)）"
+                   : "開始會議錄製") {
+                Task { await MeetingCaptureController.shared.toggle() }
             }
 
             Divider()

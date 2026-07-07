@@ -268,7 +268,8 @@ enum ShortcutMigration {
             return ["quickAddToDictionary"]
         case .mode(let id):
             return ["mode_\(id.uuidString)", "powerMode_\(id.uuidString)"]
-        case .recorderPanelEscape, .recorderPanelMode:
+        case .recorderPanelEscape, .recorderPanelMode, .toggleMeetingRecording:
+            // toggleMeetingRecording 是新動作,不存在 legacy KeyboardShortcuts 鍵。
             return []
         }
     }

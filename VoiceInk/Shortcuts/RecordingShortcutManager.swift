@@ -331,6 +331,9 @@ class RecordingShortcutManager: ObservableObject {
             )
         case .quickAddToDictionary:
             DictionaryQuickAddManager.shared.toggle(modelContainer: engine.modelContext.container)
+        case .toggleMeetingRecording:
+            // 會議錄製與聽寫狀態機解耦——任何聽寫狀態下都可啟停。
+            await MeetingCaptureController.shared.toggle()
         default:
             break
         }
