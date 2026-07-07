@@ -10,6 +10,8 @@ linear_issue: null
 - **Source Linear Issue**: N/A
 - **Created**: 2026-07-06
 - **Grill level**: 1 (standard)
+- **Plans**:
+  - `docs/plans/recorder-automation-icloud-sources.plan.md` (Mode B, created 2026-07-07)
 
 ## Feature Summary
 
