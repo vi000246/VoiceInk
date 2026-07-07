@@ -335,6 +335,13 @@ private struct RecordingCard: View {
                     } else if let c = transcription.recorderCategoryName {
                         badge(c, "tag.fill", AppTheme.Accent.primary)
                     }
+                    // 來源標籤（會議擷取才有，例如「會議 · Zoom」）；錄音筆匯入無此欄位。
+                    if let label = transcription.recorderSourceLabel {
+                        Text(label)
+                            .font(.caption2)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                    }
                     if transcription.exportedFilePath != nil { badge("已輸出", "checkmark.circle.fill", AppTheme.Status.success) }
                 }
             }

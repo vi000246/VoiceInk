@@ -266,6 +266,10 @@ class AudioTranscriptionManager: ObservableObject {
                 transcription.recorderSourceDeviceId = deviceId
                 transcription.importFingerprint = fingerprint
             }
+            if case let .meetingCapture(fingerprint, sourceLabel) = item.origin {
+                transcription.importFingerprint = fingerprint
+                transcription.recorderSourceLabel = sourceLabel
+            }
             if chunkURLs.count > 1 {
                 transcription.audioChunkPathsRaw = chunkURLs.map { $0.path }.joined(separator: "\n")
             }
@@ -291,6 +295,16 @@ class AudioTranscriptionManager: ObservableObject {
                     transcription: transcription, rawText: cleanedText, device: device,
                     modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
             }
+            // Meeting captures run the same pipeline, but with no source device and (optionally) a
+            // fixed category from settings (nil ⇒ auto-classify like recorder imports).
+            if case .meetingCapture = item.origin,
+               let enhancementService = engine.enhancementService,
+               let aiService = enhancementService.getAIService() {
+                await RecorderPostProcessor.shared.process(
+                    transcription: transcription, rawText: cleanedText, device: nil,
+                    fixedCategory: RecorderConfigStore.shared.meetingFixedCategory,
+                    modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
+            }
 
         } catch {
             if Task.isCancelled || error is CancellationError {
@@ -298,11 +312,15 @@ class AudioTranscriptionManager: ObservableObject {
             } else {
                 logger.error("Transcription error: \(error, privacy: .public)")
                 item.status = .failed(message: error.localizedDescription)
-                // Recorder imports have no visible queue of their own — surface the failure so it
-                // isn't silent (previously the whole recording just vanished with no explanation).
-                if case .recorderImport = item.origin {
+                // Recorder imports and meeting captures have no visible queue of their own — surface
+                // the failure so it isn't silent (previously the whole recording just vanished with
+                // no explanation).
+                switch item.origin {
+                case .recorderImport, .meetingCapture:
                     NotificationManager.shared.showNotification(
                         title: "錄音處理失敗：\(error.localizedDescription)", type: .error, duration: 6)
+                case .manual:
+                    break
                 }
             }
         }
@@ -338,10 +356,16 @@ class AudioTranscriptionManager: ObservableObject {
             let url = recordingsDirectory.appendingPathComponent("transcribed_\(UUID().uuidString).wav")
             try audioProcessor.saveSamplesAsWav(samples: samples, to: url)
             try Task.checkCancellation()
-            // Recorder + diarization: ONE ElevenLabs diarized call serves as both the transcript and
-            // the speaker segments (cached for RecorderPostProcessor to reuse), instead of transcribing
-            // the whole recording twice. Falls through to a normal transcription if it returns nil.
-            if case .recorderImport = item.origin,
+            // Recorder pipeline (device imports + meeting captures) + diarization: ONE ElevenLabs
+            // diarized call serves as both the transcript and the speaker segments (cached for
+            // RecorderPostProcessor to reuse), instead of transcribing the whole recording twice.
+            // Falls through to a normal transcription if it returns nil.
+            let runsRecorderPipeline: Bool
+            switch item.origin {
+            case .recorderImport, .meetingCapture: runsRecorderPipeline = true
+            case .manual: runsRecorderPipeline = false
+            }
+            if runsRecorderPipeline,
                RecorderConfigStore.shared.recorderDiarizationEnabled,
                DiarizationCoordinator.supportsNativeDiarization(modelName: model.name),
                let combined = await DiarizationCoordinator.transcribeAndDiarizeForRecorder(

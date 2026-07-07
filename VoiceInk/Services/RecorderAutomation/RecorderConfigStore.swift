@@ -66,6 +66,12 @@ final class RecorderConfigStore: ObservableObject {
     /// floor — a file is skipped if it fails EITHER test. Stored as value + unit; default 0 (= off).
     @Published private(set) var recorderMinImportDurationValue: Int = 0
     @Published private(set) var recorderMinImportDurationUnit: DurationUnit = .seconds
+    // MARK: Meeting capture (recorder 自動觸發的會議錄製)
+    /// 會議錄製要固定歸類到哪個分類的原始三態儲存值；nil＝未設定，""＝明選自動分類，uuid 字串＝指定分類。
+    /// 解析後的實際分類見 `meetingFixedCategory`。
+    @Published private(set) var meetingFixedCategorySelection: String?
+    /// 會議錄製時是否同時擷取麥克風（而非只錄系統音）。預設開。
+    @Published private(set) var meetingMicEnabled: Bool = true
     private let devicesKey = "recorderDevicesV1"
     private let categoriesKey = "recorderCategoriesV1"
     private let recorderPromptsKey = "recorderCategoryPromptsV1"
@@ -89,6 +95,8 @@ final class RecorderConfigStore: ObservableObject {
     private let recMinImportSizeUnitKey = "recorderMinImportSizeUnitV1"
     private let recMinImportDurationValueKey = "recorderMinImportDurationValueV1"
     private let recMinImportDurationUnitKey = "recorderMinImportDurationUnitV1"
+    private let meetingFixedCategoryKey = "recorderMeetingFixedCategoryV1"
+    private let meetingMicEnabledKey = "recorderMeetingMicEnabledV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
     private init() { load(); seedFallbackIfNeeded() }
 
@@ -130,6 +138,10 @@ final class RecorderConfigStore: ObservableObject {
         recorderMinImportDurationValue = (UserDefaults.standard.object(forKey: recMinImportDurationValueKey) as? Int) ?? 0
         recorderMinImportDurationUnit = (UserDefaults.standard.string(forKey: recMinImportDurationUnitKey))
             .flatMap(DurationUnit.init(rawValue:)) ?? .seconds
+        // .string(forKey:) already distinguishes "key absent" (nil) from "stored empty string" (""),
+        // which is exactly the three-state contract `meetingFixedCategorySelection` needs.
+        meetingFixedCategorySelection = UserDefaults.standard.string(forKey: meetingFixedCategoryKey)
+        meetingMicEnabled = (UserDefaults.standard.object(forKey: meetingMicEnabledKey) as? Bool) ?? true
     }
 
     /// Byte threshold below which auto-import skips a file. 0 → no filter.
@@ -208,6 +220,17 @@ final class RecorderConfigStore: ObservableObject {
     func setRecorderNoVerbatim(_ on: Bool) {
         recorderNoVerbatim = on
         UserDefaults.standard.set(on, forKey: recNoVerbatimKey)
+    }
+
+    // MARK: - Meeting capture setters
+    /// 設定（或清除）會議錄製要固定歸類的分類。nil＝明選自動分類（存為空字串）；否則存 uuidString。
+    func setMeetingFixedCategoryId(_ id: UUID?) {
+        meetingFixedCategorySelection = id?.uuidString ?? ""   // "" = 明選自動分類
+        UserDefaults.standard.set(meetingFixedCategorySelection, forKey: meetingFixedCategoryKey)
+    }
+    /// 會議錄製是否同時開麥克風。
+    func setMeetingMicEnabled(_ on: Bool) {
+        meetingMicEnabled = on; UserDefaults.standard.set(on, forKey: meetingMicEnabledKey)
     }
 
     /// Set (or clear) the single global vault root bookmark.
@@ -294,6 +317,16 @@ final class RecorderConfigStore: ObservableObject {
         categories.first { $0.isFallback } ?? .makeFallback()
     }
     func category(byId id: UUID) -> RecorderCategory? { categories.first { $0.id == id } }
+
+    /// 會議錄製解析後的固定分類；nil＝走自動分類。
+    /// 三態：key 未設＝預設找名為「會議」的分類；空字串＝明選自動；uuid＝指定分類。
+    var meetingFixedCategory: RecorderCategory? {
+        guard let raw = meetingFixedCategorySelection else {
+            return categories.first(where: { $0.name == "會議" })
+        }
+        if raw.isEmpty { return nil }
+        return UUID(uuidString: raw).flatMap { category(byId: $0) }
+    }
 
     func upsertCategory(_ category: RecorderCategory) {
         if let i = categories.firstIndex(where: { $0.id == category.id }) { categories[i] = category }

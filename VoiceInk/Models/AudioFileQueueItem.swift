@@ -26,6 +26,7 @@ enum QueueItemStatus: Equatable {
 enum QueueItemOrigin: Equatable {
     case manual
     case recorderImport(deviceId: UUID, fingerprint: String)
+    case meetingCapture(fingerprint: String, sourceLabel: String)
 }
 
 /// Sub-progress while transcribing a chunked (long) recording: chunk `done` of `total`.

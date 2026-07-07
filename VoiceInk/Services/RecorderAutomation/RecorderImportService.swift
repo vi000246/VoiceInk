@@ -223,6 +223,49 @@ final class RecorderImportService: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Meeting capture import
+
+    struct StagedMeetingFile { let stagedURL: URL; let fingerprint: String; let displayName: String; let byteSize: Int }
+
+    /// 可測純步驟：fingerprint＋複製進 RecorderImports staging。不 enqueue、不動 inFlight。
+    func stageMeetingFile(_ src: URL) async throws -> StagedMeetingFile {
+        let fp = try await Self.fingerprintOffMain(src)
+        let size = (try? src.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard let copied = await copyIntoAppStorage(src) else { throw CocoaError(.fileWriteUnknown) }
+        return StagedMeetingFile(stagedURL: copied, fingerprint: fp,
+                                 displayName: src.lastPathComponent, byteSize: size)
+    }
+
+    /// 會議錄製完成 → 走既有管線。與 importNewFiles 對稱：inFlight 護欄、pendingMeta 供 ledger、
+    /// Recorder Mode 轉錄、開始/失敗通知。成功 enqueue 後刪除 capture 暫存原檔（app 內部檔案，非使用者資料）。
+    func importMeetingFile(_ src: URL, sourceLabel: String) {
+        guard let modelContext, let engine else { logger.error("Import service not configured"); return }
+        Task { @MainActor in
+            guard let staged = try? await stageMeetingFile(src) else {
+                NotificationManager.shared.showNotification(title: "會議錄音匯入失敗", type: .error, duration: 5)
+                return
+            }
+            // Duplicate cases deliberately do NOT delete `src` (capture temp file kept for
+            // inspection) — but still note it, mirroring finalizeImport's logger.notice style.
+            if inFlight.contains(staged.fingerprint) {
+                logger.notice("Meeting capture already in-flight, skipped: \(staged.displayName, privacy: .public)")
+                return
+            }
+            if ImportLedger.shared.isImported(fingerprint: staged.fingerprint, in: modelContext) {
+                logger.notice("Meeting capture already imported, skipped: \(staged.displayName, privacy: .public)")
+                return
+            }
+            inFlight.insert(staged.fingerprint)
+            pendingMeta[staged.fingerprint] = (staged.displayName, staged.byteSize)
+            AudioTranscriptionManager.shared.addToQueue(urls: [staged.stagedURL],
+                origin: .meetingCapture(fingerprint: staged.fingerprint, sourceLabel: sourceLabel))
+            try? FileManager.default.removeItem(at: src)
+            NotificationManager.shared.showNotification(title: "會議錄音已匯入，處理中…", type: .info, duration: 3)
+            AudioTranscriptionManager.shared.startProcessing(
+                modelContext: modelContext, engine: engine, mode: RecorderTranscriptionConfig.current())
+        }
+    }
+
     private func resolveSourceFolder(_ device: RecorderDevice) -> URL? {
         var stale = false
         return try? URL(resolvingBookmarkData: device.sourceFolderBookmark,

@@ -32,6 +32,23 @@ As a 線上會議頻繁的使用者, I want 一鍵錄下整場會議（雙方聲
 
 ---
 
+## ⚠️ Implementation Progress（2026-07-07 交接註記：Fable → Opus）
+
+> 實作進行到一半因模型切換暫停。已完成部分 commit 在 `feat/meeting-capture` 分支（**尚未 build 驗證**）。接手者：從「待做」繼續，第一步先跑 Validation Commands 的 build＋測試把已完成部分驗綠。
+
+**已完成**（依本 plan 任務）：
+- ✅ T1 設定欄位 — 落地 API：`meetingFixedCategorySelection`/`meetingFixedCategory`/`meetingMicEnabled`/`setMeetingFixedCategoryId(_:)`/`setMeetingMicEnabled(_:)`；測試 `MeetingCaptureConfigTests`（含臨時「會議」分類 upsert/清理）
+- ✅ T2+T4（合併執行）— `process` 簽名：`fixedCategory: RecorderCategory? = nil` 位於 `device:` 與 `modelContext:` 之間；`assignCategory` 含零 provider 時跳過 AI 標題的 fallback；ATM 額外擴了兩個 gate：失敗通知改 switch（`.recorderImport, .meetingCapture`）、`transcribeSamples` 的 ElevenLabs 單次 diarize 路徑以 `runsRecorderPipeline` bool 涵蓋 meeting；`來源:` frontmatter 不走 esc()（測試契約）；chip 在 RecordingCard header badge 列
+- ✅ T5 — 三檔已建；CoreAudio 序列照 AudioCap 驗證；**build 時優先驗證的不確定 API**：`CATapDescription(stereoGlobalTapButExcludeProcesses:)` 標籤、`.isPrivate` vs `privateTap`、AAC ASBD 若 -50 錯誤補 `mFramesPerPacket = 1024`、`kAudioSubDeviceDriftCompensationKey`；`MeetingCaptureContext` 為 file-scope class（避 actor 隔離推斷）；有 `static let shared`
+- ✅ T8 設定 UI（「會議錄製」Section 位於 分析/分類 之間；「上方→下方」文案已修）
+- ✅ T9 Info.plist `NSAudioCaptureUsageDescription`
+
+**待做**：T3（`stageMeetingFile`/`importMeetingFile`——照 plan Task 3，enum 已含 `sourceLabel` 參數）→ T6 → T7 → 每波 build＋測試＋code-reviewer → T10（OPTIONAL 可跳過）→ T11 收尾（bump build → `make deploy` → spec Change History → Linear 驗證 issue，Linear 尚未授權，需先 `/mcp` 授權）。
+
+**Deviation 記錄**：測試按任務分檔（`MeetingCaptureConfigTests` / `MeetingAudioMixerTests` / `MeetingOriginTests` / `MeetingExportTests` 已建；`MeetingImportTests` / `MeetingShortcutTests` 待 T3/T7），非 plan 原寫的單一 `MeetingCaptureTests.swift`——避免多 agent 同檔衝突。
+
+---
+
 ## UX Design
 
 ### Before

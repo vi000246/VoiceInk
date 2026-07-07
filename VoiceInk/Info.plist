@@ -20,6 +20,8 @@
 	<string>VoiceInk needs to interact with your browser to detect the current website for applying website-specific configurations.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>VoiceInk needs screen recording access to understand context from your screen for improved transcription accuracy.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>VoiceInk 需要錄製系統音訊，才能在會議模式中錄下線上會議雙方的聲音並轉成筆記。</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

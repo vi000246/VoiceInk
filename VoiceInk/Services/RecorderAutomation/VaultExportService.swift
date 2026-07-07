@@ -14,6 +14,8 @@ final class VaultExportService {
         let rawTranscript: String
         let categoryName: String
         let deviceName: String?
+        /// 來源標籤（如「會議 · Zoom」）；錄音筆匯入為 nil。
+        var sourceLabel: String? = nil
         let date: Date
         let transcriptionModel: String?
         let enhancementModel: String?
@@ -30,11 +32,13 @@ final class VaultExportService {
             return "\"" + s.replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
         let confidenceLine = input.confidence.map { "confidence: \(String(format: "%.2f", $0))\n" } ?? ""
+        // 來源標籤（會議擷取才有）；nil 時整行省略，與 confidence 的條件輸出方式一致。
+        let sourceLine = input.sourceLabel.map { "來源: \($0)\n" } ?? ""
         var doc = """
         ---
         date: \(dateFormatter.string(from: input.date))
         source_device: \(esc(input.deviceName))
-        category: \(esc(input.categoryName))
+        \(sourceLine)category: \(esc(input.categoryName))
         transcription_model: \(esc(input.transcriptionModel))
         enhancement_model: \(esc(input.enhancementModel))
         \(confidenceLine)---
