@@ -78,12 +78,15 @@ final class RecorderPostProcessor: ObservableObject {
         return t.isEmpty ? nil : t
     }
 
-    /// Mount-path entry: always classify (suggest category). If auto-export is on, also apply the
-    /// matched template + export; otherwise stop and leave it for manual handling in Recording Management.
+    /// Mount-path entry: classify (suggest category) — or, when `fixedCategory` is set (meeting
+    /// captures with a fixed 分類), assign it directly without running the classifier. If auto-export
+    /// is on, also apply the matched template + export; otherwise stop and leave it for manual
+    /// handling in Recording Management.
     func process(
         transcription: Transcription,
         rawText: String,
         device: RecorderDevice?,
+        fixedCategory: RecorderCategory? = nil,
         modelContext: ModelContext,
         enhancementService: AIEnhancementService,
         aiService: AIService
@@ -125,8 +128,13 @@ final class RecorderPostProcessor: ObservableObject {
             try? modelContext.save()
         }
 
-        await suggestCategory(transcription: transcription, rawText: rawText, modelContext: modelContext,
-                              enhancementService: enhancementService, aiService: aiService)
+        if let fixed = fixedCategory {
+            await assignCategory(transcription: transcription, category: fixed, rawText: rawText,
+                                 modelContext: modelContext, aiService: aiService)
+        } else {
+            await suggestCategory(transcription: transcription, rawText: rawText, modelContext: modelContext,
+                                  enhancementService: enhancementService, aiService: aiService)
+        }
 
         if store.recorderAutoExportEnabled {
             let category = transcription.recorderCategoryId.flatMap { store.category(byId: $0) } ?? store.fallbackCategory
@@ -188,6 +196,33 @@ final class RecorderPostProcessor: ObservableObject {
             ?? transcription.timestamp
         transcription.recorderTitle = await makeRecorderTitle(
             from: rawText, model: classifyModel, aiService: aiService, timestamp: recordingTime)
+        try? modelContext.save()
+    }
+
+    /// 固定分類：設定分類欄位＋產生標題，完全不觸發分類器。
+    private func assignCategory(
+        transcription: Transcription, category: RecorderCategory, rawText: String,
+        modelContext: ModelContext, aiService: AIService
+    ) async {
+        transcription.recorderCategoryId = category.id
+        transcription.recorderCategoryName = category.name
+        transcription.classificationConfidence = nil
+        // Same recording-time recovery as suggestCategory: the source filename (via the import
+        // ledger) wins; fall back to the transcription timestamp.
+        let recordingTime = transcription.importFingerprint
+            .flatMap { ImportLedger.shared.fileName(forFingerprint: $0, in: modelContext) }
+            .flatMap { RecorderRecordingTime.parse(fromFileName: $0) }
+            ?? transcription.timestamp
+        if aiService.connectedProviders.isEmpty {
+            // 沒有已連接的 AI provider：分類欄位照設，標題退回「日期＋內容前綴」，不打 AI。
+            let stamp = RecorderRecordingTime.titleStamp(recordingTime)
+            let tail = String(rawText.prefix(10)).trimmingCharacters(in: .whitespacesAndNewlines)
+            transcription.recorderTitle = tail.isEmpty ? stamp : "\(stamp) \(tail)"
+        } else {
+            let model = resolvedClassifierModel(aiService: aiService)
+            transcription.recorderTitle = await makeRecorderTitle(
+                from: rawText, model: model, aiService: aiService, timestamp: recordingTime)
+        }
         try? modelContext.save()
     }
 
@@ -324,6 +359,7 @@ final class RecorderPostProcessor: ObservableObject {
         let input = VaultExportService.ExportInput(
             analysis: analysis, rawTranscript: rawText,
             categoryName: decision.category.name, deviceName: deviceName,
+            sourceLabel: transcription.recorderSourceLabel,
             date: recordedAt,
             transcriptionModel: transcription.transcriptionModelName,
             enhancementModel: transcription.aiEnhancementModelName,

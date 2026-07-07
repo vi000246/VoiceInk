@@ -36,6 +36,8 @@ final class Transcription {
     var transcriptionStatus: String?
     var recorderSourceDeviceId: UUID?
     var importFingerprint: String?
+    /// 來源標籤（如「會議 · Zoom」）；錄音筆來源為 nil。
+    var recorderSourceLabel: String?
     var recorderCategoryName: String?
     var recorderCategoryId: UUID?
     /// Recorder display title: `yyyyMMdd HHmm <≤10-char AI summary>`, generated at classification.

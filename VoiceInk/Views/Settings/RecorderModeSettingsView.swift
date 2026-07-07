@@ -77,6 +77,24 @@ struct RecorderModeSettingsView: View {
                     Text("分析請求的等待上限。用較慢的本地模型（如 32B）產長筆記時，語音預設的 7 秒會逾時，調高即可。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("會議錄製") {
+                    Picker("固定分類", selection: meetingCategoryBinding) {
+                        Text("自動分類").tag(UUID?.none)
+                        ForEach(store.categories) { c in
+                            Text(c.name).tag(UUID?.some(c.id))
+                        }
+                    }
+                    Text("會議錄音預設直接歸入所選分類（跳過 AI 分類、結果穩定）；選「自動分類」則與錄音筆相同流程。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle(isOn: meetingMicBinding) {
+                        HStack(spacing: 4) {
+                            Text("同時收錄麥克風")
+                            InfoTip("關閉後只錄系統音訊（對方聲音）。用喇叭開會時麥克風會收到迴音，建議戴耳機。")
+                        }
+                    }
+                    Text("匯出行為沿用下方「自動化」區的「自動匯出」開關：開＝會後直接出 Obsidian 筆記；關＝留在 Recording Management 手動套用。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("分類") {
                     Picker("分類模型", selection: classifierBinding) {
                         Text("跟隨分析模型").tag(RecorderModelChoice?.none)
@@ -219,5 +237,17 @@ struct RecorderModeSettingsView: View {
                 return RecorderModelChoice(provider: p, model: m)
             },
             set: { store.setClassifierModel(provider: $0?.provider, model: $0?.model) })
+    }
+    private var meetingCategoryBinding: Binding<UUID?> {
+        Binding(
+            get: {
+                // 反映解析後的實際狀態：未設定時顯示解析出的預設分類；明選自動時顯示「自動分類」
+                store.meetingFixedCategory?.id
+            },
+            set: { store.setMeetingFixedCategoryId($0) }
+        )
+    }
+    private var meetingMicBinding: Binding<Bool> {
+        Binding(get: { store.meetingMicEnabled }, set: { store.setMeetingMicEnabled($0) })
     }
 }
