@@ -480,6 +480,10 @@ private struct RecorderDeviceEditorPanel: View {
     @State private var sourceFolderName: String?
     @State private var autoImportEnabled: Bool
     @State private var deleteAfterImport: Bool
+    @State private var recursive: Bool
+    @State private var isICloudSource: Bool
+    @State private var presetKind: String?
+    @State private var defaultCategoryId: UUID?
 
     private let existingId: UUID?
     private let createdAt: Date
@@ -498,6 +502,10 @@ private struct RecorderDeviceEditorPanel: View {
             _sourceFolderName = State(initialValue: nil)
             _autoImportEnabled = State(initialValue: true)
             _deleteAfterImport = State(initialValue: false)
+            _recursive = State(initialValue: false)
+            _isICloudSource = State(initialValue: false)
+            _presetKind = State(initialValue: nil)
+            _defaultCategoryId = State(initialValue: nil)
         case .edit(let d):
             existingId = d.id; createdAt = d.createdAt
             _displayName = State(initialValue: d.displayName)
@@ -507,8 +515,15 @@ private struct RecorderDeviceEditorPanel: View {
             _sourceFolderName = State(initialValue: d.resolveSourceFolder()?.lastPathComponent)
             _autoImportEnabled = State(initialValue: d.autoImportEnabled)
             _deleteAfterImport = State(initialValue: d.deleteAfterImport)
+            _recursive = State(initialValue: d.recursive)
+            _isICloudSource = State(initialValue: d.isICloudSource)
+            _presetKind = State(initialValue: d.presetKind)
+            _defaultCategoryId = State(initialValue: d.defaultCategoryId)
         }
     }
+
+    /// 與 RecorderDevice.protectsOriginals 同義(編輯中的暫態版本)。
+    private var protectsOriginals: Bool { isICloudSource || presetKind != nil }
 
     private var canSave: Bool {
         guard sourceFolderBookmark != nil else { return false }
@@ -528,6 +543,15 @@ private struct RecorderDeviceEditorPanel: View {
                         Text("一般資料夾（持續監看新檔案）").tag(RecorderDevice.Kind.folder)
                     }
                     .pickerStyle(.radioGroup)
+                    if existingId == nil {
+                        HStack(spacing: 8) {
+                            Text("快速設定：").foregroundStyle(.secondary)
+                            Button("Just Press Record") { applyJustPressRecordPreset() }
+                            Button("Apple 語音備忘錄") { applyVoiceMemosPreset() }
+                        }
+                        Text("一鍵設定手錶/iPhone 錄音來源：JPR 用 iCloud Drive 容器（遞迴日期資料夾）；語音備忘錄用本機同步資料夾（可能需要「完整磁碟取用權」）。兩者都絕不刪除你的原始錄音。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section("辨識") {
                     TextField("顯示名稱", text: $displayName)
@@ -545,7 +569,20 @@ private struct RecorderDeviceEditorPanel: View {
                 }
                 Section("自動化") {
                     Toggle(isFolder ? "偵測到新檔案即自動匯入" : "插入即自動匯入", isOn: $autoImportEnabled)
-                    Toggle("匯入後刪除來源原始檔（成功匯入＋轉錄＋輸出後才刪）", isOn: $deleteAfterImport)
+                    if protectsOriginals {
+                        Label("此來源的原始錄音受保護，永不刪除", systemImage: "lock.shield")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Toggle("匯入後刪除來源原始檔（成功匯入＋轉錄＋輸出後才刪）", isOn: $deleteAfterImport)
+                    }
+                    Picker("預設分類", selection: $defaultCategoryId) {
+                        Text("自動分類").tag(UUID?.none)
+                        ForEach(store.categories) { c in
+                            Text(c.name).tag(UUID?.some(c.id))
+                        }
+                    }
+                    Text("指定分類可跳過 AI 分類（結果穩定、省一次呼叫）；「自動分類」維持既有行為。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
                     Button("儲存", action: save).disabled(!canSave)
@@ -589,10 +626,77 @@ private struct RecorderDeviceEditorPanel: View {
             volumeNameMatch: isFolder ? "" : volumeNameMatch,
             sourceFolderBookmark: bookmark,
             autoImportEnabled: autoImportEnabled,
-            deleteAfterImport: deleteAfterImport,
-            createdAt: createdAt)
+            deleteAfterImport: protectsOriginals ? false : deleteAfterImport,   // 受保護來源強制關
+            createdAt: createdAt,
+            recursive: recursive,
+            isICloudSource: isICloudSource,
+            presetKind: presetKind,
+            defaultCategoryId: defaultCategoryId)
         store.upsert(device)
         onDismiss()
+    }
+
+    // MARK: - Presets（手錶/iPhone 錄音來源一鍵設定）
+
+    /// Just Press Record:iCloud Drive 容器,日期子資料夾巢狀 → 遞迴＋iCloud 語意。
+    /// 容器實名未硬編——glob openplanetsoftware 前綴,找不到退回手動選資料夾。
+    private func applyJustPressRecordPreset() {
+        let mobileDocs = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents")
+        let container = (try? FileManager.default.contentsOfDirectory(
+                at: mobileDocs, includingPropertiesForKeys: nil))?
+            .first { $0.lastPathComponent.lowercased().contains("openplanetsoftware") }
+        guard let container else {
+            NotificationManager.shared.showNotification(
+                title: "找不到 Just Press Record 的 iCloud 容器——請確認 app 已安裝且儲存位置設為 iCloud Drive，或改用「選擇…」手動指定",
+                type: .warning, duration: 8)
+            return
+        }
+        let documents = container.appendingPathComponent("Documents")
+        let folder = FileManager.default.fileExists(atPath: documents.path) ? documents : container
+        applyPreset(folder: folder, displayName: "Just Press Record",
+                    presetKind: "justPressRecord", recursive: true, isICloud: true)
+    }
+
+    /// Apple 語音備忘錄:本機群組容器(CloudKit 同步的一般資料夾,平面、非 ubiquitous)。
+    /// 讀不到 → 引導開啟完整磁碟取用權。
+    private func applyVoiceMemosPreset() {
+        let folder = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings")
+        let readable = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil)) != nil
+        guard readable else {
+            NotificationManager.shared.showNotification(
+                title: "無法讀取語音備忘錄資料夾——請在「隱私權與安全性 → 完整磁碟取用權」允許 VoiceInk 後重試",
+                type: .warning, duration: 10,
+                actionButton: ("開啟設定", {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }))
+            return
+        }
+        applyPreset(folder: folder, displayName: "語音備忘錄",
+                    presetKind: "voiceMemos", recursive: false, isICloud: false)
+    }
+
+    private func applyPreset(folder: URL, displayName name: String,
+                             presetKind preset: String, recursive rec: Bool, isICloud: Bool) {
+        guard let bookmark = try? folder.bookmarkData(options: [.withSecurityScope],
+                                                      includingResourceValuesForKeys: nil, relativeTo: nil) else {
+            NotificationManager.shared.showNotification(title: "無法建立資料夾授權", type: .error, duration: 4)
+            return
+        }
+        kind = .folder
+        sourceFolderBookmark = bookmark
+        sourceFolderName = folder.lastPathComponent
+        displayName = name
+        volumeNameMatch = ""
+        recursive = rec
+        isICloudSource = isICloud
+        presetKind = preset
+        deleteAfterImport = false
+        NotificationManager.shared.showNotification(title: "已套用 \(name) 預設，確認後按「儲存」", type: .info, duration: 4)
     }
 
     private func deleteDevice() {
