@@ -28,9 +28,11 @@ struct AskAIView: View {
     @State private var question = ""
     @State private var isAsking = false
 
+    @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
+
     // Scope
     @State private var sourceFilter: AskAISourceFilter = .all   // 全部 / 語音輸入 / 錄音輸入(含會議)
-    @State private var categoryId: UUID?
+    @State private var categoryNameFilter: String?              // 依分類/tag 名稱（統一 displayTag）
     @State private var dateFilter: String = "all"       // all/7d/30d
     /// 單檔限定（管理頁「Ask AI」按鈕帶入）;非 nil 時覆蓋上面的來源/分類/日期。
     @State private var focusedTranscriptionId: UUID?
@@ -81,6 +83,7 @@ struct AskAIView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { sidebarModel.refresh(modelContext) }
         .sheet(item: $focusTranscription) { t in
             TranscriptionDetailView(transcription: t)
                 .frame(minWidth: 480, minHeight: 400)
@@ -223,10 +226,8 @@ struct AskAIView: View {
                 Picker("", selection: $sourceFilter) {
                     ForEach(AskAISourceFilter.allCases) { f in Text(f.label).tag(f) }
                 }.fixedSize()
-                Picker("", selection: $categoryId) {
-                    Text("全部分類").tag(UUID?.none)
-                    ForEach(recorderStore.categories) { c in Text(c.name).tag(UUID?.some(c.id)) }
-                }.fixedSize()
+                .onChange(of: sourceFilter) { _, _ in categoryNameFilter = nil }   // 換來源→自動清分類
+                categoryMenu
                 Picker("", selection: $dateFilter) {
                     Text("不限時間").tag("all")
                     Text("近 7 天").tag("7d")
@@ -247,6 +248,52 @@ struct AskAIView: View {
         }
         .labelsHidden()
         .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    // 分類/tag 名稱來源：錄音分類 vs 語音 tag。兩者都出現的名稱 → 「通用」。
+    private var recorderNames: [String] { sidebarModel.recorderCategories.map(\.name) }
+    private var voiceNames: [String] { sidebarModel.voiceTags.map(\.name) }
+    private var sharedNames: [String] { Array(Set(recorderNames).intersection(voiceNames)).sorted() }
+    private var recorderOnlyNames: [String] { recorderNames.filter { !sharedNames.contains($0) } }
+    private var voiceOnlyNames: [String] { voiceNames.filter { !sharedNames.contains($0) } }
+
+    /// 依目前來源自動篩選的分類下拉（全部→group by 通用/錄音/語音;選特定來源→只列該來源）。
+    private var categoryMenu: some View {
+        Menu {
+            Button { categoryNameFilter = nil } label: {
+                Label("全部分類", systemImage: categoryNameFilter == nil ? "checkmark" : "")
+            }
+            switch sourceFilter {
+            case .recorder:
+                categorySection(nil, recorderNames)
+            case .voice:
+                categorySection(nil, voiceNames)
+            case .all:
+                categorySection("通用", sharedNames)
+                categorySection("錄音", recorderOnlyNames)
+                categorySection("語音", voiceOnlyNames)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(categoryNameFilter ?? "全部分類")
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func categorySection(_ title: String?, _ names: [String]) -> some View {
+        if !names.isEmpty {
+            Section(title ?? "") {
+                ForEach(names, id: \.self) { name in
+                    Button { categoryNameFilter = name } label: {
+                        Label(name, systemImage: categoryNameFilter == name ? "checkmark" : "")
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -357,9 +404,12 @@ struct AskAIView: View {
         AskAIService.shared.setLiveCompleter(
             LiveChatCompleter(aiService: aiService, provider: provider, modelName: resolved.model))
         let persona = selectedPersona
+        let focusId = focusedTranscriptionId
         Task {
             defer { isAsking = false }
             do {
+                // 單檔提問：先確保這筆已用目前模型建索引（否則舊錄音/未回填的會查不到）。
+                if let focusId { await ensureIndexed(focusId) }
                 _ = try await AskAIService.shared.ask(
                     question: q, scope: currentScope, thread: thread,
                     model: indexService.model, context: modelContext, persona: persona)
@@ -383,7 +433,7 @@ struct AskAIView: View {
         case "30d": range = Date().addingTimeInterval(-30 * 86400)...Date().addingTimeInterval(86400)
         default: range = nil
         }
-        return AskAIScope(sources: sourceFilter.sources, categoryId: categoryId, dateRange: range)
+        return AskAIScope(sources: sourceFilter.sources, categoryName: categoryNameFilter, dateRange: range)
     }
 
     private func reloadMessages() {
@@ -397,6 +447,18 @@ struct AskAIView: View {
         let fetched = (try? modelContext.fetch(FetchDescriptor<AskAIMessage>(
             sortBy: [SortDescriptor(\.createdAt)]))) ?? []
         messages = fetched.filter { $0.thread?.persistentModelID == tid }
+    }
+
+    /// 單檔提問前確保該筆已用「目前的 embedding 模型」建索引;沒有就即時嵌入一次（冪等）。
+    /// 這修掉「舊錄音或尚未回填的錄音，單檔提問回『資料庫中找不到相關內容』」的問題。
+    private func ensureIndexed(_ id: UUID) async {
+        let modelTag = indexService.model.tag
+        let existing = (try? modelContext.fetch(FetchDescriptor<EmbeddingChunk>(
+            predicate: #Predicate { $0.transcriptionId == id }))) ?? []
+        if existing.contains(where: { $0.embeddingModel == modelTag }) { return }
+        guard let t = (try? modelContext.fetch(FetchDescriptor<Transcription>(
+            predicate: #Predicate { $0.id == id })))?.first else { return }
+        _ = try? await TranscriptIndexService.shared.upsert(t)
     }
 
     /// 從管理頁「Ask AI」進來：限定 scope 到單一錄音並開新對話。

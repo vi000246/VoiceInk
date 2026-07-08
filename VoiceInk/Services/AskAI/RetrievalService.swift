@@ -6,6 +6,9 @@ import Accelerate
 struct AskAIScope: Equatable {
     var sources: Set<String>?              // "dictation" / "recorder" / "meeting"
     var categoryId: UUID?
+    /// 依分類/ tag 名稱過濾（統一：錄音用 recorderCategoryName、語音用 manualTag = displayTag）。
+    /// 以 query 時的 live displayTag 比對，免重建索引。nil = 不限。
+    var categoryName: String?
     var dateRange: ClosedRange<Date>?
     /// 限定單一錄音／逐字稿（管理頁「Ask AI」單檔提問）;nil = 全庫。
     var transcriptionId: UUID?
@@ -54,6 +57,13 @@ enum RetrievalService {
         }
         if let categoryId = scope.categoryId {
             candidates = candidates.filter { $0.categoryId == categoryId }
+        }
+        // 依名稱過濾：用 live Transcription 的 displayTag（錄音分類名 or 語音手動 tag）比對，
+        // 不依賴索引裡的欄位，故新加/改的 tag 立即生效、免重建索引。
+        if let categoryName = scope.categoryName {
+            let all = (try? context.fetch(FetchDescriptor<Transcription>())) ?? []
+            let tagById = Dictionary(all.map { ($0.id, $0.displayTag) }, uniquingKeysWith: { a, _ in a })
+            candidates = candidates.filter { tagById[$0.transcriptionId] == categoryName }
         }
         guard !candidates.isEmpty else { return [] }
 
