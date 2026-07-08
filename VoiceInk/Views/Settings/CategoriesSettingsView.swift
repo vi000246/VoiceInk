@@ -296,6 +296,7 @@ private struct CategoryEditorPanel: View {
                 saveButtonTitle: "存檔",
                 requiresTitle: false,
                 persistsToVoiceLibrary: false,
+                defaultCategories: [.recorderInput],
                 onDismiss: { showingPromptEditor = false },
                 onSave: { prompt in
                     store.upsertRecorderPrompt(prompt)

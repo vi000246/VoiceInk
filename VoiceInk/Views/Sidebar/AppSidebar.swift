@@ -74,11 +74,11 @@ private extension ViewType {
     var title: LocalizedStringKey {
         switch self {
         case .modes: return "Voice Modes"
-        case .prompts: return "Voice Prompts"
+        case .prompts: return "共用範本"
         case .history: return "Input History"
         case .recorders: return "錄音裝置"
         case .recorderMode: return "錄音設定"
-        case .categories: return "錄音範本"
+        case .categories: return "錄音模式"
         case .recorderLog: return "Recording Management"
         case .askAI: return "Ask AI"
         case .templateGuide: return "Template Guide"
@@ -92,9 +92,10 @@ private extension ViewType {
     /// Sidebar grouped by the two pipelines (voice input vs recorder→Obsidian) + shared/system.
     static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
         (nil, [.dashboard]),
-        ("Voice Input", [.modes, .prompts, .history]),
-        ("Recorder → Obsidian", [.recorders, .recorderMode, .categories, .recorderLog]),
-        ("Shared & System", [.models, .askAI, .systemTemplate, .templateGuide, .dictionary, .transcribeAudio, .audio, .settings, .license]),
+        ("語音輸入", [.modes, .history]),
+        ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog]),
+        ("Ask AI", [.askAI]),
+        ("共用與系統", [.prompts, .models, .systemTemplate, .templateGuide, .dictionary, .transcribeAudio, .audio, .settings, .license]),
     ]
 
     static func assertSidebarItemsCoverAllCases() {

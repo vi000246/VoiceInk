@@ -35,6 +35,8 @@ struct PromptEditorView: View {
     /// Recorder templates pass false: the editor only builds the prompt and hands it to `onSave`,
     /// so recorder prompts never leak into the voice library.
     var persistsToVoiceLibrary: Bool = true
+    /// 新範本的預設所屬類別（語音頁進入預設語音輸入、錄音頁進入預設錄音輸入）。
+    var defaultCategories: [TemplateCategory] = [.voiceInput]
     @EnvironmentObject private var enhancementService: AIEnhancementService
     let onDismiss: () -> Void
     let onSave: (CustomPrompt) -> Void
@@ -42,6 +44,7 @@ struct PromptEditorView: View {
     @State private var title: String
     @State private var promptText: String
     @State private var useSystemInstructions: Bool
+    @State private var categories: [TemplateCategory]
     @State private var showDeleteConfirmation = false
     @State private var showDiscardConfirmation = false
 
@@ -93,6 +96,7 @@ struct PromptEditorView: View {
         saveButtonTitle: LocalizedStringKey? = nil,
         requiresTitle: Bool = true,
         persistsToVoiceLibrary: Bool = true,
+        defaultCategories: [TemplateCategory] = [.voiceInput],
         onDismiss: @escaping () -> Void,
         onSave: @escaping (CustomPrompt) -> Void,
         onDelete: ((CustomPrompt) -> Void)? = nil
@@ -104,6 +108,7 @@ struct PromptEditorView: View {
         self.saveButtonTitleOverride = saveButtonTitle
         self.requiresTitle = requiresTitle
         self.persistsToVoiceLibrary = persistsToVoiceLibrary
+        self.defaultCategories = defaultCategories
         self.onDismiss = onDismiss
         self.onSave = onSave
         self.onDelete = onDelete
@@ -112,10 +117,12 @@ struct PromptEditorView: View {
             _title = State(initialValue: "")
             _promptText = State(initialValue: "")
             _useSystemInstructions = State(initialValue: defaultUseSystemTemplate)
+            _categories = State(initialValue: defaultCategories)
         case .edit(let prompt):
             _title = State(initialValue: prompt.title)
             _promptText = State(initialValue: prompt.promptText)
             _useSystemInstructions = State(initialValue: allowsSystemTemplateToggle ? prompt.useSystemInstructions : false)
+            _categories = State(initialValue: prompt.categories.isEmpty ? defaultCategories : prompt.categories)
         }
     }
     
@@ -157,6 +164,7 @@ struct PromptEditorView: View {
                     if allowsSystemTemplateToggle {
                         systemTemplateToggle
                     }
+                    categorySelector
                 }
                 .padding(20)
             }
@@ -225,6 +233,29 @@ struct PromptEditorView: View {
             .toggleStyle(.switch)
 
             Spacer(minLength: 12)
+        }
+    }
+
+    /// 所屬類別多選：勾選此範本可套用於哪些輸入（語音輸入／錄音輸入）。至少一類。
+    private var categorySelector: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Text("套用於").font(.system(size: 12, weight: .medium))
+                InfoTip("勾選此範本可套用在哪些輸入。同時勾選兩者即為共用範本，新增語音模式或錄音模式時都能選到它。至少需選一類。")
+            }
+            HStack(spacing: 16) {
+                ForEach(TemplateCategory.allCases, id: \.self) { cat in
+                    Toggle(isOn: Binding(
+                        get: { categories.contains(cat) },
+                        set: { on in
+                            if on { if !categories.contains(cat) { categories.append(cat) } }
+                            else { categories.removeAll { $0 == cat } }
+                        }
+                    )) { Text(cat.displayName) }
+                    .toggleStyle(.checkbox)
+                }
+                Spacer()
+            }
         }
     }
 
@@ -319,26 +350,26 @@ struct PromptEditorView: View {
 
     private func save() -> CustomPrompt? {
         let finalTitle = resolvedTitle()
+        // 防呆：至少一類（全空時退回進入點預設）。
+        let finalCategories = categories.isEmpty ? defaultCategories : categories
         switch mode {
         case .add:
-            guard persistsToVoiceLibrary else {
-                return CustomPrompt(
-                    title: finalTitle,
-                    promptText: promptText,
-                    useSystemInstructions: useSystemInstructions
-                )
-            }
-            return enhancementService.addPrompt(
+            let newPrompt = CustomPrompt(
                 title: finalTitle,
                 promptText: promptText,
-                useSystemInstructions: useSystemInstructions
+                useSystemInstructions: useSystemInstructions,
+                categories: finalCategories
             )
+            guard persistsToVoiceLibrary else { return newPrompt }
+            enhancementService.upsertPrompt(newPrompt)
+            return newPrompt
         case .edit(let prompt):
             let updatedPrompt = CustomPrompt(
                 id: prompt.id,
                 title: finalTitle,
                 promptText: promptText,
-                useSystemInstructions: useSystemInstructions
+                useSystemInstructions: useSystemInstructions,
+                categories: finalCategories
             )
             if persistsToVoiceLibrary {
                 enhancementService.updatePrompt(updatedPrompt)
