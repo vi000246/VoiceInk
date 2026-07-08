@@ -13,6 +13,7 @@
 | ask-ai | [ask-ai.spec.md](./ask-ai.spec.md) | Supporting Domain | Semantic QA over all transcription history: chunk → cloud embeddings (BYOK, Gemini default) → local vector index (4th SwiftData store) → brute-force top-k → cited answers. Implemented (build 231); enhancements (answer model / single-recording / Ask AI templates) spec'd. | — |
 | templates | [templates.spec.md](./templates.spec.md) | Supporting Domain | 單一共用範本庫 + 類別標籤（語音輸入／錄音輸入），語音/錄音模式以類別多選篩選共用範本;連帶側欄 IA 重構。Spec'd（WP1+WP2），未實作。 | — |
 | library-management | [library-management.spec.md](./library-management.spec.md) | Supporting Domain | Notion 式清單管理頁（欄位/排序/詳情彈窗/批次+星號保護）共用基建，供錄音管理與新語音管理兩頁。Spec'd（WP3+WP4），未實作。 | — |
+| voice-input | [voice-input.spec.md](./voice-input.spec.md) | Core Domain | 語音聽寫輸出路徑（Modes + TranscriptionDelivery）;新增「編輯後貼上」——貼上前用外部真 MacVim/nvim 阻塞編輯再貼回。Spec'd，未實作。 | — |
 
 ## Loading Guide
 
@@ -26,6 +27,7 @@
 
 | Date | Module | Feature SRS | One-line Summary |
 |------|--------|-------------|-----------------|
+| 2026-07-08 | voice-input | [edit-before-paste.srs.md](../srs/voice-input-edit-before-paste.srs.md) | 語音模式「編輯後貼上」:貼上前用外部真 MacVim/nvim（`mvim -f`）阻塞編輯暫存檔再讀回貼回,吃使用者真 vimrc。 |
 | 2026-07-08 | templates | [templates-shared-library-and-ia.srs.md](../srs/templates-shared-library-and-ia.srs.md) | WP1+WP2:合併語音+錄音範本為單一共用庫（類別標籤、模式多選篩選）+ 側欄 IA 重構。 |
 | 2026-07-08 | library-management | [library-management-pages.srs.md](../srs/library-management-pages.srs.md) | WP3+WP4:Notion 式錄音管理 + 新語音管理頁（表格/排序/詳情彈窗/批次+星號保護/改名→匯出對齊）。 |
 | 2026-07-08 | recorder-automation | [meeting-into-recorder-input.srs.md](../srs/recorder-automation-meeting-into-recorder-input.srs.md) | WP5:會議錄製併入錄音輸入，手動選範本，不自動標會議。 |
