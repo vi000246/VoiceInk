@@ -62,7 +62,8 @@ final class AskAIAnswerTests: XCTestCase {
         let message = try await AskAIService.shared.ask(
             question: "問題", scope: .all, thread: nil, model: .gemini001_768, context: ctx)
         XCTAssertFalse(completerCalled)
-        XCTAssertTrue(message.text.contains("找不到"))
+        // 空索引 → 診斷訊息提示「索引是空的／重建索引」（不再是一律「找不到」）。
+        XCTAssertTrue(message.text.contains("索引"))
         XCTAssertTrue(message.citations.isEmpty)
     }
 

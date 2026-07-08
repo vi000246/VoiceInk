@@ -44,8 +44,8 @@ struct PromptsManagementView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "共用範本",
-                infoMessage: "共用範本是給 AI 的指令，把逐字稿整理成你要的格式。每個範本可勾選用於「語音輸入」（語音模式）或「錄音輸入」（錄音模式），兩者可同時勾。錄音模式頁的下拉選單只會列出勾了「錄音輸入」的範本。",
+                title: "逐字稿範本",
+                infoMessage: "逐字稿範本是給 AI 的指令，把逐字稿整理成你要的格式。每個範本可勾選用於「語音輸入」（語音模式）或「錄音輸入」（錄音模式），兩者可同時勾。錄音模式頁的下拉選單只會列出勾了「錄音輸入」的範本。",
                 infoURL: nil
             ) {
                 AppIconButton(systemName: "plus.circle.fill", help: "新增範本") { editing = .add }

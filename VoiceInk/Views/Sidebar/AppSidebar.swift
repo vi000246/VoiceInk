@@ -151,8 +151,9 @@ private extension ViewType {
     var title: LocalizedStringKey {
         switch self {
         case .modes: return "Voice Modes"
-        case .prompts: return "共用範本"
+        case .prompts: return "逐字稿範本"
         case .history: return "語音管理"
+        case .voiceSettings: return "語音設定"
         case .recorders: return "錄音裝置"
         case .recorderMode: return "錄音設定"
         case .categories: return "錄音模式"
@@ -170,10 +171,10 @@ private extension ViewType {
     /// Sidebar grouped by the two pipelines (voice input vs recorder→Obsidian) + shared/system.
     static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
         (nil, [.dashboard]),
-        ("語音輸入", [.modes, .history]),
-        ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog]),
+        ("語音輸入", [.modes, .history, .voiceSettings]),
+        ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog, .transcribeAudio]),
         ("Ask AI", [.askAI, .askAITemplates]),
-        ("共用與系統", [.prompts, .models, .systemTemplate, .templateGuide, .dictionary, .transcribeAudio, .audio, .settings, .license]),
+        ("共用與系統", [.prompts, .models, .systemTemplate, .templateGuide, .dictionary, .audio, .settings, .license]),
     ]
 
     static func assertSidebarItemsCoverAllCases() {
@@ -188,6 +189,7 @@ private extension ViewType {
         case .dashboard: return "gauge.medium"
         case .transcribeAudio: return "waveform.path"
         case .history: return "doc.text.fill"
+        case .voiceSettings: return "gearshape.2.fill"
         case .models: return "cpu"
         case .modes: return "sparkles.square.fill.on.square"
         case .prompts: return "text.alignleft"
@@ -222,6 +224,8 @@ private extension ViewType {
             return .init(background: AppTheme.Sidebar.dictionary)
         case .history:
             return .init(background: AppTheme.Sidebar.audio)
+        case .voiceSettings:
+            return .init(background: AppTheme.Sidebar.fallback)
         case .transcribeAudio:
             return .init(background: AppTheme.Sidebar.transcribeAudio)
         case .recorders:

@@ -111,7 +111,7 @@ struct RecorderHistoryView: View {
                 }
             }
 
-            if !selectedIds.isEmpty {
+            if !filteredItems.isEmpty {
                 Divider()
                 selectionBar
             }
@@ -135,18 +135,11 @@ struct RecorderHistoryView: View {
             }
         }
         .confirmationDialog(batchDeleteMessage, isPresented: $confirmBatchDelete, titleVisibility: .visible) {
+            // 星號一律保護：只刪非星號的;星號永遠不刪（要刪需先取消星號）。
             let (protectedDelete, starred) = LibraryFilter.deletionSet(from: selectedTranscriptions, includeStarred: false)
-            if starred > 0 {
-                // 有星號被選中：預設保護，另外提供「連星號一起刪」的破壞性選項。
-                Button("刪除 \(protectedDelete.count) 筆（保留 \(starred) 筆 ★）", role: .destructive) {
+            if !protectedDelete.isEmpty {
+                Button("刪除 \(protectedDelete.count) 筆" + (starred > 0 ? "（保留 \(starred) 筆 ★）" : ""), role: .destructive) {
                     performBatchDelete(protectedDelete)
-                }
-                Button("連 \(starred) 筆 ★ 一併刪除（共 \(selectedTranscriptions.count) 筆）", role: .destructive) {
-                    performBatchDelete(selectedTranscriptions)
-                }
-            } else {
-                Button("刪除所選 \(selectedTranscriptions.count) 筆", role: .destructive) {
-                    performBatchDelete(selectedTranscriptions)
                 }
             }
         }
@@ -186,17 +179,25 @@ struct RecorderHistoryView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 16) {
-            Text("已選 \(selectedIds.count) 筆").font(.system(size: 13, weight: .medium)).foregroundColor(.secondary)
-            Spacer()
+            // 全選按鈕一律顯示（不只在已選取時）。
             Button(allSelected ? "取消全選" : "全選") {
                 if allSelected { selectedIds.removeAll() }
                 else { selectedIds = Set(filteredItems.map { $0.id }) }
             }
             .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
-            Button { confirmBatchDelete = true } label: {
-                Label("刪除所選", systemImage: "trash").font(.system(size: 12, weight: .medium))
+            if !selectedIds.isEmpty {
+                Text("已選 \(selectedIds.count) 筆").font(.system(size: 13)).foregroundColor(.secondary)
+                if starredInSelection > 0 {
+                    Text("· ★\(starredInSelection) 受保護").font(.system(size: 12)).foregroundStyle(Color.yellow)
+                }
             }
-            .buttonStyle(.plain).foregroundColor(AppTheme.Status.error.opacity(0.85))
+            Spacer()
+            if !selectedIds.isEmpty {
+                Button { confirmBatchDelete = true } label: {
+                    Label("刪除所選", systemImage: "trash").font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundColor(AppTheme.Status.error.opacity(0.85))
+            }
         }
         .padding(.horizontal, 24).padding(.vertical, 10)
         .background(AppTheme.Surface.window.shadow(color: .black.opacity(0.1), radius: 3, y: -2))
@@ -232,7 +233,7 @@ struct RecorderHistoryView: View {
     private var batchDeleteMessage: String {
         let n = selectedTranscriptions.count
         if starredInSelection > 0 {
-            return "所選 \(n) 筆中有 \(starredInSelection) 筆為星號 ★ 保護；預設會保留它們。音檔與逐字稿都會移除。"
+            return "所選 \(n) 筆中有 \(starredInSelection) 筆星號 ★，會被保留、不會刪除。要刪除這些請先在該筆取消星號。其餘音檔與逐字稿會移除。"
         }
         return "刪除所選 \(n) 筆？音檔與逐字稿都會移除。"
     }

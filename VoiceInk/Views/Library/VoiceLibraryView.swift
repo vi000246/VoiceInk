@@ -19,7 +19,6 @@ struct VoiceLibraryView: View {
     @State private var sortField: VoiceSortField = .date
     @State private var sortAscending = false
     @State private var detailTarget: Transcription?
-    @State private var showHistorySettings = false
 
     enum VoiceSortField { case date, title, duration }
 
@@ -62,11 +61,9 @@ struct VoiceLibraryView: View {
         VStack(spacing: 0) {
             AppScreenHeader(
                 title: "語音管理",
-                infoMessage: "語音輸入／聽寫的逐字稿。可搜尋、依欄位排序、加手動 tag（左側選單可依 tag 展開篩選）。勾選多筆可批次刪除（星號 ★ 預設保護）。點一列看完整內容與動作。",
+                infoMessage: "語音輸入／聽寫的逐字稿。可搜尋、依欄位排序、加手動 tag（左側選單可依 tag 展開篩選）。勾選多筆可批次刪除（星號 ★ 一律保護，需先取消星號）。點一列看完整內容與動作。自動清理設定在左側「語音設定」。",
                 infoURL: nil
-            ) {
-                AppIconButton(systemName: "gearshape", help: "歷史設定（自動清理）") { showHistorySettings = true }
-            }
+            ) { EmptyView() }
 
             searchBar
             Divider()
@@ -91,7 +88,7 @@ struct VoiceLibraryView: View {
                 }
             }
 
-            if !selectedIds.isEmpty {
+            if !filteredItems.isEmpty {
                 Divider()
                 selectionBar
             }
@@ -109,17 +106,11 @@ struct VoiceLibraryView: View {
             }
         }
         .confirmationDialog(batchDeleteMessage, isPresented: $confirmBatchDelete, titleVisibility: .visible) {
+            // 星號一律保護：只刪非星號的;星號要刪需先取消星號。
             let (protectedDelete, starred) = LibraryFilter.deletionSet(from: selectedTranscriptions, includeStarred: false)
-            if starred > 0 {
-                Button("刪除 \(protectedDelete.count) 筆（保留 \(starred) 筆 ★）", role: .destructive) {
+            if !protectedDelete.isEmpty {
+                Button("刪除 \(protectedDelete.count) 筆" + (starred > 0 ? "（保留 \(starred) 筆 ★）" : ""), role: .destructive) {
                     performBatchDelete(protectedDelete)
-                }
-                Button("連 \(starred) 筆 ★ 一併刪除（共 \(selectedTranscriptions.count) 筆）", role: .destructive) {
-                    performBatchDelete(selectedTranscriptions)
-                }
-            } else {
-                Button("刪除所選 \(selectedTranscriptions.count) 筆", role: .destructive) {
-                    performBatchDelete(selectedTranscriptions)
                 }
             }
         }
@@ -130,10 +121,6 @@ struct VoiceLibraryView: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
-        }
-        .sheet(isPresented: $showHistorySettings) {
-            HistorySettingsPanel(onClose: { showHistorySettings = false })
-                .frame(width: 460, height: 420)
         }
     }
 
@@ -153,17 +140,24 @@ struct VoiceLibraryView: View {
 
     private var selectionBar: some View {
         HStack(spacing: 16) {
-            Text("已選 \(selectedIds.count) 筆").font(.system(size: 13, weight: .medium)).foregroundColor(.secondary)
-            Spacer()
             Button(allSelected ? "取消全選" : "全選") {
                 if allSelected { selectedIds.removeAll() }
                 else { selectedIds = Set(filteredItems.map { $0.id }) }
             }
             .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
-            Button { confirmBatchDelete = true } label: {
-                Label("刪除所選", systemImage: "trash").font(.system(size: 12, weight: .medium))
+            if !selectedIds.isEmpty {
+                Text("已選 \(selectedIds.count) 筆").font(.system(size: 13)).foregroundColor(.secondary)
+                if starredInSelection > 0 {
+                    Text("· ★\(starredInSelection) 受保護").font(.system(size: 12)).foregroundStyle(Color.yellow)
+                }
             }
-            .buttonStyle(.plain).foregroundColor(AppTheme.Status.error.opacity(0.85))
+            Spacer()
+            if !selectedIds.isEmpty {
+                Button { confirmBatchDelete = true } label: {
+                    Label("刪除所選", systemImage: "trash").font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundColor(AppTheme.Status.error.opacity(0.85))
+            }
         }
         .padding(.horizontal, 24).padding(.vertical, 10)
         .background(AppTheme.Surface.window.shadow(color: .black.opacity(0.1), radius: 3, y: -2))
@@ -183,7 +177,7 @@ struct VoiceLibraryView: View {
     private var batchDeleteMessage: String {
         let n = selectedTranscriptions.count
         if starredInSelection > 0 {
-            return "所選 \(n) 筆中有 \(starredInSelection) 筆為星號 ★ 保護；預設會保留它們。"
+            return "所選 \(n) 筆中有 \(starredInSelection) 筆星號 ★，會被保留、不會刪除。要刪除這些請先在該筆取消星號。"
         }
         return "刪除所選 \(n) 筆逐字稿？"
     }

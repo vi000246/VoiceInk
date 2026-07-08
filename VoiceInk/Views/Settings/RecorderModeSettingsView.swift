@@ -6,6 +6,10 @@ struct RecorderModeSettingsView: View {
     @StateObject private var store = RecorderConfigStore.shared
     @EnvironmentObject private var transcriptionModelManager: TranscriptionModelManager
     @EnvironmentObject private var aiService: AIService
+    @Environment(\.modelContext) private var modelContext
+    @AppStorage(CleanupSettingsKeys.isRecorderCleanupEnabled) private var isRecorderCleanupEnabled = false
+    @AppStorage(CleanupSettingsKeys.recorderRetentionDays) private var recorderRetentionDays = 90
+    @State private var showRecorderCleanupResult = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -133,10 +137,32 @@ struct RecorderModeSettingsView: View {
                     Text("關閉（預設）：Obsidian 筆記只含分析結果。開啟：在筆記最下方以分隔線附上完整原始逐字稿。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("自動清理") {
+                    Toggle("自動清理錄音筆匯入", isOn: $isRecorderCleanupEnabled)
+                    if isRecorderCleanupEnabled {
+                        Picker("保留期限", selection: $recorderRetentionDays) {
+                            Text("30 天").tag(30)
+                            Text("90 天").tag(90)
+                            Text("180 天").tag(180)
+                            Text("1 年").tag(365)
+                        }
+                        Button("立即清理") {
+                            Task {
+                                await TranscriptionAutoCleanupService.shared.runManualRecorderCleanup(modelContext: modelContext)
+                                showRecorderCleanupResult = true
+                            }
+                        }
+                    }
+                    Text("超過保留期限的錄音筆匯入（音檔＋逐字稿）會被刪除。星號 ★ 的錄音永不清理。預設關閉＝永遠保留。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .alert("錄音筆匯入清理", isPresented: $showRecorderCleanupResult) {
+            Button("OK", role: .cancel) { }
+        } message: { Text("清理完成。星號標記的錄音不受影響。") }
     }
 
     private var languageBinding: Binding<String> {
