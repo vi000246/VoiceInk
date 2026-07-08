@@ -637,51 +637,65 @@ private struct RecorderDeviceEditorPanel: View {
     }
 
     // MARK: - Presets（手錶/iPhone 錄音來源一鍵設定）
+    //
+    // 兩個預設都走「NSOpenPanel 使用者選取」而非自動讀取受保護路徑:
+    // 使用者在面板中確認選取的資料夾,會產生 security-scoped bookmark 直接授權本 app 存取那個
+    // 資料夾——**不需要完整磁碟取用權**(面板本身在特權行程執行,能看見受 TCC 保護的位置)。
+    // 這也解決了「已開 FDA 仍無權限」的問題:自簽本地建置的 FDA 授權常常綁不上,但使用者親手
+    // 選取的 bookmark 一定有效。面板預先導覽到目標位置,使用者通常只要按「打開」。
 
-    /// Just Press Record:iCloud Drive 容器,日期子資料夾巢狀 → 遞迴＋iCloud 語意。
-    /// 容器實名未硬編——glob openplanetsoftware 前綴,找不到退回手動選資料夾。
+    /// Just Press Record:iCloud Drive 容器(日期子資料夾巢狀 → 遞迴＋iCloud 語意)。
+    /// 自動定位容器並把面板開在那裡;沒安裝 JPR(找不到容器)則開在 iCloud Drive 根目錄,
+    /// 讓使用者手動選——不是錯誤,只是需要 JPR 已安裝並使用 iCloud Drive 儲存才有內容。
     private func applyJustPressRecordPreset() {
         let mobileDocs = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents")
         let container = (try? FileManager.default.contentsOfDirectory(
                 at: mobileDocs, includingPropertiesForKeys: nil))?
             .first { $0.lastPathComponent.lowercased().contains("openplanetsoftware") }
-        guard let container else {
-            NotificationManager.shared.showNotification(
-                title: "找不到 Just Press Record 的 iCloud 容器——請確認 app 已安裝且儲存位置設為 iCloud Drive，或改用「選擇…」手動指定",
-                type: .warning, duration: 8)
-            return
+
+        let startAt: URL
+        let hint: String
+        if let container {
+            let documents = container.appendingPathComponent("Documents")
+            startAt = FileManager.default.fileExists(atPath: documents.path) ? documents : container
+            hint = "已定位到 Just Press Record 資料夾，按「打開」確認即可。"
+        } else {
+            startAt = mobileDocs
+            hint = "找不到 Just Press Record 的 iCloud 資料夾。若已安裝並用 iCloud Drive 儲存，請在此手動選取它的資料夾；否則按取消。"
         }
-        let documents = container.appendingPathComponent("Documents")
-        let folder = FileManager.default.fileExists(atPath: documents.path) ? documents : container
-        applyPreset(folder: folder, displayName: "Just Press Record",
-                    presetKind: "justPressRecord", recursive: true, isICloud: true)
+        pickPresetFolder(startAt: startAt, message: hint, displayName: "Just Press Record",
+                         presetKind: "justPressRecord", recursive: true, isICloud: true)
     }
 
-    /// Apple 語音備忘錄:本機群組容器(CloudKit 同步的一般資料夾,平面、非 ubiquitous)。
-    /// 讀不到 → 引導開啟完整磁碟取用權。
+    /// Apple 語音備忘錄:本機群組容器(平面 .m4a,CloudKit 同步)。面板預先導覽到 Recordings 資料夾。
+    /// 使用者選取後的 bookmark 直接授權,免完整磁碟取用權。
     private func applyVoiceMemosPreset() {
-        let folder = FileManager.default.homeDirectoryForCurrentUser
+        let recordings = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings")
-        let readable = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: nil)) != nil
-        guard readable else {
-            NotificationManager.shared.showNotification(
-                title: "無法讀取語音備忘錄資料夾——請在「隱私權與安全性 → 完整磁碟取用權」允許 VoiceInk 後重試",
-                type: .warning, duration: 10,
-                actionButton: ("開啟設定", {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }))
-            return
-        }
-        applyPreset(folder: folder, displayName: "語音備忘錄",
-                    presetKind: "voiceMemos", recursive: false, isICloud: false)
+        // Recordings 可能尚未建立(VM 從未同步)→ 退回群組容器根,再退回 ~/Library。
+        let groupRoot = recordings.deletingLastPathComponent()
+        let startAt = FileManager.default.fileExists(atPath: recordings.path) ? recordings
+            : (FileManager.default.fileExists(atPath: groupRoot.path) ? groupRoot
+               : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library"))
+        pickPresetFolder(
+            startAt: startAt,
+            message: "請選取語音備忘錄的「Recordings」資料夾（在 Group Containers/group.com.apple.VoiceMemos.shared 內）。選取後即可存取，不需完整磁碟取用權。",
+            displayName: "語音備忘錄", presetKind: "voiceMemos", recursive: false, isICloud: false)
     }
 
-    private func applyPreset(folder: URL, displayName name: String,
-                             presetKind preset: String, recursive rec: Bool, isICloud: Bool) {
+    /// 開啟資料夾選取面板(預先導覽到 startAt),把使用者選取的資料夾套成預設來源。
+    private func pickPresetFolder(startAt: URL, message: String, displayName name: String,
+                                  presetKind preset: String, recursive rec: Bool, isICloud: Bool) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true          // 目標在隱藏的 ~/Library 內
+        panel.directoryURL = startAt
+        panel.message = message
+        panel.prompt = "選擇此資料夾"
+        guard panel.runModal() == .OK, let folder = panel.url else { return }   // 取消 → 靜默,不報錯
         guard let bookmark = try? folder.bookmarkData(options: [.withSecurityScope],
                                                       includingResourceValuesForKeys: nil, relativeTo: nil) else {
             NotificationManager.shared.showNotification(title: "無法建立資料夾授權", type: .error, duration: 4)
