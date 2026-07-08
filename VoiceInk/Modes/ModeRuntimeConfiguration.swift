@@ -71,6 +71,14 @@ struct OutputRuntimeConfiguration {
     let outputMode: ModeOutputMode
     let autoSendKey: AutoSendKey
     let customCommand: ModeCustomCommand?
+    /// 「編輯後貼上」：`.paste` 交付前先過外部編輯器。以下三者從 Mode + 全域設定組出。
+    let editBeforePaste: Bool
+    let editCommand: String     // e.g. "mvim -f {file}"
+    let editTarget: String      // "paste"（貼回原框）| "clipboard"（放剪貼簿）
+
+    static let defaultEditCommand = "mvim -f {file}"
+    static let editCommandKey = "editBeforePasteCommand"
+    static let editTargetKey = "editBeforePasteTarget"
 }
 
 @MainActor
@@ -145,11 +153,17 @@ enum ModeRuntimeResolver {
     static func outputConfiguration(mode: ModeConfig? = nil) -> OutputRuntimeConfiguration {
         let mode = mode ?? ModeManager.shared.currentEffectiveConfiguration
 
+        let defaults = UserDefaults.standard
+        let command = defaults.string(forKey: OutputRuntimeConfiguration.editCommandKey)
+        let target = defaults.string(forKey: OutputRuntimeConfiguration.editTargetKey)
         return OutputRuntimeConfiguration(
             mode: mode,
             outputMode: mode?.outputMode ?? .paste,
             autoSendKey: mode?.autoSendKey ?? .none,
-            customCommand: mode?.customCommand
+            customCommand: mode?.customCommand,
+            editBeforePaste: mode?.editBeforePaste ?? false,
+            editCommand: (command?.isEmpty == false) ? command! : OutputRuntimeConfiguration.defaultEditCommand,
+            editTarget: (target?.isEmpty == false) ? target! : "paste"
         )
     }
 

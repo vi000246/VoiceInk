@@ -45,9 +45,40 @@ final class TranscriptionDelivery {
         }
 
         if let text = request.text {
-            await paste(text, output: request.output, actions: actions)
+            if request.output.outputMode == .paste, request.output.editBeforePaste {
+                await deliverEditBeforePaste(text, output: request.output, actions: actions)
+            } else {
+                await paste(text, output: request.output, actions: actions)
+            }
         } else {
             await actions.dismiss()
+        }
+    }
+
+    /// 「編輯後貼上」：先把結果交給外部編輯器（真 vim/nvim）修改，讀回後再貼回原框或放剪貼簿。
+    /// 編輯是人操作、可能數十秒 → 先收掉錄音 UI，round-trip 在背景 Task 進行。
+    private func deliverEditBeforePaste(_ text: String, output: OutputRuntimeConfiguration, actions: Actions) async {
+        let original = deliverableText(from: text)
+        SoundManager.shared.playStopSound()
+        await actions.dismiss()
+
+        Task { @MainActor in
+            do {
+                let edited = try await ExternalEditorReviewRunner.review(text: original, command: output.editCommand)
+                if output.editTarget == "clipboard" {
+                    _ = ClipboardManager.copyToClipboard(edited)
+                    NotificationManager.shared.showNotification(
+                        title: "已複製編輯結果到剪貼簿", type: .success, duration: 3)
+                } else {
+                    // 等原本的輸入框重新取得焦點再貼（編輯器視窗關閉後）。
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    _ = await CursorPaster.startPasteAtCursor(edited).value
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                NotificationManager.shared.showNotification(
+                    title: "編輯器失敗：\(message)", type: .error, duration: 6)
+            }
         }
     }
 
