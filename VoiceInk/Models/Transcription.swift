@@ -11,8 +11,9 @@ enum TranscriptionStatus: String, Codable {
 @Model
 final class Transcription {
     // timestamp: sort/cursor key for history pagination and cleanup predicates;
-    // importFingerprint: filter key for Recording Management.
-    #Index<Transcription>([\.timestamp], [\.importFingerprint])
+    // importFingerprint: filter key for Recording Management;
+    // recorderFavorite: starred-protection filter in the library management pages.
+    #Index<Transcription>([\.timestamp], [\.importFingerprint], [\.recorderFavorite])
 
     static let canceledTranscriptionText = "The transcription was canceled."
 
@@ -40,6 +41,9 @@ final class Transcription {
     var recorderSourceLabel: String?
     var recorderCategoryName: String?
     var recorderCategoryId: UUID?
+    /// 語音項的手動 tag（語音管理頁可設；套範本時可自動標）。錄音項的 tag 用 recorderCategoryName。
+    /// additive、lightweight migration。統一對外用 `displayTag`。
+    var manualTag: String?
     /// Recorder display title: `yyyyMMdd HHmm <≤10-char AI summary>`, generated at classification.
     var recorderTitle: String?
     /// User-marked "favorite" recording (yellow star in Recording Management) — a reminder that this
@@ -56,6 +60,9 @@ final class Transcription {
     /// Newline-joined absolute paths of the split audio chunks, when a long recording was chunked
     /// for cloud transcription. nil for single-file recordings.
     var audioChunkPathsRaw: String?
+
+    /// 統一對外的 tag：錄音項用分類名（recorderCategoryName），語音項用手動 tag（manualTag）。
+    var displayTag: String? { recorderCategoryName ?? manualTag }
 
     /// The playable audio chunks in order. Empty when the recording wasn't chunked.
     var audioChunkURLs: [URL] {
