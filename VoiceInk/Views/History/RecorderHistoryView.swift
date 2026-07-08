@@ -888,6 +888,17 @@ private struct RecorderDetailSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             AppPanelHeader(title: "錄音詳情", onClose: { dismiss() })
+            HStack {
+                Button {
+                    dismiss()
+                    AppNavigator.shared.askAI(about: transcription.id)
+                } label: {
+                    Label("Ask AI 針對這筆提問", systemImage: "bubble.left.and.text.bubble.right.fill")
+                }
+                .controlSize(.small)
+                Spacer()
+            }
+            .padding(.horizontal, 16).padding(.top, 12)
             ScrollView {
                 RecordingCard(
                     transcription: transcription,

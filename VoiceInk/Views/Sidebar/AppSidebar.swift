@@ -125,6 +125,7 @@ private extension ViewType {
         case .categories: return "錄音模式"
         case .recorderLog: return "Recording Management"
         case .askAI: return "Ask AI"
+        case .askAITemplates: return "Ask AI 範本"
         case .templateGuide: return "Template Guide"
         case .models: return "Transcription & AI Models"
         case .transcribeAudio: return "Manual Transcribe"
@@ -138,7 +139,7 @@ private extension ViewType {
         (nil, [.dashboard]),
         ("語音輸入", [.modes, .history]),
         ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog]),
-        ("Ask AI", [.askAI]),
+        ("Ask AI", [.askAI, .askAITemplates]),
         ("共用與系統", [.prompts, .models, .systemTemplate, .templateGuide, .dictionary, .transcribeAudio, .audio, .settings, .license]),
     ]
 
@@ -164,6 +165,7 @@ private extension ViewType {
         case .categories: return "folder.fill.badge.gearshape"
         case .recorderLog: return "list.bullet.rectangle.fill"
         case .askAI: return "bubble.left.and.text.bubble.right.fill"
+        case .askAITemplates: return "person.crop.rectangle.stack.fill"
         case .systemTemplate: return "doc.badge.gearshape"
         case .templateGuide: return "graduationcap.fill"
         case .settings: return "gearshape.fill"
@@ -198,6 +200,8 @@ private extension ViewType {
         case .recorderLog:
             return .init(background: AppTheme.Sidebar.audio)
         case .askAI:
+            return .init(background: AppTheme.Sidebar.modes)
+        case .askAITemplates:
             return .init(background: AppTheme.Sidebar.modes)
         case .systemTemplate:
             return .init(background: AppTheme.Sidebar.fallback)

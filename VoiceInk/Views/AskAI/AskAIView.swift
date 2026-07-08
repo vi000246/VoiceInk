@@ -6,9 +6,10 @@ import LLMkit
 private struct LiveChatCompleter: ChatCompleting {
     let aiService: AIService
     let provider: AIProvider
+    var modelName: String?
     func complete(system: String, user: String) async throws -> String {
         try await aiService.completeChat(
-            provider: provider, modelName: nil,
+            provider: provider, modelName: modelName,
             messages: [ChatMessage.user(user)], systemPrompt: system, timeout: 60)
     }
 }
@@ -20,6 +21,7 @@ struct AskAIView: View {
     @StateObject private var recorderStore = RecorderConfigStore.shared
 
     @Query(sort: \EmbeddingChunk.timestamp) private var allChunks: [EmbeddingChunk]
+    @Query(sort: \AskAITemplate.createdAt) private var askTemplates: [AskAITemplate]
 
     @State private var thread: AskAIThread?
     @State private var messages: [AskAIMessage] = []
@@ -27,9 +29,18 @@ struct AskAIView: View {
     @State private var isAsking = false
 
     // Scope
-    @State private var sourceFilter: String = "all"     // all/dictation/recorder/meeting
+    @State private var sourceFilter: AskAISourceFilter = .all   // 全部 / 語音輸入 / 錄音輸入(含會議)
     @State private var categoryId: UUID?
     @State private var dateFilter: String = "all"       // all/7d/30d
+    /// 單檔限定（管理頁「Ask AI」按鈕帶入）;非 nil 時覆蓋上面的來源/分類/日期。
+    @State private var focusedTranscriptionId: UUID?
+    @State private var focusedTitle: String?
+    /// 選用的分析角色（persona）範本 id;nil = 無。
+    @State private var personaId: UUID?
+
+    // 答案模型（Ask AI 專用，與 embedding／enhancement 預設分離）。
+    @AppStorage(AskAIAnswerModel.providerKey) private var answerProviderRaw = ""
+    @AppStorage(AskAIAnswerModel.modelKey) private var answerModelRaw = ""
 
     // Backfill
     @State private var backfillProgress: TranscriptIndexService.Progress?
@@ -74,6 +85,11 @@ struct AskAIView: View {
             TranscriptionDetailView(transcription: t)
                 .frame(minWidth: 480, minHeight: 400)
         }
+        .onReceive(AppNavigator.shared.$pendingAskTranscriptionId) { id in
+            guard let id else { return }
+            focusScope(on: id)
+            AppNavigator.shared.consumePendingAsk()
+        }
         .confirmationDialog("切換 embedding 模型需要重建整個索引",
                             isPresented: Binding(get: { pendingModelSwitch != nil },
                                                  set: { if !$0 { pendingModelSwitch = nil } }),
@@ -109,12 +125,17 @@ struct AskAIView: View {
                         Text(m.displayName).tag(m)
                     }
                 }
-                Text("答案模型：跟隨 AI Models 的預設（\(aiService.selectedProvider.rawValue)）")
+                Picker("回答模型", selection: answerChoiceBinding) {
+                    Text("預設（跟隨 AI Models：\(aiService.selectedProvider.rawValue)）").tag(RecorderModelChoice?.none)
+                    ForEach(recorderModelChoices(aiService), id: \.self) { c in
+                        Text(c.label).tag(RecorderModelChoice?.some(c))
+                    }
+                }
             } label: {
                 Image(systemName: "gearshape")
             }
             .menuIndicator(.hidden)
-            .help("Embedding 模型設定")
+            .help("Embedding／回答模型設定")
         }
     }
 
@@ -131,6 +152,26 @@ struct AskAIView: View {
                 }
             }
         )
+    }
+
+    /// 回答模型選擇（provider·model）;nil = 跟隨 AI Models 預設。存進 AppStorage。
+    private var answerChoiceBinding: Binding<RecorderModelChoice?> {
+        Binding(
+            get: {
+                guard !answerProviderRaw.isEmpty else { return nil }
+                return RecorderModelChoice(provider: answerProviderRaw, model: answerModelRaw)
+            },
+            set: {
+                answerProviderRaw = $0?.provider ?? ""
+                answerModelRaw = $0?.model ?? ""
+            }
+        )
+    }
+
+    /// 目前選的分析角色 persona 文字（nil = 無）。
+    private var selectedPersona: String? {
+        guard let personaId else { return nil }
+        return askTemplates.first { $0.id == personaId }?.systemPrompt
     }
 
     // MARK: - Conversation
@@ -164,22 +205,45 @@ struct AskAIView: View {
 
     private var scopeBar: some View {
         HStack(spacing: 10) {
-            Picker("", selection: $sourceFilter) {
-                Text("全部來源").tag("all")
-                Text("聽寫").tag("dictation")
-                Text("錄音").tag("recorder")
-                Text("會議").tag("meeting")
-            }.fixedSize()
-            Picker("", selection: $categoryId) {
-                Text("全部分類").tag(UUID?.none)
-                ForEach(recorderStore.categories) { c in Text(c.name).tag(UUID?.some(c.id)) }
-            }.fixedSize()
-            Picker("", selection: $dateFilter) {
-                Text("不限時間").tag("all")
-                Text("近 7 天").tag("7d")
-                Text("近 30 天").tag("30d")
-            }.fixedSize()
+            if let focusedTitle {
+                // 單檔限定：覆蓋一般來源/分類/日期篩選。
+                HStack(spacing: 5) {
+                    Image(systemName: "target").font(.system(size: 11))
+                    Text("限定：\(focusedTitle)").font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    Button {
+                        focusedTranscriptionId = nil
+                        self.focusedTitle = nil
+                    } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 12)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Capsule().fill(AppTheme.Accent.primary.opacity(0.14)))
+                .foregroundStyle(AppTheme.Accent.primary)
+            } else {
+                Picker("", selection: $sourceFilter) {
+                    ForEach(AskAISourceFilter.allCases) { f in Text(f.label).tag(f) }
+                }.fixedSize()
+                Picker("", selection: $categoryId) {
+                    Text("全部分類").tag(UUID?.none)
+                    ForEach(recorderStore.categories) { c in Text(c.name).tag(UUID?.some(c.id)) }
+                }.fixedSize()
+                Picker("", selection: $dateFilter) {
+                    Text("不限時間").tag("all")
+                    Text("近 7 天").tag("7d")
+                    Text("近 30 天").tag("30d")
+                }.fixedSize()
+            }
+
             Spacer()
+
+            // 分析角色（persona）範本。
+            if !askTemplates.isEmpty {
+                Picker("", selection: $personaId) {
+                    Text("無分析角色").tag(UUID?.none)
+                    ForEach(askTemplates) { t in Text(t.title).tag(UUID?.some(t.id)) }
+                }.fixedSize()
+                .help("選一個 Ask AI 範本，讓回答以該視角展開")
+            }
         }
         .labelsHidden()
         .padding(.horizontal, 14).padding(.vertical, 8)
@@ -283,13 +347,22 @@ struct AskAIView: View {
         guard !q.isEmpty, !isAsking else { return }
         question = ""
         isAsking = true
-        AskAIService.shared.setLiveCompleter(LiveChatCompleter(aiService: aiService, provider: aiService.selectedProvider))
+        // 解析 Ask AI 專用回答模型（未設 → 跟隨 AI Models 預設 provider）。
+        let resolved = AskAIAnswerModel.resolve(
+            storedProvider: answerProviderRaw.isEmpty ? nil : answerProviderRaw,
+            storedModel: answerModelRaw.isEmpty ? nil : answerModelRaw,
+            defaultProvider: aiService.selectedProvider.rawValue,
+            available: aiService.connectedProviders.map(\.rawValue))
+        let provider = AIProvider(rawValue: resolved.provider) ?? aiService.selectedProvider
+        AskAIService.shared.setLiveCompleter(
+            LiveChatCompleter(aiService: aiService, provider: provider, modelName: resolved.model))
+        let persona = selectedPersona
         Task {
             defer { isAsking = false }
             do {
                 _ = try await AskAIService.shared.ask(
                     question: q, scope: currentScope, thread: thread,
-                    model: indexService.model, context: modelContext)
+                    model: indexService.model, context: modelContext, persona: persona)
                 reloadMessages()
             } catch {
                 NotificationManager.shared.showNotification(
@@ -299,14 +372,18 @@ struct AskAIView: View {
     }
 
     private var currentScope: AskAIScope {
-        let sources: Set<String>? = sourceFilter == "all" ? nil : [sourceFilter]
+        // 單檔限定覆蓋一切其他 scope。
+        if let focusedTranscriptionId {
+            return AskAIScope(sources: nil, categoryId: nil, dateRange: nil,
+                              transcriptionId: focusedTranscriptionId)
+        }
         let range: ClosedRange<Date>?
         switch dateFilter {
         case "7d": range = Date().addingTimeInterval(-7 * 86400)...Date().addingTimeInterval(86400)
         case "30d": range = Date().addingTimeInterval(-30 * 86400)...Date().addingTimeInterval(86400)
         default: range = nil
         }
-        return AskAIScope(sources: sources, categoryId: categoryId, dateRange: range)
+        return AskAIScope(sources: sourceFilter.sources, categoryId: categoryId, dateRange: range)
     }
 
     private func reloadMessages() {
@@ -320,6 +397,21 @@ struct AskAIView: View {
         let fetched = (try? modelContext.fetch(FetchDescriptor<AskAIMessage>(
             sortBy: [SortDescriptor(\.createdAt)]))) ?? []
         messages = fetched.filter { $0.thread?.persistentModelID == tid }
+    }
+
+    /// 從管理頁「Ask AI」進來：限定 scope 到單一錄音並開新對話。
+    private func focusScope(on id: UUID) {
+        let match = (try? modelContext.fetch(FetchDescriptor<Transcription>(
+            predicate: #Predicate { $0.id == id })))?.first
+        guard let match else {
+            NotificationManager.shared.showNotification(
+                title: "找不到該錄音（可能已刪除）", type: .warning, duration: 4)
+            return
+        }
+        focusedTranscriptionId = id
+        focusedTitle = match.recorderTitle ?? String(match.text.prefix(20))
+        thread = nil
+        messages = []
     }
 
     private func openCitation(_ ref: ChunkRef) {
