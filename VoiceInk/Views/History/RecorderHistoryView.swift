@@ -7,12 +7,13 @@ import AppKit
 /// audio or the whole record. Supports search + multi-select batch delete.
 struct RecorderHistoryView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var enhancementService: AIEnhancementService
+    @EnvironmentObject private var aiService: AIService
     @Query(filter: #Predicate<Transcription> { $0.importFingerprint != nil },
            sort: \Transcription.timestamp, order: .reverse)
     private var items: [Transcription]
     @State private var fileNameByFingerprint: [String: String] = [:]
     @State private var byteSizeByFingerprint: [String: Int] = [:]
-    @State private var expandedId: UUID?
     @State private var searchText = ""
     /// The query actually applied to the filter — trails `searchText` by a 250 ms debounce so
     /// typing doesn't re-scan every transcript on each keystroke (the query is unbounded: this
@@ -25,6 +26,10 @@ struct RecorderHistoryView: View {
     @State private var confirmBatchDelete = false
     /// Anchor for Shift-click range selection (the last row whose checkbox was clicked).
     @State private var lastToggledId: UUID?
+    // Notion 式表格排序 + 詳情彈窗（取代原本的行內展開）。
+    @State private var sortField: LibraryFilter.SortField = .date
+    @State private var sortAscending = false
+    @State private var detailTarget: Transcription?
 
     private static let dateSearchFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
@@ -33,6 +38,27 @@ struct RecorderHistoryView: View {
     /// Distinct categories actually present in the imported recordings (for the filter dropdown).
     private var availableCategories: [String] {
         Array(Set(items.compactMap { $0.recorderCategoryName })).sorted()
+    }
+
+    private func fileName(_ t: Transcription) -> String? { t.importFingerprint.flatMap { fileNameByFingerprint[$0] } }
+    private func byteSize(_ t: Transcription) -> Int? { t.importFingerprint.flatMap { byteSizeByFingerprint[$0] } }
+
+    /// filteredItems 再套用表格欄位排序（日期／標題／大小）。
+    private var sortedItems: [Transcription] {
+        filteredItems.sorted { a, b in
+            let result: Bool
+            switch sortField {
+            case .date:
+                result = RecorderRowDisplay.recordingDate(a, fileName: fileName(a))
+                       < RecorderRowDisplay.recordingDate(b, fileName: fileName(b))
+            case .size:
+                result = (byteSize(a) ?? 0) < (byteSize(b) ?? 0)
+            case .title:
+                result = RecorderRowDisplay.title(a, fileName: fileName(a))
+                    .localizedStandardCompare(RecorderRowDisplay.title(b, fileName: fileName(b))) == .orderedAscending
+            }
+            return sortAscending ? result : !result
+        }
     }
 
     private var filteredItems: [Transcription] {
@@ -66,26 +92,22 @@ struct RecorderHistoryView: View {
             if filteredItems.isEmpty {
                 emptyState
             } else {
+                RecorderTableHeader(sort: $sortField, ascending: $sortAscending)
+                Divider()
                 ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(filteredItems) { t in
-                            RecordingCard(
+                    LazyVStack(spacing: 0) {
+                        ForEach(sortedItems) { t in
+                            RecorderTableRow(
                                 transcription: t,
-                                fileName: t.importFingerprint.flatMap { fileNameByFingerprint[$0] },
-                                byteSize: t.importFingerprint.flatMap { byteSizeByFingerprint[$0] },
-                                isExpanded: expandedId == t.id,
+                                fileName: fileName(t),
+                                byteSize: byteSize(t),
                                 isChecked: selectedIds.contains(t.id),
                                 onToggleCheck: { toggle(t.id) },
-                                onToggle: {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        expandedId = expandedId == t.id ? nil : t.id
-                                    }
-                                }
+                                onOpen: { detailTarget = t }
                             )
+                            Divider().opacity(0.35)
                         }
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 20)
                 }
             }
 
@@ -127,6 +149,12 @@ struct RecorderHistoryView: View {
                     performBatchDelete(selectedTranscriptions)
                 }
             }
+        }
+        .sheet(item: $detailTarget) { t in
+            RecorderDetailSheet(transcription: t, fileName: fileName(t), byteSize: byteSize(t))
+                .environmentObject(enhancementService)
+                .environmentObject(aiService)
+                .frame(width: 720, height: 660)
         }
     }
 
@@ -229,14 +257,21 @@ struct RecorderHistoryView: View {
     }
 }
 
+/// `.card` = the (legacy) list row with checkbox + disclosure; `.detail` = the body shown inside the
+/// detail sheet — always expanded, no checkbox/chevron, not tap-to-toggle.
+enum RecordingCardStyle { case card, detail }
+
 private struct RecordingCard: View {
     let transcription: Transcription
     let fileName: String?
     let byteSize: Int?
     let isExpanded: Bool
     let isChecked: Bool
+    var style: RecordingCardStyle = .card
     let onToggleCheck: () -> Void
     let onToggle: () -> Void
+
+    private var showsExpansion: Bool { style == .detail || isExpanded }
 
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var enhancementService: AIEnhancementService
@@ -303,7 +338,7 @@ private struct RecordingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if isExpanded {
+            if showsExpansion {
                 expandedContent
                     .padding(.top, 10)
                     .onAppear(perform: resolveAudioFiles)
@@ -349,11 +384,13 @@ private struct RecordingCard: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Button(action: onToggleCheck) {
-                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 16)).foregroundStyle(isChecked ? AppTheme.Accent.primary : .secondary)
+            if style == .card {
+                Button(action: onToggleCheck) {
+                    Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 16)).foregroundStyle(isChecked ? AppTheme.Accent.primary : .secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             Image(systemName: "waveform")
                 .font(.system(size: 14)).foregroundStyle(.white)
                 .frame(width: 32, height: 32)
@@ -384,11 +421,13 @@ private struct RecordingCard: View {
                 }
             }
             Spacer()
-            Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
-                .foregroundColor(.secondary).rotationEffect(.degrees(isExpanded ? 90 : 0))
+            if style == .card {
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                    .foregroundColor(.secondary).rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
         }
         .contentShape(Rectangle())
-        .onTapGesture(perform: onToggle)
+        .onTapGesture { if style == .card { onToggle() } }
     }
 
     private var expandedContent: some View {
@@ -680,5 +719,189 @@ private struct TranscriptSheet: View {
                 .background(Capsule().fill(active ? AppTheme.Surface.controlActive : Color.clear))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Notion 式表格（列 + 可排序表頭 + 詳情彈窗）
+
+/// 錄音項在表格列的顯示衍生值 — 與 RecordingCard 的 displayTitle/recordingDate 同邏輯，抽出供列與排序共用。
+enum RecorderRowDisplay {
+    /// 真正的錄音時間：優先解析裝置檔名的時間戳，否則退回匯入時間。
+    static func recordingDate(_ t: Transcription, fileName: String?) -> Date {
+        (fileName.flatMap { RecorderRecordingTime.parse(fromFileName: $0) }) ?? t.timestamp
+    }
+    /// 顯示標題：自動標題（yyyyMMdd HHmm 摘要）會用檔名時間重新蓋章;使用者改名的原樣顯示;皆無則用檔名。
+    static func title(_ t: Transcription, fileName: String?) -> String {
+        if let title = t.recorderTitle, !title.isEmpty {
+            if fileName.flatMap({ RecorderRecordingTime.parse(fromFileName: $0) }) != nil,
+               let summary = RecorderRecordingTime.autoTitleSummary(from: title) {
+                let stamp = RecorderRecordingTime.titleStamp(recordingDate(t, fileName: fileName))
+                return summary.isEmpty ? stamp : "\(stamp) \(summary)"
+            }
+            return title
+        }
+        return fileName?.isEmpty == false ? fileName! : "錄音匯入"
+    }
+}
+
+/// 可排序的表頭列。標題/大小欄可點擊切換排序;再點同欄切換升降序。
+private struct RecorderTableHeader: View {
+    @Binding var sort: LibraryFilter.SortField
+    @Binding var ascending: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: 15)   // 對齊：勾選欄
+            Color.clear.frame(width: 12)   // 對齊：星號欄
+            sortButton("標題 · 日期", field: .title, secondary: .date)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("分類").frame(width: 110, alignment: .leading)
+            sortButton("大小", field: .size).frame(width: 72, alignment: .trailing)
+            Text("已匯出").frame(width: 48, alignment: .center)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 24).padding(.vertical, 7)
+    }
+
+    /// 主欄提供標題/日期兩種排序：點文字排標題、點日曆 icon 排日期。單欄則只切一種。
+    private func sortButton(_ label: String, field: LibraryFilter.SortField, secondary: LibraryFilter.SortField? = nil) -> some View {
+        HStack(spacing: 6) {
+            Button { toggle(field) } label: {
+                HStack(spacing: 3) {
+                    Text(label)
+                    if sort == field { arrow }
+                }
+            }.buttonStyle(.plain)
+            if let secondary {
+                Button { toggle(secondary) } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "calendar").font(.system(size: 9))
+                        if sort == secondary { arrow }
+                    }
+                    .foregroundStyle(sort == secondary ? AppTheme.Accent.primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help("依日期排序")
+            }
+        }
+    }
+
+    private var arrow: some View {
+        Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+    }
+
+    private func toggle(_ field: LibraryFilter.SortField) {
+        if sort == field { ascending.toggle() } else { sort = field; ascending = false }
+    }
+}
+
+/// 單一錄音的表格列：勾選 · 星號 · 標題/日期 · 分類 · 大小 · 已匯出。點列開詳情彈窗。
+private struct RecorderTableRow: View {
+    let transcription: Transcription
+    let fileName: String?
+    let byteSize: Int?
+    let isChecked: Bool
+    let onToggleCheck: () -> Void
+    let onOpen: () -> Void
+
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var postProcessor = RecorderPostProcessor.shared
+
+    private var recordingDate: Date { RecorderRowDisplay.recordingDate(transcription, fileName: fileName) }
+    private var title: String { RecorderRowDisplay.title(transcription, fileName: fileName) }
+    private var sizeText: String? {
+        byteSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onToggleCheck) {
+                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15)).foregroundStyle(isChecked ? AppTheme.Accent.primary : .secondary)
+            }
+            .buttonStyle(.plain).frame(width: 15)
+
+            Button(action: toggleFavorite) {
+                Image(systemName: transcription.recorderFavorite ? "star.fill" : "star")
+                    .font(.system(size: 12))
+                    .foregroundStyle(transcription.recorderFavorite ? Color.yellow : Color.secondary.opacity(0.4))
+            }
+            .buttonStyle(.plain).frame(width: 12)
+            .help(transcription.recorderFavorite ? "已標記為喜歡（提醒：不要刪除）" : "標記為喜歡")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // 分類
+            Group {
+                if postProcessor.processingIds.contains(transcription.id) {
+                    Text("處理中…").foregroundStyle(.secondary)
+                } else if let tag = transcription.displayTag {
+                    Text(tag).font(.system(size: 11, weight: .medium)).foregroundStyle(AppTheme.Accent.primary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Capsule().fill(AppTheme.Accent.primary.opacity(0.12)))
+                } else {
+                    Text("—").foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 110, alignment: .leading)
+
+            Text(sizeText ?? "—").foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .trailing)
+
+            Group {
+                if transcription.exportedFilePath != nil {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(AppTheme.Status.success)
+                } else {
+                    Text("—").foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 48, alignment: .center)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 24).padding(.vertical, 9)
+        .background(isChecked ? AppTheme.Accent.primary.opacity(0.06) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onOpen)
+    }
+
+    private func toggleFavorite() {
+        transcription.recorderFavorite.toggle()
+        try? modelContext.save()
+    }
+}
+
+/// 詳情彈窗：以 `.detail` 樣式（永遠展開、無勾選/箭頭）嵌入完整的 RecordingCard，保留全部動作
+/// （套用範本、匯出、重新命名、刪除、播放、看逐字稿）。
+private struct RecorderDetailSheet: View {
+    let transcription: Transcription
+    let fileName: String?
+    let byteSize: Int?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            AppPanelHeader(title: "錄音詳情", onClose: { dismiss() })
+            ScrollView {
+                RecordingCard(
+                    transcription: transcription,
+                    fileName: fileName,
+                    byteSize: byteSize,
+                    isExpanded: true,
+                    isChecked: false,
+                    style: .detail,
+                    onToggleCheck: {},
+                    onToggle: {}
+                )
+                .padding(16)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
