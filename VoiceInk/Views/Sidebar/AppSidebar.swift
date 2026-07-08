@@ -5,6 +5,7 @@ struct AppSidebar: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
     @State private var recorderCategoriesExpanded = false
+    @State private var voiceTagsExpanded = false
 
     var body: some View {
         ZStack(alignment: .trailing) {
@@ -70,6 +71,8 @@ struct AppSidebar: View {
             ForEach(items) { viewType in
                 if viewType == .recorderLog {
                     expandableRecorderLog
+                } else if viewType == .history {
+                    expandableVoiceLibrary
                 } else {
                     SidebarItemButton(
                         viewType: viewType,
@@ -107,6 +110,36 @@ struct AppSidebar: View {
                     ) {
                         sidebarModel.recorderCategoryFilter = cat.name
                         selectedView = .recorderLog
+                    }
+                }
+            }
+        }
+    }
+
+    /// 語音管理列：本體導覽 + 可展開的手動 tag 子項（數量多者在上，旁標檔案數）。
+    private var expandableVoiceLibrary: some View {
+        VStack(spacing: 3) {
+            SidebarItemButton(
+                viewType: .history,
+                isSelected: selectedView == .history && sidebarModel.voiceTagFilter == nil,
+                disclosure: sidebarModel.voiceTags.isEmpty
+                    ? nil
+                    : (voiceTagsExpanded ? "chevron.down" : "chevron.right"),
+                onDisclosure: { withAnimation(.easeInOut(duration: 0.15)) { voiceTagsExpanded.toggle() } }
+            ) {
+                sidebarModel.voiceTagFilter = nil
+                selectedView = .history
+            }
+
+            if voiceTagsExpanded {
+                ForEach(sidebarModel.voiceTags) { tag in
+                    SidebarCategoryChild(
+                        name: tag.name,
+                        count: tag.count,
+                        isSelected: selectedView == .history && sidebarModel.voiceTagFilter == tag.name
+                    ) {
+                        sidebarModel.voiceTagFilter = tag.name
+                        selectedView = .history
                     }
                 }
             }

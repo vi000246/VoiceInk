@@ -24,6 +24,8 @@ final class LibrarySidebarModel: ObservableObject {
 
     /// 錄音管理頁目前的分類篩選（nil = 全部）。側欄與頁內 Picker 共用此單一來源。
     @Published var recorderCategoryFilter: String?
+    /// 語音管理頁目前的 tag 篩選（nil = 全部）。側欄與頁內共用。
+    @Published var voiceTagFilter: String?
 
     private init() {}
 
