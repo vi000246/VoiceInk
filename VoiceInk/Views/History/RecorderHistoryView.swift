@@ -105,8 +105,21 @@ struct RecorderHistoryView: View {
                 debouncedQuery = q
             }
         }
-        .confirmationDialog("刪除所選 \(selectedIds.count) 筆？音檔與逐字稿都會移除。", isPresented: $confirmBatchDelete) {
-            Button("刪除所選", role: .destructive) { batchDelete() }
+        .confirmationDialog(batchDeleteMessage, isPresented: $confirmBatchDelete, titleVisibility: .visible) {
+            let (protectedDelete, starred) = LibraryFilter.deletionSet(from: selectedTranscriptions, includeStarred: false)
+            if starred > 0 {
+                // 有星號被選中：預設保護，另外提供「連星號一起刪」的破壞性選項。
+                Button("刪除 \(protectedDelete.count) 筆（保留 \(starred) 筆 ★）", role: .destructive) {
+                    performBatchDelete(protectedDelete)
+                }
+                Button("連 \(starred) 筆 ★ 一併刪除（共 \(selectedTranscriptions.count) 筆）", role: .destructive) {
+                    performBatchDelete(selectedTranscriptions)
+                }
+            } else {
+                Button("刪除所選 \(selectedTranscriptions.count) 筆", role: .destructive) {
+                    performBatchDelete(selectedTranscriptions)
+                }
+            }
         }
     }
 
@@ -166,8 +179,26 @@ struct RecorderHistoryView: View {
         lastToggledId = id
     }
 
-    private func batchDelete() {
-        TranscriptionStore.delete(items.filter { selectedIds.contains($0.id) }, in: modelContext)
+    /// The currently-selected transcriptions (across all filters, by id).
+    private var selectedTranscriptions: [Transcription] {
+        items.filter { selectedIds.contains($0.id) }
+    }
+
+    /// How many of the selected recordings are starred (★ = 永不刪除的保護標記）。
+    private var starredInSelection: Int {
+        selectedTranscriptions.filter { $0.recorderFavorite }.count
+    }
+
+    private var batchDeleteMessage: String {
+        let n = selectedTranscriptions.count
+        if starredInSelection > 0 {
+            return "所選 \(n) 筆中有 \(starredInSelection) 筆為星號 ★ 保護；預設會保留它們。音檔與逐字稿都會移除。"
+        }
+        return "刪除所選 \(n) 筆？音檔與逐字稿都會移除。"
+    }
+
+    private func performBatchDelete(_ toDelete: [Transcription]) {
+        TranscriptionStore.delete(toDelete, in: modelContext)
         selectedIds.removeAll()
     }
 

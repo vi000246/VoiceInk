@@ -298,8 +298,16 @@ final class RecorderPostProcessor: ObservableObject {
         let model = resolvedAnalysisModel(categoryProvider: category.aiProviderName,
                                           categoryModel: category.aiModelName,
                                           aiService: aiService)
-        let title = await generateShortTitle(from: analysis, provider: model.provider,
+        // 使用者若在錄音管理改過名（recorderTitle 非自動的 yyyyMMdd HHmm 格式），匯出檔名用該名;
+        // 否則沿用 AI 產生的精簡標題。
+        let title: String?
+        if let renamed = transcription.recorderTitle,
+           RecorderRecordingTime.autoTitleSummary(from: renamed) == nil {
+            title = renamed
+        } else {
+            title = await generateShortTitle(from: analysis, provider: model.provider,
                                              modelName: model.modelName, aiService: aiService)
+        }
         let deviceName = transcription.recorderSourceDeviceId.flatMap { store.device(byId: $0)?.displayName }
         let decision = RoutingDecision(category: category,
                                        prompt: store.recorderPrompt(byId: category.customPromptId),
