@@ -297,14 +297,15 @@ class AudioTranscriptionManager: ObservableObject {
                     fixedCategory: device?.defaultCategory(in: RecorderConfigStore.shared),
                     modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
             }
-            // Meeting captures run the same pipeline, but with no source device and (optionally) a
-            // fixed category from settings (nil ⇒ auto-classify like recorder imports).
+            // Meeting captures fold into the general recorder-input pipeline — no fixed 「會議」
+            // category; the user picks a template manually in Recording Management (same as any
+            // recorder import). `recorderSourceLabel`「會議 · <app>」still tags the source.
             if case .meetingCapture = item.origin,
                let enhancementService = engine.enhancementService,
                let aiService = enhancementService.getAIService() {
                 await RecorderPostProcessor.shared.process(
                     transcription: transcription, rawText: cleanedText, device: nil,
-                    fixedCategory: RecorderConfigStore.shared.meetingFixedCategory,
+                    fixedCategory: nil,
                     modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
             }
 
