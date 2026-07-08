@@ -2,6 +2,9 @@ import SwiftUI
 
 struct AppSidebar: View {
     @Binding var selectedView: ViewType
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
+    @State private var recorderCategoriesExpanded = false
 
     var body: some View {
         ZStack(alignment: .trailing) {
@@ -13,6 +16,13 @@ struct AppSidebar: View {
         .frame(maxHeight: .infinity)
         .onAppear {
             ViewType.assertSidebarItemsCoverAllCases()
+            sidebarModel.refresh(modelContext)
+        }
+        // 每次切到管理頁時刷新分類計數（新增/分類/刪除錄音後保持同步）。
+        .onChange(of: selectedView) { _, newValue in
+            if newValue == .recorderLog || newValue == .history {
+                sidebarModel.refresh(modelContext)
+            }
         }
     }
 
@@ -58,15 +68,49 @@ struct AppSidebar: View {
     private func sidebarSection(_ items: [ViewType]) -> some View {
         VStack(spacing: 3) {
             ForEach(items) { viewType in
-                SidebarItemButton(
-                    viewType: viewType,
-                    isSelected: selectedView == viewType
-                ) {
-                    selectedView = viewType
+                if viewType == .recorderLog {
+                    expandableRecorderLog
+                } else {
+                    SidebarItemButton(
+                        viewType: viewType,
+                        isSelected: selectedView == viewType
+                    ) {
+                        selectedView = viewType
+                    }
                 }
             }
         }
         .padding(.horizontal, 10)
+    }
+
+    /// 錄音管理列：本體導覽 + 可展開的分類子項（數量多者在上，旁標檔案數）。
+    private var expandableRecorderLog: some View {
+        VStack(spacing: 3) {
+            SidebarItemButton(
+                viewType: .recorderLog,
+                isSelected: selectedView == .recorderLog && sidebarModel.recorderCategoryFilter == nil,
+                disclosure: sidebarModel.recorderCategories.isEmpty
+                    ? nil
+                    : (recorderCategoriesExpanded ? "chevron.down" : "chevron.right"),
+                onDisclosure: { withAnimation(.easeInOut(duration: 0.15)) { recorderCategoriesExpanded.toggle() } }
+            ) {
+                sidebarModel.recorderCategoryFilter = nil
+                selectedView = .recorderLog
+            }
+
+            if recorderCategoriesExpanded {
+                ForEach(sidebarModel.recorderCategories) { cat in
+                    SidebarCategoryChild(
+                        name: cat.name,
+                        count: cat.count,
+                        isSelected: selectedView == .recorderLog && sidebarModel.recorderCategoryFilter == cat.name
+                    ) {
+                        sidebarModel.recorderCategoryFilter = cat.name
+                        selectedView = .recorderLog
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -75,7 +119,7 @@ private extension ViewType {
         switch self {
         case .modes: return "Voice Modes"
         case .prompts: return "共用範本"
-        case .history: return "Input History"
+        case .history: return "語音管理"
         case .recorders: return "錄音裝置"
         case .recorderMode: return "錄音設定"
         case .categories: return "錄音模式"
@@ -175,6 +219,9 @@ private struct SidebarIconStyle {
 private struct SidebarItemButton: View {
     let viewType: ViewType
     let isSelected: Bool
+    /// SF Symbol name for a trailing disclosure chevron (own hit area), or nil for none.
+    var disclosure: String? = nil
+    var onDisclosure: (() -> Void)? = nil
     let action: () -> Void
 
     var body: some View {
@@ -190,10 +237,19 @@ private struct SidebarItemButton: View {
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
+
+                if let disclosure {
+                    Image(systemName: disclosure)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 30)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onDisclosure?() }
+                }
             }
             .foregroundStyle(isSelected ? selectedForegroundColor : Color.primary)
             .padding(.leading, 8)
-            .padding(.trailing, 10)
+            .padding(.trailing, disclosure == nil ? 10 : 2)
             .frame(height: 38)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(rowBackground)
@@ -225,6 +281,54 @@ private struct SidebarItemButton: View {
 
     private var rowBorderColor: Color {
         isSelected ? selectedForegroundColor.opacity(0.18) : .clear
+    }
+
+    private var selectedForegroundColor: Color {
+        Color(nsColor: .alternateSelectedControlTextColor)
+    }
+}
+
+/// 側欄分類子項：縮排的分類名 + 檔案數徽章。點擊即把該分類設為錄音管理頁的篩選。
+private struct SidebarCategoryChild: View {
+    let name: String
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(isSelected ? selectedForegroundColor : .secondary)
+                    .frame(width: 16)
+
+                Text(name)
+                    .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.secondary.opacity(0.14)))
+            }
+            .foregroundStyle(isSelected ? selectedForegroundColor : Color.primary)
+            .padding(.leading, 34)   // 縮排對齊父列的圖示之後
+            .padding(.trailing, 10)
+            .frame(height: 30)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor) : .clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("\(name)（\(count)）")
     }
 
     private var selectedForegroundColor: Color {

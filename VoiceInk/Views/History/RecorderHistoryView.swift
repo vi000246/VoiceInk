@@ -19,7 +19,8 @@ struct RecorderHistoryView: View {
     /// view keeps all imported recordings forever).
     @State private var debouncedQuery = ""
     @State private var searchDebounceTask: Task<Void, Never>?
-    @State private var categoryFilter: String?   // nil = 全部
+    /// 分類篩選的單一事實來源與側欄共用（側欄點分類 → 設定此值 → 本頁即同步篩選）。
+    @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
     @State private var selectedIds: Set<UUID> = []
     @State private var confirmBatchDelete = false
     /// Anchor for Shift-click range selection (the last row whose checkbox was clicked).
@@ -37,7 +38,7 @@ struct RecorderHistoryView: View {
     private var filteredItems: [Transcription] {
         let q = debouncedQuery
         return items.filter { t in
-            if let categoryFilter, t.recorderCategoryName != categoryFilter { return false }
+            if let categoryFilter = sidebarModel.recorderCategoryFilter, t.recorderCategoryName != categoryFilter { return false }
             guard !q.isEmpty else { return true }
             // Short-circuit field by field: no joined+lowercased copy of the (possibly huge)
             // transcript is allocated, and cheap fields match without touching the text at all.
@@ -94,8 +95,14 @@ struct RecorderHistoryView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear(perform: loadFileNames)
-        .onChange(of: items.count) { _, _ in loadFileNames() }
+        .onAppear {
+            loadFileNames()
+            sidebarModel.refresh(modelContext)
+        }
+        .onChange(of: items.count) { _, _ in
+            loadFileNames()
+            sidebarModel.refresh(modelContext)   // 刪除/新增後側欄分類計數保持同步
+        }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
             let q = newValue.trimmingCharacters(in: .whitespaces)
@@ -134,7 +141,7 @@ struct RecorderHistoryView: View {
             .background(Capsule().fill(AppTheme.Surface.card))
             .frame(maxWidth: .infinity)
 
-            Picker("分類", selection: $categoryFilter) {
+            Picker("分類", selection: $sidebarModel.recorderCategoryFilter) {
                 Text("全部分類").tag(String?.none)
                 ForEach(availableCategories, id: \.self) { c in Text(c).tag(String?.some(c)) }
             }

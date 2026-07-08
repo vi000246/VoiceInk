@@ -24,7 +24,9 @@ struct InlineHistoryView: View {
     @Query(Self.createLatestTranscriptionIndicatorDescriptor()) private var latestTranscriptionIndicator: [Transcription]
 
     private static func createLatestTranscriptionIndicatorDescriptor() -> FetchDescriptor<Transcription> {
+        // 語音管理只涵蓋語音輸入／聽寫項（無 importFingerprint）;錄音匯入項屬「錄音管理」。
         var descriptor = FetchDescriptor<Transcription>(
+            predicate: #Predicate<Transcription> { $0.importFingerprint == nil },
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
         descriptor.fetchLimit = 1
@@ -36,22 +38,30 @@ struct InlineHistoryView: View {
             sortBy: [SortDescriptor(\Transcription.timestamp, order: .reverse)]
         )
 
+        // 一律限定語音項（importFingerprint == nil）——這是「語音管理」頁的範圍。
         if let timestamp = timestamp {
             if !searchText.isEmpty {
                 descriptor.predicate = #Predicate<Transcription> { transcription in
+                    transcription.importFingerprint == nil &&
                     (transcription.text.localizedStandardContains(searchText) ||
                     (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)) &&
                     transcription.timestamp < timestamp
                 }
             } else {
                 descriptor.predicate = #Predicate<Transcription> { transcription in
+                    transcription.importFingerprint == nil &&
                     transcription.timestamp < timestamp
                 }
             }
         } else if !searchText.isEmpty {
             descriptor.predicate = #Predicate<Transcription> { transcription in
-                transcription.text.localizedStandardContains(searchText) ||
-                (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
+                transcription.importFingerprint == nil &&
+                (transcription.text.localizedStandardContains(searchText) ||
+                (transcription.enhancedText?.localizedStandardContains(searchText) ?? false))
+            }
+        } else {
+            descriptor.predicate = #Predicate<Transcription> { transcription in
+                transcription.importFingerprint == nil
             }
         }
 
@@ -147,7 +157,7 @@ struct InlineHistoryView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
                     .font(.system(size: 12))
-                TextField("Search transcriptions...", text: $searchText)
+                TextField("搜尋語音逐字稿…", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
             }
