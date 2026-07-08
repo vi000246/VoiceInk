@@ -123,16 +123,16 @@ final class AskAIService: ObservableObject {
         let queryText = String(trimmed.prefix(6000))
         let queryVectors = try await embedder.embed(texts: [queryText], model: model)
         guard let queryVector = queryVectors.first else {
-            return persistAssistant(text: "資料庫中找不到相關內容。", citations: [],
+            return persistAssistant(text: "問題嵌入失敗——請確認 embedding 金鑰與網路。", citations: [],
                                     thread: resolvedThread, context: context)
         }
 
         let retrieved = RetrievalService.retrieve(queryVector: queryVector, scope: scope, k: 12,
                                                   model: model, context: context)
-        // 檢索為空 → 不呼叫生成,直接明說找不到。
+        // 檢索為空 → 不呼叫生成;先診斷原因再回報（模型不符/索引空/篩選太窄）。
         guard !retrieved.isEmpty else {
-            return persistAssistant(text: "資料庫中找不到相關內容。", citations: [],
-                                    thread: resolvedThread, context: context)
+            return persistAssistant(text: diagnoseEmptyRetrieval(scope: scope, model: model, context: context),
+                                    citations: [], thread: resolvedThread, context: context)
         }
 
         guard let completer else {
@@ -153,6 +153,24 @@ final class AskAIService: ObservableObject {
         let citations = Self.extractCitations(from: answer, retrieved: retrieved)
         return persistAssistant(text: answer, citations: citations,
                                 thread: resolvedThread, context: context)
+    }
+
+    /// 全庫檢索為空時，判斷原因並回一句可行動的說明（而非一律「找不到」）。
+    private func diagnoseEmptyRetrieval(scope: AskAIScope, model: EmbeddingModel, context: ModelContext) -> String {
+        let modelTag = model.tag
+        let totalAll = (try? context.fetchCount(FetchDescriptor<EmbeddingChunk>())) ?? 0
+        let forModel = (try? context.fetchCount(FetchDescriptor<EmbeddingChunk>(
+            predicate: #Predicate { $0.embeddingModel == modelTag }))) ?? 0
+        if totalAll == 0 {
+            return "索引是空的，請按右上『重建索引』後再問。"
+        }
+        if forModel == 0 {
+            return "目前的 embedding 模型和既有索引不一致（索引是用別的模型建立的）。請按右上齒輪選回原本的模型，或按『重建索引』以目前模型重新嵌入。"
+        }
+        if scope.categoryName != nil || scope.sources != nil || scope.dateRange != nil {
+            return "在目前的篩選範圍（來源／分類／時間）內找不到相關內容。試著把上方篩選改回『全部』再問一次。"
+        }
+        return "資料庫中找不到相關內容。"
     }
 
     /// 單檔提問：直接把該筆逐字稿（切塊、限長）餵給回答模型，不依賴向量索引。
