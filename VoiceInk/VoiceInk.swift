@@ -52,7 +52,10 @@ struct VoiceInkApp: App {
             ImportLedgerEntry.self,
             VocabularyWord.self,
             WordReplacement.self,
-            SessionMetric.self
+            SessionMetric.self,
+            EmbeddingChunk.self,
+            AskAIThread.self,
+            AskAIMessage.self
         ])
         let resolvedContainer: ModelContainer
 
@@ -273,8 +276,18 @@ struct VoiceInkApp: App {
             cloudKitDatabase: .none
         )
 
+        // Ask AI 索引與對話:獨立 store——衍生資料,可整顆刪除重建,不影響核心遷移。
+        let indexStoreURL = appSupportURL.appendingPathComponent("index.store")
+        let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self])
+        let indexConfig = ModelConfiguration(
+            "index",
+            schema: indexSchema,
+            url: indexStoreURL,
+            cloudKitDatabase: .none
+        )
+
         do {
-            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig)
+            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig, indexConfig)
         } catch {
             logger.error("❌ Failed to create persistent ModelContainer:\n\(Self.fullErrorDescription(error), privacy: .public)")
             throw error
@@ -291,8 +304,11 @@ struct VoiceInkApp: App {
         let statsSchema = Schema([SessionMetric.self])
         let statsConfig = ModelConfiguration("stats", schema: statsSchema, isStoredInMemoryOnly: true)
 
+        let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self])
+        let indexConfig = ModelConfiguration("index", schema: indexSchema, isStoredInMemoryOnly: true)
+
         do {
-            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig)
+            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig, indexConfig)
         } catch {
             logger.error("❌ Failed to create in-memory ModelContainer:\n\(Self.fullErrorDescription(error), privacy: .public)")
             throw error
