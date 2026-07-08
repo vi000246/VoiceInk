@@ -744,51 +744,35 @@ enum RecorderRowDisplay {
     }
 }
 
-/// 可排序的表頭列。標題/大小欄可點擊切換排序;再點同欄切換升降序。
+/// 可排序的表頭列。標題／日期／大小各自可點擊排序;再點同欄切換升降序。
 private struct RecorderTableHeader: View {
     @Binding var sort: LibraryFilter.SortField
     @Binding var ascending: Bool
 
     var body: some View {
         HStack(spacing: 10) {
-            Color.clear.frame(width: 15)   // 對齊：勾選欄
-            Color.clear.frame(width: 12)   // 對齊：星號欄
-            sortButton("標題 · 日期", field: .title, secondary: .date)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(width: 37, height: 1)   // 對齊：勾選(15)+星號(12)欄
+            sortLabel("標題", field: .title).frame(maxWidth: .infinity, alignment: .leading)
+            sortLabel("日期", field: .date).frame(width: 150, alignment: .leading)
             Text("分類").frame(width: 110, alignment: .leading)
-            sortButton("大小", field: .size).frame(width: 72, alignment: .trailing)
+            sortLabel("大小", field: .size).frame(width: 72, alignment: .trailing)
             Text("已匯出").frame(width: 48, alignment: .center)
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 24).padding(.vertical, 7)
+        .frame(height: 20)
+        .padding(.horizontal, 24).padding(.vertical, 6)
     }
 
-    /// 主欄提供標題/日期兩種排序：點文字排標題、點日曆 icon 排日期。單欄則只切一種。
-    private func sortButton(_ label: String, field: LibraryFilter.SortField, secondary: LibraryFilter.SortField? = nil) -> some View {
-        HStack(spacing: 6) {
-            Button { toggle(field) } label: {
-                HStack(spacing: 3) {
-                    Text(label)
-                    if sort == field { arrow }
+    private func sortLabel(_ label: String, field: LibraryFilter.SortField) -> some View {
+        Button { toggle(field) } label: {
+            HStack(spacing: 3) {
+                Text(label)
+                if sort == field {
+                    Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
                 }
-            }.buttonStyle(.plain)
-            if let secondary {
-                Button { toggle(secondary) } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "calendar").font(.system(size: 9))
-                        if sort == secondary { arrow }
-                    }
-                    .foregroundStyle(sort == secondary ? AppTheme.Accent.primary : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help("依日期排序")
             }
-        }
-    }
-
-    private var arrow: some View {
-        Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+        }.buttonStyle(.plain)
     }
 
     private func toggle(_ field: LibraryFilter.SortField) {
@@ -830,12 +814,12 @@ private struct RecorderTableRow: View {
             .buttonStyle(.plain).frame(width: 12)
             .help(transcription.recorderFavorite ? "已標記為喜歡（提醒：不要刪除）" : "標記為喜歡")
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
+                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                .frame(width: 150, alignment: .leading)
 
             // 分類
             Group {

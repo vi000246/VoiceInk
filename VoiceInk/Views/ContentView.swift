@@ -35,8 +35,8 @@ struct ContentView: View {
 
             detailContent
         }
-        .frame(width: AppWindowLayout.width)
-        .frame(minHeight: AppWindowLayout.minimumHeight)
+        .frame(minWidth: AppWindowLayout.minimumWidth, maxWidth: .infinity)
+        .frame(minHeight: AppWindowLayout.minimumHeight, maxHeight: .infinity)
         .onAppear {
             logger.notice("ContentView appeared")
         }

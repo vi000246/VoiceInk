@@ -228,38 +228,27 @@ private struct VoiceTableHeader: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Color.clear.frame(width: 15)
-            Color.clear.frame(width: 12)
-            sortButton("標題 · 日期", field: .title, secondary: .date)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(width: 37, height: 1)   // 對齊：勾選(15)+星號(12)欄
+            sortLabel("標題", field: .title).frame(maxWidth: .infinity, alignment: .leading)
+            sortLabel("日期", field: .date).frame(width: 150, alignment: .leading)
             Text("Tag").frame(width: 110, alignment: .leading)
-            sortButton("時長", field: .duration).frame(width: 60, alignment: .trailing)
+            sortLabel("時長", field: .duration).frame(width: 60, alignment: .trailing)
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 24).padding(.vertical, 7)
+        .frame(height: 20)
+        .padding(.horizontal, 24).padding(.vertical, 6)
     }
 
-    private func sortButton(_ label: String, field: VoiceLibraryView.VoiceSortField,
-                            secondary: VoiceLibraryView.VoiceSortField? = nil) -> some View {
-        HStack(spacing: 6) {
-            Button { toggle(field) } label: {
-                HStack(spacing: 3) { Text(label); if sort == field { arrow } }
-            }.buttonStyle(.plain)
-            if let secondary {
-                Button { toggle(secondary) } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "calendar").font(.system(size: 9))
-                        if sort == secondary { arrow }
-                    }
-                    .foregroundStyle(sort == secondary ? AppTheme.Accent.primary : .secondary)
-                }.buttonStyle(.plain).help("依日期排序")
+    private func sortLabel(_ label: String, field: VoiceLibraryView.VoiceSortField) -> some View {
+        Button { toggle(field) } label: {
+            HStack(spacing: 3) {
+                Text(label)
+                if sort == field {
+                    Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+                }
             }
-        }
-    }
-
-    private var arrow: some View {
-        Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold))
+        }.buttonStyle(.plain)
     }
 
     private func toggle(_ field: VoiceLibraryView.VoiceSortField) {
@@ -292,12 +281,12 @@ private struct VoiceLibraryRow: View {
             }
             .buttonStyle(.plain).frame(width: 12)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(VoiceRowDisplay.title(transcription)).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                Text(transcription.timestamp, format: .dateTime.year().month(.abbreviated).day().hour().minute())
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(VoiceRowDisplay.title(transcription)).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(transcription.timestamp, format: .dateTime.year().month(.abbreviated).day().hour().minute())
+                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                .frame(width: 150, alignment: .leading)
 
             Group {
                 if let tag = transcription.manualTag, !tag.isEmpty {

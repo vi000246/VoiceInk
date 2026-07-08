@@ -2,7 +2,9 @@ import SwiftUI
 import AppKit
 
 enum AppWindowLayout {
+    /// 預設/理想寬度（開窗時的初始寬）;不再是硬性上限——視窗可自由放大縮小。
     static let width: CGFloat = 950
+    static let minimumWidth: CGFloat = 820
     static let minimumHeight: CGFloat = 730
 }
 
@@ -37,8 +39,8 @@ class WindowManager: NSObject {
         window.level = .normal
         window.isOpaque = false
         window.isMovableByWindowBackground = false
-        window.minSize = NSSize(width: AppWindowLayout.width, height: AppWindowLayout.minimumHeight)
-        window.maxSize = NSSize(width: AppWindowLayout.width, height: CGFloat.greatestFiniteMagnitude)
+        window.minSize = NSSize(width: AppWindowLayout.minimumWidth, height: AppWindowLayout.minimumHeight)
+        window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         window.setFrameAutosaveName(Self.mainWindowAutosaveName)
         applyInitialPlacementIfNeeded(to: window)
         registerMainWindowIfNeeded(window)
@@ -98,16 +100,18 @@ class WindowManager: NSObject {
 
     private func enforceMainWindowFrameIfNeeded(on window: NSWindow, preserveRestoredOrigin: Bool) {
         let currentFrame = window.frame
-        guard currentFrame.width != AppWindowLayout.width || currentFrame.height < AppWindowLayout.minimumHeight else {
+        // 只在小於最小尺寸時修正;不再把寬度鎖回固定值，讓使用者能自由放大。
+        guard currentFrame.width < AppWindowLayout.minimumWidth || currentFrame.height < AppWindowLayout.minimumHeight else {
             return
         }
 
+        let width = max(currentFrame.width, AppWindowLayout.minimumWidth)
         let height = max(currentFrame.height, AppWindowLayout.minimumHeight)
-        let x = preserveRestoredOrigin ? currentFrame.origin.x : currentFrame.midX - (AppWindowLayout.width / 2)
+        let x = preserveRestoredOrigin ? currentFrame.origin.x : currentFrame.midX - (width / 2)
         let frame = NSRect(
             x: x,
             y: currentFrame.maxY - height,
-            width: AppWindowLayout.width,
+            width: width,
             height: height
         )
         window.setFrame(frame, display: true)
