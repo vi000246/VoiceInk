@@ -92,6 +92,17 @@ As a 錄音越來越多的使用者, I want 清單式管理 + 批次整理 + 星
 ## NOT Building
 - Ask AI 單檔按鈕（SRS-D，僅在詳情彈窗預留位置）;真 DB cursor 分頁;會議分類（SRS-C）。
 
+## 追加需求（2026-07-08，FR-10）：側欄可展開分類直選
+兩個管理頁在側欄可**展開**成分類子項，直接點側欄分類即套用篩選（免進頁面開下拉）;分類**依檔案數
+量由多到少排序**，每項旁**標檔案數**;頂層項＝全部。實作要點：
+- 側欄 `AppSidebar` 支援可展開項（`.recorderLog` / `.voiceLibrary` 有 children＝各分類）;需擴 sidebar
+  資料結構（目前 `sidebarSections` 是平的 `[ViewType]`——加可選 children 或改用 `OutlineGroup`/`DisclosureGroup`）。
+- 分類清單與計數：錄音頁＝`RecorderConfigStore.categories`＋各分類的 `Transcription` 計數（`recorderCategoryName`）;
+  語音頁＝`manualTag` 的 distinct 值＋計數。計數查詢用 `fetchCount(predicate)` 或一次掃描聚合（個人規模可）。
+- 點側欄分類 → 透過 `AppNavigator` 帶「頁 + 預選分類」進頁面（`LibraryFilter.tag` 預設）。
+- 排序：計數 desc;計數為 0 的分類是否顯示 → plan 實作時定（傾向顯示，標 0）。
+> 這會與 Task 3（FilterBar）互動：側欄選的分類要同步反映到頁內 FilterBar 的分類選擇。新增 Task 8 處理側欄展開。
+
 ## Step-by-Step Tasks
 
 ### Task 1: Transcription manualTag + displayTag + index

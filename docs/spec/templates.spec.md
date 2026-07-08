@@ -16,7 +16,8 @@
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
-| 2026-07-08 | N/A | `docs/srs/templates-shared-library-and-ia.srs.md` | Created from brownfield analysis — 把分開的語音範本庫（`AIEnhancementService.customPrompts` / UserDefaults `customPrompts`）與錄音範本庫（`RecorderConfigStore.recorderPrompts` / `recorderCategoryPromptsV1`）合併為單一 `TemplateStore`，`CustomPrompt` 加 `categories: [TemplateCategory]`，語音/錄音模式以類別多選篩選共用範本；連帶側欄 IA 重構（更名/分組/Ask AI 群組）。尚未實作。 |
+| 2026-07-08 | N/A | `docs/srs/completed/templates-shared-library-and-ia.srs.md` | **Implemented (build 233).** Tasks 1-5,7: `TemplateCategory` + `CustomPrompt.categories`; single `TemplateStore` + idempotent startup migration (voice→.voiceInput / recorder→.recorderInput, old keys retained); `AIEnhancementService.customPrompts` & `RecorderConfigStore.recorderPrompts` now computed views over the store with Combine forwarding; obsolete library-split migrations neutralized; PromptEditorView 「套用於」category checkboxes; sidebar IA (錄音範本→錄音模式, 語音範本→共用範本 in 共用與系統, Recorder→Obsidian→錄音輸入, Ask AI own group, 語音輸入 group). Task 6 (picker「顯示全部類別」toggle) deferred — pickers already show correct subsets via computed views. 91 tests green. |
+| 2026-07-08 | N/A | `docs/srs/completed/templates-shared-library-and-ia.srs.md` | Created from brownfield analysis — 把分開的語音範本庫（`AIEnhancementService.customPrompts` / UserDefaults `customPrompts`）與錄音範本庫（`RecorderConfigStore.recorderPrompts` / `recorderCategoryPromptsV1`）合併為單一 `TemplateStore`，`CustomPrompt` 加 `categories: [TemplateCategory]`，語音/錄音模式以類別多選篩選共用範本；連帶側欄 IA 重構（更名/分組/Ask AI 群組）。尚未實作。 |
 
 ## Summary
 
