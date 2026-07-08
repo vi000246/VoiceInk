@@ -17,7 +17,25 @@ final class AppNavigator: ObservableObject {
     /// Section-level nav has no row concept, so this rides alongside `pendingDestination`.
     @Published private(set) var pendingFocusTranscriptionId: UUID?
 
+    /// Consumed by Ask AI: scope the next conversation to a single recording (管理頁「Ask AI」按鈕）。
+    @Published private(set) var pendingAskTranscriptionId: UUID?
+
     private init() {}
+
+    /// Open Ask AI scoped to a single recording.
+    func askAI(about id: UUID) {
+        if Thread.isMainThread {
+            pendingAskTranscriptionId = id
+            pendingDestination = .askAI
+        } else {
+            DispatchQueue.main.async {
+                self.pendingAskTranscriptionId = id
+                self.pendingDestination = .askAI
+            }
+        }
+    }
+
+    func consumePendingAsk() { pendingAskTranscriptionId = nil }
 
     /// Navigate to a page AND focus a specific transcription row once it renders.
     func navigate(to destination: ViewType, focusTranscription id: UUID) {

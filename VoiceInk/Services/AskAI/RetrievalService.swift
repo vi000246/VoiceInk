@@ -7,6 +7,8 @@ struct AskAIScope: Equatable {
     var sources: Set<String>?              // "dictation" / "recorder" / "meeting"
     var categoryId: UUID?
     var dateRange: ClosedRange<Date>?
+    /// 限定單一錄音／逐字稿（管理頁「Ask AI」單檔提問）;nil = 全庫。
+    var transcriptionId: UUID?
 
     static let all = AskAIScope()
 }
@@ -43,6 +45,10 @@ enum RetrievalService {
                 && chunk.timestamp <= upper
         }
         var candidates = (try? context.fetch(descriptor)) ?? []
+        // 單檔限定最先套用（最強的縮小）;in-memory 避開 optional-UUID 進 #Predicate 的型別檢查爆炸。
+        if let tid = scope.transcriptionId {
+            candidates = candidates.filter { $0.transcriptionId == tid }
+        }
         if let sources = scope.sources {
             candidates = candidates.filter { sources.contains($0.sourceKind) }
         }

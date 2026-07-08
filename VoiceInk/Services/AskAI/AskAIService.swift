@@ -39,11 +39,22 @@ final class AskAIService: ObservableObject {
 
     // MARK: - Prompt building (pure, testable)
 
-    static let systemPrompt = """
-    你是使用者個人語音庫的問答助手。只根據下方提供的片段回答問題,以繁體中文作答。
+    /// 預設 persona（未選範本時）。
+    static let defaultPersona = "你是使用者個人語音庫的問答助手。"
+
+    /// 固定保留的引用規則段——persona 可換，但這段永遠附加;否則幻覺防護（只據片段、標 [n]、找不到明說）失效。
+    static let citationRules = """
+    只根據下方提供的片段回答問題,以繁體中文作答。
     每個論點後標註對應的片段編號,格式為 [n](可多個,如 [1][3])。
     若提供的片段不足以回答問題,直接說「資料庫中找不到相關內容」,絕對不要編造答案或引用不存在的片段編號。
     """
+
+    /// 組 system prompt：persona 段（範本提供或預設）＋固定引用規則段。純函式，供測試。
+    static func systemPrompt(persona: String? = nil) -> String {
+        let trimmed = persona?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personaSection = (trimmed?.isEmpty == false) ? trimmed! : defaultPersona
+        return personaSection + "\n" + citationRules
+    }
 
     static func buildUserBlock(question: String, chunks: [ScoredChunk]) -> String {
         var lines: [String] = []
@@ -80,7 +91,7 @@ final class AskAIService: ObservableObject {
     /// 對語音庫提問。context = index store 的 ModelContext(檢索＋對話持久化)。
     @discardableResult
     func ask(question: String, scope: AskAIScope, thread: AskAIThread?,
-             model: EmbeddingModel, context: ModelContext) async throws -> AskAIMessage {
+             model: EmbeddingModel, context: ModelContext, persona: String? = nil) async throws -> AskAIMessage {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 持久化 user 訊息。
@@ -114,7 +125,7 @@ final class AskAIService: ObservableObject {
         let userBlock = Self.buildUserBlock(question: trimmed, chunks: retrieved)
         let answer: String
         do {
-            answer = try await completer.complete(system: Self.systemPrompt, user: userBlock)
+            answer = try await completer.complete(system: Self.systemPrompt(persona: persona), user: userBlock)
         } catch {
             logger.error("Ask AI completion failed: \(error.localizedDescription, privacy: .public)")
             return persistAssistant(text: "回答生成失敗:\(error.localizedDescription)", citations: [],

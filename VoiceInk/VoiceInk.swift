@@ -55,7 +55,8 @@ struct VoiceInkApp: App {
             SessionMetric.self,
             EmbeddingChunk.self,
             AskAIThread.self,
-            AskAIMessage.self
+            AskAIMessage.self,
+            AskAITemplate.self
         ])
         let resolvedContainer: ModelContainer
 
@@ -139,6 +140,8 @@ struct VoiceInkApp: App {
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
         // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
         TemplateStore.shared.migrateIfNeeded()
+        // Ask AI persona 範本預載（一次性、冪等;mainContext 也涵蓋 index store）。
+        AskAITemplateStore.seedDefaultsIfNeeded(context: resolvedContainer.mainContext)
         // Seed default categories + recorder prompts once; migrate any previously-shared
         // recorder prompts out of the voice library so the two stay separate.
         if !UserDefaults.standard.bool(forKey: "recorderDefaultsSeededV1") {
@@ -278,7 +281,7 @@ struct VoiceInkApp: App {
 
         // Ask AI 索引與對話:獨立 store——衍生資料,可整顆刪除重建,不影響核心遷移。
         let indexStoreURL = appSupportURL.appendingPathComponent("index.store")
-        let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self])
+        let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self, AskAITemplate.self])
         let indexConfig = ModelConfiguration(
             "index",
             schema: indexSchema,
@@ -304,7 +307,7 @@ struct VoiceInkApp: App {
         let statsSchema = Schema([SessionMetric.self])
         let statsConfig = ModelConfiguration("stats", schema: statsSchema, isStoredInMemoryOnly: true)
 
-        let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self])
+        let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self, AskAITemplate.self])
         let indexConfig = ModelConfiguration("index", schema: indexSchema, isStoredInMemoryOnly: true)
 
         do {

@@ -91,3 +91,21 @@ struct ChunkRef: Codable, Equatable {
     var chunkIndex: Int
     var excerpt: String
 }
+
+/// Ask AI 分析角色範本(persona)。問答時可選一個 → 把 persona 段注入 system prompt(引用規則段固定保留)。
+/// 存於同一個 index.store（衍生設定，非核心資料）。
+@Model
+final class AskAITemplate {
+    var id: UUID = UUID()
+    var title: String = ""
+    /// persona 指示（例如「你是資深面試官，聚焦候選人的溝通與臨場反應」）。
+    var systemPrompt: String = ""
+    var createdAt: Date = Date()
+
+    init(id: UUID = UUID(), title: String, systemPrompt: String, createdAt: Date = Date()) {
+        self.id = id
+        self.title = title
+        self.systemPrompt = systemPrompt
+        self.createdAt = createdAt
+    }
+}
