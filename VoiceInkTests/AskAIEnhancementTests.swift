@@ -78,6 +78,19 @@ final class AskAIEnhancementTests: XCTestCase {
         XCTAssertTrue(withPersona.contains("找不到"))
     }
 
+    // MARK: - 單檔提問直餵路徑的引用抽取
+
+    func testSingleRecordingCitationsMapToThatRecording() {
+        let tid = UUID()
+        let chunks = [ChunkDraft(index: 0, text: "面試開場自我介紹"),
+                      ChunkDraft(index: 1, text: "談專案經驗與 team 狀況")]
+        let answer = "候選人先自我介紹 [1]，接著說明專案 [2]，越界的 [5] 應被剔除。"
+        let refs = AskAIService.singleRecordingCitations(from: answer, transcriptionId: tid, chunks: chunks)
+        XCTAssertEqual(refs.count, 2)
+        XCTAssertTrue(refs.allSatisfy { $0.transcriptionId == tid })   // 全部指向這筆錄音
+        XCTAssertEqual(refs.map { $0.chunkIndex }, [0, 1])            // [5] 越界被剔除
+    }
+
     func testNilPersonaUsesDefaultButKeepsCitationRules() {
         let base = AskAIService.systemPrompt(persona: nil)
         XCTAssertTrue(base.contains(AskAIService.defaultPersona))

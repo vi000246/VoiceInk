@@ -404,12 +404,10 @@ struct AskAIView: View {
         AskAIService.shared.setLiveCompleter(
             LiveChatCompleter(aiService: aiService, provider: provider, modelName: resolved.model))
         let persona = selectedPersona
-        let focusId = focusedTranscriptionId
         Task {
             defer { isAsking = false }
             do {
-                // 單檔提問：先確保這筆已用目前模型建索引（否則舊錄音/未回填的會查不到）。
-                if let focusId { await ensureIndexed(focusId) }
+                // 單檔提問走 AskAIService 內的直餵逐字稿路徑（免索引）;全庫走向量檢索。
                 _ = try await AskAIService.shared.ask(
                     question: q, scope: currentScope, thread: thread,
                     model: indexService.model, context: modelContext, persona: persona)
@@ -447,18 +445,6 @@ struct AskAIView: View {
         let fetched = (try? modelContext.fetch(FetchDescriptor<AskAIMessage>(
             sortBy: [SortDescriptor(\.createdAt)]))) ?? []
         messages = fetched.filter { $0.thread?.persistentModelID == tid }
-    }
-
-    /// 單檔提問前確保該筆已用「目前的 embedding 模型」建索引;沒有就即時嵌入一次（冪等）。
-    /// 這修掉「舊錄音或尚未回填的錄音，單檔提問回『資料庫中找不到相關內容』」的問題。
-    private func ensureIndexed(_ id: UUID) async {
-        let modelTag = indexService.model.tag
-        let existing = (try? modelContext.fetch(FetchDescriptor<EmbeddingChunk>(
-            predicate: #Predicate { $0.transcriptionId == id }))) ?? []
-        if existing.contains(where: { $0.embeddingModel == modelTag }) { return }
-        guard let t = (try? modelContext.fetch(FetchDescriptor<Transcription>(
-            predicate: #Predicate { $0.id == id })))?.first else { return }
-        _ = try? await TranscriptIndexService.shared.upsert(t)
     }
 
     /// 從管理頁「Ask AI」進來：限定 scope 到單一錄音並開新對話。

@@ -101,6 +101,13 @@ final class AskAIService: ObservableObject {
         }()
         context.insert(AskAIMessage(thread: resolvedThread, role: "user", text: trimmed))
 
+        // 單檔提問：只問一筆錄音時，直接用它的完整逐字稿當上下文，不經向量索引
+        // （索引可能沒回填到這筆／用了不同模型，會誤報「找不到」）。
+        if let tid = scope.transcriptionId {
+            return await askSingleRecording(transcriptionId: tid, question: trimmed,
+                                            thread: resolvedThread, context: context, persona: persona)
+        }
+
         // 嵌入問題(超長問題截斷到 ~8k tokens 以內)。
         let queryText = String(trimmed.prefix(6000))
         let queryVectors = try await embedder.embed(texts: [queryText], model: model)
@@ -135,6 +142,71 @@ final class AskAIService: ObservableObject {
         let citations = Self.extractCitations(from: answer, retrieved: retrieved)
         return persistAssistant(text: answer, citations: citations,
                                 thread: resolvedThread, context: context)
+    }
+
+    /// 單檔提問：直接把該筆逐字稿（切塊、限長）餵給回答模型，不依賴向量索引。
+    private func askSingleRecording(transcriptionId tid: UUID, question: String,
+                                    thread: AskAIThread, context: ModelContext,
+                                    persona: String?) async -> AskAIMessage {
+        guard let t = (try? context.fetch(FetchDescriptor<Transcription>(
+            predicate: #Predicate { $0.id == tid })))?.first else {
+            return persistAssistant(text: "找不到這筆錄音（可能已刪除）。", citations: [], thread: thread, context: context)
+        }
+        let full = (t.enhancedText?.isEmpty == false ? t.enhancedText! : t.text)
+        guard !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return persistAssistant(text: "這筆錄音沒有逐字稿內容可分析。", citations: [], thread: thread, context: context)
+        }
+        guard let completer else {
+            return persistAssistant(text: "尚未設定回答模型。", citations: [], thread: thread, context: context)
+        }
+
+        // 切塊（沿用索引用的 chunker）作為 [n] 片段;總量上限，避免超出模型上下文。
+        let drafts = TranscriptChunker.chunks(for: full,
+            speakerSegments: t.speakerSegmentsAreNative ? t.speakerSegments : [])
+        let chunks = drafts.isEmpty ? [ChunkDraft(index: 0, text: full)] : drafts
+        let maxChars = 60_000
+        var used: [ChunkDraft] = []
+        var running = 0
+        for c in chunks {
+            let piece = String(c.text.prefix(1600))
+            if running + piece.count > maxChars { break }
+            used.append(ChunkDraft(index: used.count, text: piece))
+            running += piece.count
+        }
+        let truncated = used.count < chunks.count
+
+        var lines: [String] = []
+        for (i, c) in used.enumerated() { lines.append("[\(i + 1)] \(c.text)") }
+        if truncated { lines.append("（逐字稿較長，僅提供前段內容）") }
+        lines.append(""); lines.append("問題:\(question)")
+        let userBlock = lines.joined(separator: "\n")
+
+        let answer: String
+        do {
+            answer = try await completer.complete(system: Self.systemPrompt(persona: persona), user: userBlock)
+        } catch {
+            logger.error("Single-recording ask failed: \(error.localizedDescription, privacy: .public)")
+            return persistAssistant(text: "回答生成失敗:\(error.localizedDescription)", citations: [], thread: thread, context: context)
+        }
+        let cites = Self.singleRecordingCitations(from: answer, transcriptionId: tid, chunks: used)
+        return persistAssistant(text: answer, citations: cites, thread: thread, context: context)
+    }
+
+    /// 單檔提問的引用：[n] → 該筆錄音的第 n 塊（越界剔除）。
+    static func singleRecordingCitations(from answer: String, transcriptionId tid: UUID,
+                                         chunks: [ChunkDraft]) -> [ChunkRef] {
+        guard !chunks.isEmpty else { return [] }
+        var seen = Set<Int>(); var refs: [ChunkRef] = []
+        let pattern = try? NSRegularExpression(pattern: #"\[(\d+)\]"#)
+        let range = NSRange(answer.startIndex..., in: answer)
+        pattern?.enumerateMatches(in: answer, range: range) { match, _, _ in
+            guard let match, let r = Range(match.range(at: 1), in: answer),
+                  let n = Int(answer[r]), n >= 1, n <= chunks.count, !seen.contains(n) else { return }
+            seen.insert(n)
+            refs.append(ChunkRef(transcriptionId: tid, chunkIndex: n - 1,
+                                 excerpt: String(chunks[n - 1].text.prefix(200))))
+        }
+        return refs
     }
 
     @discardableResult
