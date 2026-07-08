@@ -135,6 +135,8 @@ struct VoiceInkApp: App {
         RecorderDeviceMonitor.shared.start()
         RecorderFolderWatcher.shared.start()
         ICloudSourceWatcher.shared.start()
+        // Ask AI: index new/deleted transcriptions (mainContext spans the index store too).
+        TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
         // Seed default categories + recorder prompts once; migrate any previously-shared
         // recorder prompts out of the voice library so the two stay separate.
         if !UserDefaults.standard.bool(forKey: "recorderDefaultsSeededV1") {

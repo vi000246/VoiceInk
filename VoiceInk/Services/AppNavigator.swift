@@ -13,7 +13,26 @@ final class AppNavigator: ObservableObject {
     /// re-subscription (window reopen) doesn't replay a stale navigation.
     @Published private(set) var pendingDestination: ViewType?
 
+    /// Row-level focus target consumed by the Recording Library page (Ask AI citations point here).
+    /// Section-level nav has no row concept, so this rides alongside `pendingDestination`.
+    @Published private(set) var pendingFocusTranscriptionId: UUID?
+
     private init() {}
+
+    /// Navigate to a page AND focus a specific transcription row once it renders.
+    func navigate(to destination: ViewType, focusTranscription id: UUID) {
+        if Thread.isMainThread {
+            pendingFocusTranscriptionId = id
+            pendingDestination = destination
+        } else {
+            DispatchQueue.main.async {
+                self.pendingFocusTranscriptionId = id
+                self.pendingDestination = destination
+            }
+        }
+    }
+
+    func consumePendingFocus() { pendingFocusTranscriptionId = nil }
 
     /// Callable from any thread, like the notification it replaces.
     func navigate(to destination: ViewType) {
