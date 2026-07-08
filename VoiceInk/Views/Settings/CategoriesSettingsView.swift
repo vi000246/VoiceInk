@@ -38,8 +38,8 @@ struct CategoriesSettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             AppScreenHeader(
-                title: "錄音範本",
-                infoMessage: "錄音匯入後，會自動分類到下列其中一類，套用該類別的範本做分析，並輸出到 Vault 對應子資料夾。「通用」為無法分類時的預設，不可刪除。",
+                title: "錄音模式",
+                infoMessage: "錄音匯入後，會自動分類到下列其中一類，套用該類別的範本做分析，並輸出到 Vault 對應子資料夾。範本從下拉選單挑選（來自「共用範本」中勾選『錄音輸入』者）。「通用」為無法分類時的預設，不可刪除。",
                 infoURL: nil
             ) {
                 AppIconButton(systemName: "square.and.arrow.down.on.square", help: "載入預設類別與範本") {
@@ -140,6 +140,8 @@ private struct CategoryEditorPanel: View {
     @State private var aiProviderName: String?
     @State private var aiModelName: String?
     @State private var showingPromptEditor = false
+    /// True 時範本編輯器以「新增」開啟（即使目前已綁定一個範本）;false 時編輯所選範本。
+    @State private var creatingNewPrompt = false
     @State private var showDeletePromptConfirmation = false
     @ObservedObject private var classifierGenerator = ClassifierDescriptionGenerator.shared
 
@@ -240,23 +242,23 @@ private struct CategoryEditorPanel: View {
                     }
                 }
                 Section("分析範本") {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(boundPrompt?.title ?? "未綁定範本")
-                                .foregroundStyle(boundPrompt == nil ? .secondary : .primary)
-                            if boundPrompt == nil {
-                                Text("未綁定時直接輸出原始逐字稿").font(.caption).foregroundStyle(.secondary)
-                            }
+                    Picker("範本", selection: $customPromptId) {
+                        Text("未綁定（輸出原始逐字稿）").tag(UUID?.none)
+                        ForEach(store.recorderPrompts) { p in
+                            Text(p.title).tag(UUID?.some(p.id))
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        Button("新增範本…") { creatingNewPrompt = true; showingPromptEditor = true }
+                        if boundPrompt != nil {
+                            Button("編輯所選…") { creatingNewPrompt = false; showingPromptEditor = true }
+                            Button("刪除", role: .destructive) { showDeletePromptConfirmation = true }
+                                .tint(AppTheme.Status.errorStrong)
                         }
                         Spacer()
-                        Button(boundPrompt == nil ? "建立範本…" : "編輯範本…") { showingPromptEditor = true }
                     }
-                    if boundPrompt != nil {
-                        Button("刪除範本", role: .destructive) {
-                            showDeletePromptConfirmation = true
-                        }
-                        .tint(AppTheme.Status.errorStrong)
-                    }
+                    Text("清單為「共用範本」中勾選『錄音輸入』的範本;新增的範本會自動加入共用範本庫。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
                     Button("儲存", action: save).disabled(!canSave)
@@ -289,7 +291,7 @@ private struct CategoryEditorPanel: View {
         }
         .sheet(isPresented: $showingPromptEditor) {
             PromptEditorView(
-                mode: boundPrompt.map { .edit($0) } ?? .add,
+                mode: (creatingNewPrompt ? nil : boundPrompt).map { .edit($0) } ?? .add,
                 allowsSystemTemplateToggle: true,
                 defaultUseSystemTemplate: false,
                 showsStarterTemplateMenu: false,
@@ -297,11 +299,12 @@ private struct CategoryEditorPanel: View {
                 requiresTitle: false,
                 persistsToVoiceLibrary: false,
                 defaultCategories: [.recorderInput],
-                onDismiss: { showingPromptEditor = false },
+                onDismiss: { showingPromptEditor = false; creatingNewPrompt = false },
                 onSave: { prompt in
                     store.upsertRecorderPrompt(prompt)
                     customPromptId = prompt.id
                     showingPromptEditor = false
+                    creatingNewPrompt = false
                 }
             )
             .environmentObject(enhancementService)

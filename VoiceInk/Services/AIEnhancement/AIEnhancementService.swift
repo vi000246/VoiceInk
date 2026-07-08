@@ -22,6 +22,10 @@ class AIEnhancementService: ObservableObject {
         return customPrompts
     }
 
+    /// 共用範本庫的完整清單（語音輸入＋錄音輸入都含）——供「共用範本」管理頁顯示與分類篩選。
+    /// 有別於 `allPrompts`（僅語音輸入，供語音模式挑選與修復用）。
+    var libraryPrompts: [CustomPrompt] { TemplateStore.shared.templates }
+
     private let aiService: AIService
     private let screenCaptureService: ScreenCaptureService
     private let customVocabularyService: CustomVocabularyService
