@@ -150,12 +150,16 @@ struct RecorderHistoryView: View {
                 }
             }
         }
-        .sheet(item: $detailTarget) { t in
-            RecorderDetailSheet(transcription: t, fileName: fileName(t), byteSize: byteSize(t))
+        .centeredModal(item: $detailTarget) { t in
+            RecorderDetailSheet(transcription: t, fileName: fileName(t), byteSize: byteSize(t),
+                                onClose: { detailTarget = nil })
                 .environmentObject(enhancementService)
                 .environmentObject(aiService)
-                .frame(minWidth: 680, idealWidth: 920, maxWidth: .infinity,
-                       minHeight: 620, idealHeight: 840, maxHeight: .infinity)
+                .frame(maxWidth: 1000, maxHeight: 900)
+                .background(AppTheme.Surface.window, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
         }
     }
 
@@ -893,14 +897,14 @@ private struct RecorderDetailSheet: View {
     let transcription: Transcription
     let fileName: String?
     let byteSize: Int?
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            AppPanelHeader(title: "錄音詳情", onClose: { dismiss() })
+            AppPanelHeader(title: "錄音詳情", onClose: onClose)
             HStack {
                 Button {
-                    dismiss()
+                    onClose()
                     AppNavigator.shared.askAI(about: transcription.id)
                 } label: {
                     Label("Ask AI 針對這筆提問", systemImage: "bubble.left.and.text.bubble.right.fill")

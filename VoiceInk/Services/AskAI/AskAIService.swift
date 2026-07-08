@@ -92,7 +92,7 @@ final class AskAIService: ObservableObject {
             let chunk = retrieved[n - 1].chunk
             refs.append(ChunkRef(transcriptionId: chunk.transcriptionId,
                                  chunkIndex: chunk.chunkIndex,
-                                 excerpt: String(chunk.text.prefix(200))))
+                                 excerpt: String(chunk.text.prefix(600))))
         }
         return refs
     }
@@ -216,7 +216,7 @@ final class AskAIService: ObservableObject {
                   let n = Int(answer[r]), n >= 1, n <= chunks.count, !seen.contains(n) else { return }
             seen.insert(n)
             refs.append(ChunkRef(transcriptionId: tid, chunkIndex: n - 1,
-                                 excerpt: String(chunks[n - 1].text.prefix(200))))
+                                 excerpt: String(chunks[n - 1].text.prefix(600))))
         }
         return refs
     }

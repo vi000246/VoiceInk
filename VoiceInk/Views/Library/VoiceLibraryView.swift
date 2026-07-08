@@ -123,10 +123,13 @@ struct VoiceLibraryView: View {
                 }
             }
         }
-        .sheet(item: $detailTarget) { t in
-            VoiceDetailSheet(transcription: t)
-                .frame(minWidth: 640, idealWidth: 880, maxWidth: .infinity,
-                       minHeight: 600, idealHeight: 800, maxHeight: .infinity)
+        .centeredModal(item: $detailTarget) { t in
+            VoiceDetailSheet(transcription: t, onClose: { detailTarget = nil })
+                .frame(maxWidth: 900, maxHeight: 820)
+                .background(AppTheme.Surface.window, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
         }
         .sheet(isPresented: $showHistorySettings) {
             HistorySettingsPanel(onClose: { showHistorySettings = false })
@@ -321,7 +324,7 @@ private struct VoiceLibraryRow: View {
 
 private struct VoiceDetailSheet: View {
     let transcription: Transcription
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
     @Environment(\.modelContext) private var modelContext
     @State private var showAnalysis = false
     @State private var tagText = ""
@@ -332,7 +335,7 @@ private struct VoiceDetailSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            AppPanelHeader(title: "逐字稿詳情", onClose: { dismiss() })
+            AppPanelHeader(title: "逐字稿詳情", onClose: onClose)
 
             // 動作列：手動 tag + Ask AI + 刪除。
             HStack(spacing: 10) {
@@ -344,7 +347,7 @@ private struct VoiceDetailSheet: View {
                     .disabled(tagText.trimmingCharacters(in: .whitespaces) == (transcription.manualTag ?? ""))
                 Spacer()
                 Button {
-                    dismiss()
+                    onClose()
                     AppNavigator.shared.askAI(about: transcription.id)
                 } label: { Label("Ask AI", systemImage: "bubble.left.and.text.bubble.right.fill") }
                     .controlSize(.small)
@@ -377,7 +380,7 @@ private struct VoiceDetailSheet: View {
         .confirmationDialog("刪除這筆逐字稿？", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("刪除", role: .destructive) {
                 TranscriptionStore.delete(transcription, in: modelContext)
-                dismiss()
+                onClose()
             }
         }
     }

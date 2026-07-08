@@ -49,6 +49,7 @@ struct AskAIView: View {
 
     // Citation sheet
     @State private var focusTranscription: Transcription?
+    @State private var citationTarget: CitationContext?
 
     // Embedding-model switch
     @State private var pendingModelSwitch: EmbeddingModel?
@@ -94,6 +95,15 @@ struct AskAIView: View {
         .sheet(item: $focusTranscription) { t in
             TranscriptionDetailView(transcription: t)
                 .frame(minWidth: 480, minHeight: 400)
+        }
+        .centeredModal(item: $citationTarget) { ctx in
+            CitationPopup(context: ctx,
+                          onClose: { citationTarget = nil },
+                          onOpenFull: { t in citationTarget = nil; focusTranscription = t })
+                .background(AppTheme.Surface.window, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
         }
         .onReceive(AppNavigator.shared.$pendingAskTranscriptionId) { id in
             guard let id else { return }
@@ -193,7 +203,13 @@ struct AskAIView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(messages) { message in
+                        if messages.count > renderedMessageCap {
+                            Text("（僅顯示最近 \(renderedMessageCap) 則;較早的訊息仍在此對話中。按右上「新對話」可重新開始）")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 4)
+                        }
+                        // 只渲染最近 N 則:多則長回答的 Markdown view 樹會爆記憶體、拖垮甚至當掉。
+                        ForEach(messages.suffix(renderedMessageCap)) { message in
                             messageBubble(message).id(message.persistentModelID)
                         }
                         if isAsking {
@@ -324,10 +340,21 @@ struct AskAIView: View {
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 
+    /// 對話最多渲染的訊息數（較早的仍保存在此對話）。
+    private let renderedMessageCap = 12
+    /// 超過此長度的回答改用純文字渲染（Markdown 會為大量區塊建龐大 view 樹，長回答會拖垮/當掉）。
+    private let markdownMaxChars = 5000
+
     @ViewBuilder
     private func bubbleContent(_ message: AskAIMessage, isUser: Bool) -> some View {
         if isUser {
             Text(message.text).textSelection(.enabled)
+        } else if message.text.count > markdownMaxChars {
+            // 超長回答：純文字（可選取），內容完整，只是不套 Markdown 格式，換取穩定不當掉。
+            Text(message.text)
+                .font(.system(size: 13))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             MarkdownContentView(message.text, fontSize: 13, foregroundColor: .primary)
         }
@@ -469,12 +496,8 @@ struct AskAIView: View {
         let targetId = ref.transcriptionId
         let match = (try? modelContext.fetch(FetchDescriptor<Transcription>(
             predicate: #Predicate { $0.id == targetId })))?.first
-        if let match {
-            focusTranscription = match
-        } else {
-            NotificationManager.shared.showNotification(
-                title: "來源逐字稿已被刪除", type: .warning, duration: 4)
-        }
+        let title = match?.recorderTitle ?? match.map { String($0.text.prefix(24)) } ?? "來源錄音"
+        citationTarget = CitationContext(ref: ref, title: title, transcription: match)
     }
 
     private func startBackfill() {
@@ -485,5 +508,55 @@ struct AskAIView: View {
             backfillProgress = nil
             reloadMessages()
         }
+    }
+}
+
+// MARK: - Citation popup（出處）
+
+/// 引用出處的內容：一段被引用的逐字稿片段 + 它來自哪一筆錄音（可再開完整逐字稿）。
+struct CitationContext: Identifiable {
+    let id = UUID()
+    let ref: ChunkRef
+    let title: String
+    let transcription: Transcription?
+}
+
+/// 點引用 [n] 開的出處小視窗：只顯示「這段回答出自哪一段」，不再直接攤開整篇逐字稿。
+private struct CitationPopup: View {
+    let context: CitationContext
+    let onClose: () -> Void
+    let onOpenFull: (Transcription) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            AppPanelHeader(title: "出處", onClose: onClose)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "quote.opening").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(context.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                }
+                Text("這段回答引用的出處段落：").font(.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    Text(context.ref.excerpt.isEmpty ? "（無片段內容）" : context.ref.excerpt)
+                        .font(.system(size: 13))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .frame(maxHeight: 300)
+                .background(AppTheme.Surface.control, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
+                if let t = context.transcription {
+                    HStack {
+                        Spacer()
+                        Button { onOpenFull(t) } label: {
+                            Label("開啟完整逐字稿", systemImage: "doc.text")
+                        }.controlSize(.small)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 480)
     }
 }
