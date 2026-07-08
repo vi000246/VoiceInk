@@ -1,0 +1,66 @@
+import Foundation
+import SwiftData
+import Accelerate
+
+/// 檢索範圍前置過濾。nil 欄位＝不限制。
+struct AskAIScope: Equatable {
+    var sources: Set<String>?              // "dictation" / "recorder" / "meeting"
+    var categoryId: UUID?
+    var dateRange: ClosedRange<Date>?
+
+    static let all = AskAIScope()
+}
+
+struct ScoredChunk: Equatable {
+    let chunk: EmbeddingChunk
+    let score: Float
+    static func == (l: ScoredChunk, r: ScoredChunk) -> Bool {
+        l.chunk.transcriptionId == r.chunk.transcriptionId
+            && l.chunk.chunkIndex == r.chunk.chunkIndex && l.score == r.score
+    }
+}
+
+/// 個人規模的暴力檢索:scope 預過濾 → vDSP dot product(向量已 L2-normalized,dot ≡ cosine)
+/// → top-k。50k×768 ≈150MB、單查 ≪100ms,不需 ANN。
+@MainActor
+enum RetrievalService {
+
+    /// 取回 scope 內、與 queryVector 最相似的 k 個塊(僅比對同一 embedding 模型的向量——
+    /// 不同向量空間永不混比)。
+    static func retrieve(queryVector: [Float], scope: AskAIScope, k: Int,
+                         model: EmbeddingModel, context: ModelContext) -> [ScoredChunk] {
+        let modelTag = model.tag
+        // 只把「一定適用」的兩個條件壓進 #Predicate:embeddingModel(String ==)與日期範圍
+        // (用 distantPast/Future 當預設,避免 optional 進 predicate)。nested `??`/optional 檢查會
+        // 讓 SwiftData 的 #Predicate 型別檢查爆炸,故 sources / categoryId 一律在記憶體內套用
+        // (個人規模、fetch 後 filter 成本可忽略)。
+        let lower = scope.dateRange?.lowerBound ?? Date.distantPast
+        let upper = scope.dateRange?.upperBound ?? Date.distantFuture
+        var descriptor = FetchDescriptor<EmbeddingChunk>()
+        descriptor.predicate = #Predicate<EmbeddingChunk> { chunk in
+            chunk.embeddingModel == modelTag
+                && chunk.timestamp >= lower
+                && chunk.timestamp <= upper
+        }
+        var candidates = (try? context.fetch(descriptor)) ?? []
+        if let sources = scope.sources {
+            candidates = candidates.filter { sources.contains($0.sourceKind) }
+        }
+        if let categoryId = scope.categoryId {
+            candidates = candidates.filter { $0.categoryId == categoryId }
+        }
+        guard !candidates.isEmpty else { return [] }
+
+        let dims = queryVector.count
+        var scored: [ScoredChunk] = []
+        scored.reserveCapacity(candidates.count)
+        for chunk in candidates {
+            let v = EmbeddingClient.dataToFloats(chunk.vector)
+            guard v.count == dims else { continue }   // 維度不符(理論上同模型不會)→ 跳過
+            var dot: Float = 0
+            vDSP_dotpr(queryVector, 1, v, 1, &dot, vDSP_Length(dims))
+            scored.append(ScoredChunk(chunk: chunk, score: dot))
+        }
+        return Array(scored.sorted { $0.score > $1.score }.prefix(k))
+    }
+}
