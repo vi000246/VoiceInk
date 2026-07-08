@@ -154,7 +154,8 @@ struct RecorderHistoryView: View {
             RecorderDetailSheet(transcription: t, fileName: fileName(t), byteSize: byteSize(t))
                 .environmentObject(enhancementService)
                 .environmentObject(aiService)
-                .frame(width: 720, height: 660)
+                .frame(minWidth: 680, idealWidth: 920, maxWidth: .infinity,
+                       minHeight: 620, idealHeight: 840, maxHeight: .infinity)
         }
     }
 
@@ -341,12 +342,14 @@ private struct RecordingCard: View {
             if showsExpansion {
                 expandedContent
                     .padding(.top, 10)
+                    .frame(maxHeight: style == .detail ? .infinity : nil)
                     .onAppear(perform: resolveAudioFiles)
                     .onChange(of: transcription.audioFileURL) { _, _ in resolveAudioFiles() }
                     .onChange(of: transcription.audioChunkPathsRaw) { _, _ in resolveAudioFiles() }
             }
         }
         .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: style == .detail ? .infinity : nil, alignment: .top)
         .background(AppTheme.Surface.card, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(
             isChecked ? AppTheme.Accent.primary.opacity(0.5) : AppTheme.Border.control, lineWidth: isChecked ? 1 : 0.5))
@@ -452,26 +455,46 @@ private struct RecordingCard: View {
                 if hasAnalysis { tab("套用後", active: showAnalysis) { showAnalysis = true } }
                 Spacer()
             }
-            Button { showTranscriptSheet = true } label: {
-                VStack(alignment: .leading, spacing: 6) {
+            if style == .detail {
+                // 詳情頁：逐字稿佔滿剩餘高度、可捲動、可選取。
+                ScrollView {
                     Text(displayText.isEmpty ? "（無內容）" : displayText)
-                        .font(.system(size: 13))
+                        .font(.system(size: 13.5))
+                        .textSelection(.enabled)
                         .foregroundStyle(displayText.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(AppTheme.Text.primary))
-                        .lineLimit(3).truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 10))
-                        Text("點擊看完整內容").font(.system(size: 11))
-                    }
-                    .foregroundStyle(.secondary)
+                        .padding(12)
                 }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(AppTheme.Surface.control, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
-                .contentShape(Rectangle())
+                if transcription.speakerSegmentsAreNative && !transcription.speakerSegments.isEmpty {
+                    Button { showTranscriptSheet = true } label: {
+                        Label("看含講者標記的完整逐字稿", systemImage: "person.wave.2").font(.system(size: 11))
+                    }.buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+            } else {
+                Button { showTranscriptSheet = true } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(displayText.isEmpty ? "（無內容）" : displayText)
+                            .font(.system(size: 13))
+                            .foregroundStyle(displayText.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(AppTheme.Text.primary))
+                            .lineLimit(3).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 10))
+                            Text("點擊看完整內容").font(.system(size: 11))
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Surface.control, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             if resolvedChunkURLs.count > 1 {
                 Divider()
@@ -883,19 +906,17 @@ private struct RecorderDetailSheet: View {
                 Spacer()
             }
             .padding(.horizontal, 16).padding(.top, 12)
-            ScrollView {
-                RecordingCard(
-                    transcription: transcription,
-                    fileName: fileName,
-                    byteSize: byteSize,
-                    isExpanded: true,
-                    isChecked: false,
-                    style: .detail,
-                    onToggleCheck: {},
-                    onToggle: {}
-                )
-                .padding(16)
-            }
+            RecordingCard(
+                transcription: transcription,
+                fileName: fileName,
+                byteSize: byteSize,
+                isExpanded: true,
+                isChecked: false,
+                style: .detail,
+                onToggleCheck: {},
+                onToggle: {}
+            )
+            .padding(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

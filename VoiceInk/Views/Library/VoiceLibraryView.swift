@@ -125,7 +125,8 @@ struct VoiceLibraryView: View {
         }
         .sheet(item: $detailTarget) { t in
             VoiceDetailSheet(transcription: t)
-                .frame(width: 700, height: 620)
+                .frame(minWidth: 640, idealWidth: 880, maxWidth: .infinity,
+                       minHeight: 600, idealHeight: 800, maxHeight: .infinity)
         }
         .sheet(isPresented: $showHistorySettings) {
             HistorySettingsPanel(onClose: { showHistorySettings = false })
