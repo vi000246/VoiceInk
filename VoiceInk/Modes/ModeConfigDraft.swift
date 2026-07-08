@@ -22,6 +22,7 @@ struct ModeConfigDraft {
     var outputMode: ModeOutputMode
     var autoSendKey: AutoSendKey
     var customCommand: String
+    var editBeforePaste: Bool
     var isDefault: Bool
     var isTranscriptionFormattingExpanded: Bool
 
@@ -53,6 +54,7 @@ struct ModeConfigDraft {
             outputMode = .paste
             autoSendKey = .none
             customCommand = inheritedConfig?.customCommand?.command ?? ""
+            editBeforePaste = inheritedConfig?.editBeforePaste ?? false
             isDefault = false
             isTranscriptionFormattingExpanded = false
             sourceConfig = nil
@@ -80,6 +82,7 @@ struct ModeConfigDraft {
             outputMode = latestConfig.outputMode
             autoSendKey = latestConfig.autoSendKey
             customCommand = latestConfig.customCommand?.command ?? ""
+            editBeforePaste = latestConfig.editBeforePaste
             isDefault = latestConfig.isDefault
             isTranscriptionFormattingExpanded = false
             sourceConfig = latestConfig
@@ -158,6 +161,7 @@ struct ModeConfigDraft {
 
     func makeConfig(mode: ConfigurationMode) -> ModeConfig {
         let savedAutoSendKey: AutoSendKey = outputMode.usesPasteOptions ? autoSendKey : .none
+        let savedEditBeforePaste = outputMode.usesPasteOptions ? editBeforePaste : false
         let savedIsDefault = outputMode == .respond ? false : isDefault
         let savedCustomCommand = makeCustomCommand()
 
@@ -185,6 +189,7 @@ struct ModeConfigDraft {
                 outputMode: outputMode,
                 autoSendKey: savedAutoSendKey,
                 customCommand: savedCustomCommand,
+                editBeforePaste: savedEditBeforePaste,
                 isDefault: savedIsDefault
             )
 
@@ -210,6 +215,7 @@ struct ModeConfigDraft {
             updatedConfig.outputMode = outputMode
             updatedConfig.autoSendKey = savedAutoSendKey
             updatedConfig.customCommand = savedCustomCommand
+            updatedConfig.editBeforePaste = savedEditBeforePaste
             updatedConfig.isDefault = savedIsDefault
             return updatedConfig
         }

@@ -540,6 +540,12 @@ struct ModeConfigFormView: View {
                         InfoTip("Automatically presses a key combination after pasting text. Useful for chat applications or forms that use different send shortcuts.")
                     }
                 }
+                Toggle(isOn: $draft.editBeforePaste) {
+                    HStack(spacing: 6) {
+                        Text("編輯後貼上")
+                        InfoTip("貼上前先把聽寫結果丟到外部編輯器（真 vim/nvim，支援 vimrc 熱鍵）修改，存檔關閉後自動貼回。編輯器命令與貼回目標於「Settings」頁設定。")
+                    }
+                }
             }
 
             if draft.outputMode == .customCommand {

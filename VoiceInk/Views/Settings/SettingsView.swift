@@ -18,6 +18,8 @@ struct SettingsView: View {
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
+    @AppStorage(OutputRuntimeConfiguration.editCommandKey) private var editBeforePasteCommand = OutputRuntimeConfiguration.defaultEditCommand
+    @AppStorage(OutputRuntimeConfiguration.editTargetKey) private var editBeforePasteTarget = "paste"
     @AppStorage(AppAppearancePreference.userDefaultsKey) private var appAppearancePreference = AppAppearancePreference.system
     @AppStorage(AppLanguagePreference.userDefaultsKey) private var appLanguagePreference = AppLanguagePreference.systemValue
     @State private var showResetOnboardingAlert = false
@@ -179,6 +181,27 @@ struct SettingsView: View {
                     }
                     PasteMethod.setCurrent(method)
                 }
+
+                LabeledContent {
+                    TextField("", text: $editBeforePasteCommand)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: 280)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Edit-Before-Paste Command")
+                        InfoTip("語音模式開啟「編輯後貼上」時執行的命令;{file} 會換成暫存檔路徑。預設 mvim -f {file}（MacVim 阻塞模式）。用 nvim 需可阻塞的終端，例如 alacritty -e nvim {file}。")
+                    }
+                }
+
+                Picker(selection: $editBeforePasteTarget) {
+                    Text("貼回原輸入框").tag("paste")
+                    Text("放到剪貼簿").tag("clipboard")
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Edit-Before-Paste Target")
+                        InfoTip("編輯完存檔後，把結果貼回原本的輸入框，或改放到剪貼簿由你自行貼上。")
+                    }
+                }
+                .pickerStyle(.menu)
             }
 
             Section("Interface") {
