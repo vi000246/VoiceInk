@@ -128,6 +128,8 @@ private struct RecorderDeviceCard: View {
     @State private var scanning = false
     @State private var selectedFiles: Set<String> = []
     @State private var confirmReprocess = false
+    @State private var filePage = 0
+    private static let filePageSize = 50
     @State private var capacity: RecorderImportService.DeviceCapacity?
     @State private var showCleanup = false
     @State private var durations: [String: Double] = [:]
@@ -323,10 +325,22 @@ private struct RecorderDeviceCard: View {
             } else {
                 VStack(spacing: 4) {
                     let done = files.filter { $0.processed }.count
+                    let pageCount = max(1, (files.count + Self.filePageSize - 1) / Self.filePageSize)
+                    let page = min(filePage, pageCount - 1)
+                    let pagedFiles = Array(files.dropFirst(page * Self.filePageSize).prefix(Self.filePageSize))
                     HStack {
                         Text("共 \(files.count) 檔・已處理 \(done)・未處理 \(files.count - done)")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()
+                        // 重新處理所選：放在全選左邊、比全選大;未選任何檔時停用。
+                        Button { confirmReprocess = true } label: {
+                            Label("重新處理所選\(selectedFiles.isEmpty ? "" : "（\(selectedFiles.count)）")",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .controlSize(.regular)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(selectedFiles.isEmpty)
                         Button(selectedFiles.count == files.count ? "取消全選" : "全選") {
                             selectedFiles = selectedFiles.count == files.count ? [] : Set(files.map { $0.fileName })
                         }.controlSize(.mini)
@@ -344,7 +358,7 @@ private struct RecorderDeviceCard: View {
                     }
                     .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
                     .padding(.horizontal, 8).padding(.top, 2)
-                    ForEach(files) { f in
+                    ForEach(pagedFiles) { f in
                         let isSel = selectedFiles.contains(f.fileName)
                         Button { toggleSelect(f.fileName) } label: {
                             HStack(spacing: 8) {
@@ -379,15 +393,22 @@ private struct RecorderDeviceCard: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if !selectedFiles.isEmpty {
-                        HStack {
-                            Text("已選 \(selectedFiles.count) 檔").font(.system(size: 11)).foregroundStyle(.secondary)
-                            Spacer()
-                            Button { confirmReprocess = true } label: {
-                                Label("重新處理所選", systemImage: "arrow.triangle.2.circlepath").font(.system(size: 12, weight: .medium))
-                            }.controlSize(.small)
+                    // 分頁控制（每 50 筆一頁）——超過一頁才顯示。
+                    if pageCount > 1 {
+                        HStack(spacing: 12) {
+                            Button { if page > 0 { filePage = page - 1 } } label: {
+                                Image(systemName: "chevron.left")
+                            }.controlSize(.small).disabled(page == 0)
+                            Text("第 \(page + 1) / \(pageCount) 頁").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Button { if page < pageCount - 1 { filePage = page + 1 } } label: {
+                                Image(systemName: "chevron.right")
+                            }.controlSize(.small).disabled(page >= pageCount - 1)
+                            if !selectedFiles.isEmpty {
+                                Spacer()
+                                Text("已選 \(selectedFiles.count) 檔（跨頁）").font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
                         }
-                        .padding(.top, 2)
+                        .padding(.top, 4)
                     }
                 }
                 .confirmationDialog(reprocessPrompt, isPresented: $confirmReprocess, titleVisibility: .visible) {
