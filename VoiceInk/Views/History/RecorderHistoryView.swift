@@ -456,9 +456,12 @@ private struct RecordingCard: View {
                 Spacer()
             }
             if style == .detail {
-                // 詳情頁：逐字稿佔滿剩餘高度、可捲動、可選取。
+                // 詳情頁：逐字稿佔滿剩餘高度、可捲動、可選取。只渲染前段（整篇 5 萬字一次渲染會卡頓），
+                // 完整內容用下方按鈕開專用視窗。
+                let capped = displayText.count > 6000
+                let previewText = capped ? String(displayText.prefix(6000)) + "…" : displayText
                 ScrollView {
-                    Text(displayText.isEmpty ? "（無內容）" : displayText)
+                    Text(previewText.isEmpty ? "（無內容）" : previewText)
                         .font(.system(size: 13.5))
                         .textSelection(.enabled)
                         .foregroundStyle(displayText.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(AppTheme.Text.primary))
@@ -468,11 +471,11 @@ private struct RecordingCard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(AppTheme.Surface.control, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
-                if transcription.speakerSegmentsAreNative && !transcription.speakerSegments.isEmpty {
-                    Button { showTranscriptSheet = true } label: {
-                        Label("看含講者標記的完整逐字稿", systemImage: "person.wave.2").font(.system(size: 11))
-                    }.buttonStyle(.plain).foregroundStyle(.secondary)
-                }
+                Button { showTranscriptSheet = true } label: {
+                    Label(capped ? "看完整逐字稿" : "放大／含講者標記",
+                          systemImage: capped ? "arrow.up.left.and.arrow.down.right" : "person.wave.2")
+                        .font(.system(size: 11))
+                }.buttonStyle(.plain).foregroundStyle(.secondary)
             } else {
                 Button { showTranscriptSheet = true } label: {
                     VStack(alignment: .leading, spacing: 6) {

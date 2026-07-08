@@ -56,6 +56,17 @@ final class AskAIService: ObservableObject {
         return personaSection + "\n" + citationRules
     }
 
+    /// 單檔提問專用：餵的是「一整段錄音的完整逐字稿」而非零散檢索片段，所以措辭要自然、
+    /// 不要沿用 RAG 那句「片段不足就說『資料庫中找不到相關內容』」——那會讓模型過度拒答。
+    static func singleRecordingSystemPrompt(persona: String? = nil) -> String {
+        let trimmed = persona?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personaSection = (trimmed?.isEmpty == false) ? trimmed! : "你是使用者的錄音分析助手。"
+        return personaSection + "\n" + """
+        下方是「一段錄音的完整逐字稿」（可能分段標了 [n]）。請根據這段逐字稿，用繁體中文回答使用者的問題，
+        盡量具體、可引用段落編號 [n] 佐證。只有在逐字稿確實完全沒提到時，才說明「這段錄音沒有提到這個」，不要編造。
+        """
+    }
+
     static func buildUserBlock(question: String, chunks: [ScoredChunk]) -> String {
         var lines: [String] = []
         for (i, scored) in chunks.enumerated() {
@@ -184,7 +195,7 @@ final class AskAIService: ObservableObject {
 
         let answer: String
         do {
-            answer = try await completer.complete(system: Self.systemPrompt(persona: persona), user: userBlock)
+            answer = try await completer.complete(system: Self.singleRecordingSystemPrompt(persona: persona), user: userBlock)
         } catch {
             logger.error("Single-recording ask failed: \(error.localizedDescription, privacy: .public)")
             return persistAssistant(text: "回答生成失敗:\(error.localizedDescription)", citations: [], thread: thread, context: context)
