@@ -1,26 +1,43 @@
 import Foundation
 import SwiftUI
 
+/// 範本可套用的輸入類別。一個範本可多屬（共用於語音模式與錄音模式）。
+enum TemplateCategory: String, Codable, CaseIterable, Equatable {
+    case voiceInput      // 語音輸入
+    case recorderInput   // 錄音輸入
+
+    var displayName: String {
+        switch self {
+        case .voiceInput: return String(localized: "語音輸入")
+        case .recorderInput: return String(localized: "錄音輸入")
+        }
+    }
+}
+
 struct CustomPrompt: Identifiable, Codable, Equatable {
     let id: UUID
     let title: String
     let promptText: String
     let useSystemInstructions: Bool
+    /// 所屬輸入類別（可多選）。空＝未分類（遷移時填入至少一類）。additive、向後相容。
+    var categories: [TemplateCategory]
 
     init(
         id: UUID = UUID(),
         title: String,
         promptText: String,
-        useSystemInstructions: Bool = true
+        useSystemInstructions: Bool = true,
+        categories: [TemplateCategory] = []
     ) {
         self.id = id
         self.title = title
         self.promptText = promptText
         self.useSystemInstructions = useSystemInstructions
+        self.categories = categories
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, promptText, useSystemInstructions
+        case id, title, promptText, useSystemInstructions, categories
     }
 
     init(from decoder: Decoder) throws {
@@ -29,6 +46,7 @@ struct CustomPrompt: Identifiable, Codable, Equatable {
         title = try container.decode(String.self, forKey: .title)
         promptText = try container.decode(String.self, forKey: .promptText)
         useSystemInstructions = try container.decodeIfPresent(Bool.self, forKey: .useSystemInstructions) ?? true
+        categories = try container.decodeIfPresent([TemplateCategory].self, forKey: .categories) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -37,6 +55,7 @@ struct CustomPrompt: Identifiable, Codable, Equatable {
         try container.encode(title, forKey: .title)
         try container.encode(promptText, forKey: .promptText)
         try container.encode(useSystemInstructions, forKey: .useSystemInstructions)
+        try container.encode(categories, forKey: .categories)
     }
     
     var finalPromptText: String {

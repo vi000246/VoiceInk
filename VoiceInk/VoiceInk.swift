@@ -137,6 +137,8 @@ struct VoiceInkApp: App {
         ICloudSourceWatcher.shared.start()
         // Ask AI: index new/deleted transcriptions (mainContext spans the index store too).
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
+        // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
+        TemplateStore.shared.migrateIfNeeded()
         // Seed default categories + recorder prompts once; migrate any previously-shared
         // recorder prompts out of the voice library so the two stay separate.
         if !UserDefaults.standard.bool(forKey: "recorderDefaultsSeededV1") {
