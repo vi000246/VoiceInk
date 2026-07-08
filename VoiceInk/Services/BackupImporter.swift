@@ -36,7 +36,7 @@ enum BackupImporter {
         }
 
         if categories.contains(.prompts) {
-            enhancementService.customPrompts = backup.customPrompts
+            enhancementService.replaceVoiceInputPrompts(backup.customPrompts)
             shouldRepairModePromptSelections = true
             print("Successfully imported \(backup.customPrompts.count) prompts.")
         }

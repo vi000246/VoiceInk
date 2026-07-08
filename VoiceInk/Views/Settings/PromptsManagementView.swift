@@ -46,7 +46,7 @@ struct PromptsManagementView: View {
                     if enhancementService.allPrompts.contains(where: { $0.id == prompt.id }) {
                         enhancementService.updatePrompt(prompt)
                     } else {
-                        enhancementService.customPrompts.append(prompt)
+                        enhancementService.upsertPrompt(prompt)
                     }
                     editing = nil
                 },

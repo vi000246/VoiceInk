@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import os
 
 /// Unit for the "skip files smaller than N" auto-import filter.
@@ -20,9 +21,10 @@ final class RecorderConfigStore: ObservableObject {
     static let shared = RecorderConfigStore()
     @Published private(set) var devices: [RecorderDevice] = []
     @Published private(set) var categories: [RecorderCategory] = []
-    /// Recorder category prompts — a SEPARATE library from the voice-input prompts
-    /// (`AIEnhancementService.customPrompts`). Categories bind into this list only.
-    @Published private(set) var recorderPrompts: [CustomPrompt] = []
+    /// 錄音範本＝共用庫中含 `.recorderInput` 類別的子集（`TemplateStore` 為權威來源）。
+    /// 讀取投影自 store;寫入透過本類別方法轉呼 store。訂閱 store 變動 → 轉發 objectWillChange。
+    var recorderPrompts: [CustomPrompt] { TemplateStore.shared.templates(for: .recorderInput) }
+    private var templateStoreCancellable: AnyCancellable?
     /// Global Obsidian vault root (single vault for all devices; per-category sub-folders live under it).
     @Published private(set) var vaultRootBookmark: Data?
     /// Default analysis model (provider + model) used when a category doesn't override it.
@@ -99,7 +101,12 @@ final class RecorderConfigStore: ObservableObject {
     private let meetingFixedCategoryKey = "recorderMeetingFixedCategoryV1"
     private let meetingMicEnabledKey = "recorderMeetingMicEnabledV1"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RecorderAutomation")
-    private init() { load(); seedFallbackIfNeeded() }
+    private init() {
+        load(); seedFallbackIfNeeded()
+        // 錄音範本投影自共用 TemplateStore;訂閱其變動以轉發更新給觀察本 store 的 view。
+        templateStoreCancellable = TemplateStore.shared.$templates
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+    }
 
     func load() {
         if let data = UserDefaults.standard.data(forKey: devicesKey),
@@ -110,10 +117,7 @@ final class RecorderConfigStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([RecorderCategory].self, from: data) {
             categories = decoded
         }
-        if let data = UserDefaults.standard.data(forKey: recorderPromptsKey),
-           let decoded = try? JSONDecoder().decode([CustomPrompt].self, from: data) {
-            recorderPrompts = decoded
-        }
+        // 錄音範本已由 TemplateStore 統一管理（不再從 recorderPromptsKey 讀取）。
         vaultRootBookmark = UserDefaults.standard.data(forKey: vaultRootKey)
         defaultAIProviderName = UserDefaults.standard.string(forKey: defaultProviderKey)
         defaultAIModelName = UserDefaults.standard.string(forKey: defaultModelKey)
@@ -257,36 +261,31 @@ final class RecorderConfigStore: ObservableObject {
     private func saveCategories() {
         if let data = try? JSONEncoder().encode(categories) { UserDefaults.standard.set(data, forKey: categoriesKey) }
     }
-    private func saveRecorderPrompts() {
-        if let data = try? JSONEncoder().encode(recorderPrompts) { UserDefaults.standard.set(data, forKey: recorderPromptsKey) }
-    }
-
-    // MARK: - Recorder category prompts (separate from voice prompts)
+    // MARK: - Recorder category prompts（共用庫的 .recorderInput 子集）
     func recorderPrompt(byId id: UUID?) -> CustomPrompt? {
-        guard let id else { return nil }
-        return recorderPrompts.first { $0.id == id }
+        // 直接查共用庫:分類綁定的範本即使是雙類別共用範本也能解析。
+        TemplateStore.shared.template(byId: id)
     }
     func upsertRecorderPrompt(_ prompt: CustomPrompt) {
-        if let i = recorderPrompts.firstIndex(where: { $0.id == prompt.id }) { recorderPrompts[i] = prompt }
-        else { recorderPrompts.append(prompt) }
-        saveRecorderPrompts()
+        var p = prompt
+        if !p.categories.contains(.recorderInput) { p.categories.append(.recorderInput) }
+        TemplateStore.shared.upsert(p)
     }
     func removeRecorderPrompt(_ id: UUID) {
-        recorderPrompts.removeAll { $0.id == id }
+        TemplateStore.shared.delete(id)
         // Unbind any category that used it.
         for i in categories.indices where categories[i].customPromptId == id {
             categories[i].customPromptId = nil
         }
-        saveRecorderPrompts(); saveCategories()
+        saveCategories()
     }
 
     /// One-time migration: recorder prompts must never use the dictation system template.
     func disableSystemTemplateForRecorderPrompts() {
-        guard recorderPrompts.contains(where: { $0.useSystemInstructions }) else { return }
-        recorderPrompts = recorderPrompts.map {
-            CustomPrompt(id: $0.id, title: $0.title, promptText: $0.promptText, useSystemInstructions: false)
+        for p in recorderPrompts where p.useSystemInstructions {
+            TemplateStore.shared.upsert(CustomPrompt(id: p.id, title: p.title, promptText: p.promptText,
+                                                     useSystemInstructions: false, categories: p.categories))
         }
-        saveRecorderPrompts()
     }
 
     // MARK: - Devices
@@ -350,8 +349,9 @@ final class RecorderConfigStore: ObservableObject {
         func promptId(title: String, text: String) -> UUID {
             if let existing = recorderPrompts.first(where: { $0.title == title }) { return existing.id }
             // Recorder prompts run raw (analysis tasks) — never wrapped in the dictation system template.
-            let prompt = CustomPrompt(title: title, promptText: text, useSystemInstructions: false)
-            recorderPrompts.append(prompt)
+            let prompt = CustomPrompt(title: title, promptText: text, useSystemInstructions: false,
+                                      categories: [.recorderInput])
+            TemplateStore.shared.upsert(prompt)
             return prompt.id
         }
 
@@ -373,30 +373,7 @@ final class RecorderConfigStore: ObservableObject {
         for p in RecorderDefaultTemplates.extraPrompts {
             _ = promptId(title: p.title, text: p.text)
         }
-        saveRecorderPrompts()
     }
-
-    /// One-time cleanup: recorder templates created via the category editor used to ALSO be saved
-    /// into the voice library (PromptEditorView persisted unconditionally), so the same prompt id
-    /// exists in both stores. The recorder store is canonical — drop the voice copies.
-    func removeVoicePromptsDuplicatedFromRecorder(from enhancementService: AIEnhancementService) {
-        let recorderIds = Set(recorderPrompts.map { $0.id })
-        let dupes = enhancementService.allPrompts.filter { recorderIds.contains($0.id) }
-        for p in dupes { enhancementService.deletePrompt(p) }
-    }
-
-    /// One-time migration: move recorder-default prompts that were previously seeded into the
-    /// shared voice library back out into the recorder-prompt store (preserving ids so existing
-    /// category bindings keep resolving), then remove them from the voice list.
-    func migrateRecorderPromptsOut(from enhancementService: AIEnhancementService) {
-        let recorderTitles = Set(RecorderDefaultTemplates.all.map { $0.promptTitle }
-                                 + RecorderDefaultTemplates.extraPrompts.map { $0.title })
-        let toMove = enhancementService.allPrompts.filter { recorderTitles.contains($0.title) }
-        guard !toMove.isEmpty else { return }
-        for p in toMove {
-            if !recorderPrompts.contains(where: { $0.id == p.id }) { recorderPrompts.append(p) }
-            enhancementService.deletePrompt(p)
-        }
-        saveRecorderPrompts()
-    }
+    // 舊的「保持語音/錄音兩庫分離」遷移方法（migrateRecorderPromptsOut /
+    // removeVoicePromptsDuplicatedFromRecorder）已隨 TemplateStore 統一而移除。
 }

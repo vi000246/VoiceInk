@@ -417,7 +417,7 @@ final class OnboardingFlowController {
             in: enhancementService.customPrompts
         )
         if seedResult.didChange {
-            enhancementService.customPrompts = seedResult.prompts
+            enhancementService.replaceVoiceInputPrompts(seedResult.prompts)
         }
 
         StarterModeFactory.install(

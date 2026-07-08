@@ -145,19 +145,15 @@ struct VoiceInkApp: App {
             RecorderConfigStore.shared.seedDefaultTemplates()
             UserDefaults.standard.set(true, forKey: "recorderDefaultsSeededV1")
         }
-        if !UserDefaults.standard.bool(forKey: "recorderPromptsSplitV1") {
-            RecorderConfigStore.shared.migrateRecorderPromptsOut(from: enhancementService)
-            RecorderConfigStore.shared.seedDefaultTemplates()
-            UserDefaults.standard.set(true, forKey: "recorderPromptsSplitV1")
-        }
+        // 語音/錄音範本已由 TemplateStore 合併為單一共用庫（見上方 migrateIfNeeded）。以下舊的
+        // 「保持兩庫分離」遷移已作廢——它們呼叫 deletePrompt（現在會刪到共用庫、殃及雙類別範本），
+        // 故只標記完成、不再執行。seedDefaultTemplates 仍為安全的預設範本補種。
+        UserDefaults.standard.set(true, forKey: "recorderPromptsSplitV1")
+        UserDefaults.standard.set(true, forKey: "recorderPromptsDedupV1")
+        RecorderConfigStore.shared.seedDefaultTemplates()
         if !UserDefaults.standard.bool(forKey: "recorderPromptsNoSystemTemplateV1") {
             RecorderConfigStore.shared.disableSystemTemplateForRecorderPrompts()
             UserDefaults.standard.set(true, forKey: "recorderPromptsNoSystemTemplateV1")
-        }
-        // Recorder templates used to double-save into the voice library — drop those voice copies.
-        if !UserDefaults.standard.bool(forKey: "recorderPromptsDedupV1") {
-            RecorderConfigStore.shared.removeVoicePromptsDuplicatedFromRecorder(from: enhancementService)
-            UserDefaults.standard.set(true, forKey: "recorderPromptsDedupV1")
         }
         // Backfill newly-added default templates (e.g. 獨白記錄) into existing installs.
         // seedDefaultTemplates is idempotent by name/title, so user-edited prompts are untouched.

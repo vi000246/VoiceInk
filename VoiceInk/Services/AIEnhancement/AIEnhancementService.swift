@@ -2,17 +2,18 @@ import Foundation
 import SwiftData
 import AppKit
 import os
+import Combine
 import LLMkit
 
 @MainActor
 class AIEnhancementService: ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AIEnhancementService")
 
-    @Published var customPrompts: [CustomPrompt] {
-        didSet {
-            savePrompts()
-        }
-    }
+    /// 語音範本＝共用庫中含 `.voiceInput` 類別的子集（`TemplateStore` 為權威來源）。
+    /// 讀取投影自 store;寫入透過本類別的方法轉呼 store。訂閱 store 變動 → 轉發 objectWillChange，
+    /// 讓觀察 aiService 的 view 仍能即時更新。
+    var customPrompts: [CustomPrompt] { TemplateStore.shared.templates(for: .voiceInput) }
+    private var templateStoreCancellable: AnyCancellable?
 
     @Published var lastSystemMessageSent: String?
     @Published var lastUserMessageSent: String?
@@ -40,12 +41,9 @@ class AIEnhancementService: ObservableObject {
         self.screenCaptureService = ScreenCaptureService()
         self.customVocabularyService = CustomVocabularyService.shared
 
-        if let savedPromptsData = UserDefaults.standard.data(forKey: "customPrompts"),
-           let decodedPrompts = try? JSONDecoder().decode([CustomPrompt].self, from: savedPromptsData) {
-            self.customPrompts = decodedPrompts
-        } else {
-            self.customPrompts = []
-        }
+        // 範本來源改為共用 TemplateStore（遷移在 app 啟動已完成）。訂閱其變動以轉發更新給 UI。
+        templateStoreCancellable = TemplateStore.shared.$templates
+            .sink { [weak self] _ in self?.objectWillChange.send() }
 
         repairModePromptSelections()
 
@@ -459,21 +457,51 @@ class AIEnhancementService: ObservableObject {
         let newPrompt = CustomPrompt(
             title: title,
             promptText: promptText,
-            useSystemInstructions: useSystemInstructions
+            useSystemInstructions: useSystemInstructions,
+            categories: [.voiceInput]
         )
-        customPrompts.append(newPrompt)
+        TemplateStore.shared.upsert(newPrompt)
         return newPrompt
     }
 
-    func updatePrompt(_ prompt: CustomPrompt) {
-        if let index = customPrompts.firstIndex(where: { $0.id == prompt.id }) {
-            customPrompts[index] = prompt
+    /// Upsert 一個範本到共用庫（保留其類別;若空則至少標 .voiceInput）。供共用範本頁/匯入使用。
+    func upsertPrompt(_ prompt: CustomPrompt) {
+        var p = prompt
+        if p.categories.isEmpty {
+            p.categories = TemplateStore.shared.template(byId: p.id)?.categories ?? [.voiceInput]
         }
+        TemplateStore.shared.upsert(p)
+    }
+
+    func updatePrompt(_ prompt: CustomPrompt) {
+        // 保留既有類別（編輯器尚未帶類別時不清空）。
+        var p = prompt
+        if p.categories.isEmpty {
+            p.categories = TemplateStore.shared.template(byId: p.id)?.categories ?? [.voiceInput]
+        }
+        TemplateStore.shared.upsert(p)
     }
 
     func deletePrompt(_ prompt: CustomPrompt) {
-        customPrompts.removeAll { $0.id == prompt.id }
+        TemplateStore.shared.delete(prompt.id)
         repairModePromptSelections()
+    }
+
+    /// 以整批範本取代語音範本子集（供 onboarding seed / backup restore）。每筆標 .voiceInput;
+    /// 不在新集合中的舊 .voiceInput 範本移除 .voiceInput 類別（若因此無類別則刪除）。
+    func replaceVoiceInputPrompts(_ prompts: [CustomPrompt]) {
+        let store = TemplateStore.shared
+        let newIds = Set(prompts.map(\.id))
+        for existing in store.templates(for: .voiceInput) where !newIds.contains(existing.id) {
+            var p = existing
+            p.categories.removeAll { $0 == .voiceInput }
+            if p.categories.isEmpty { store.delete(p.id) } else { store.upsert(p) }
+        }
+        for prompt in prompts {
+            var p = prompt
+            if !p.categories.contains(.voiceInput) { p.categories.append(.voiceInput) }
+            store.upsert(p)
+        }
     }
 
     func repairModePromptSelections() {
@@ -502,11 +530,6 @@ class AIEnhancementService: ObservableObject {
         }
     }
 
-    private func savePrompts() {
-        if let encoded = try? JSONEncoder().encode(customPrompts) {
-            UserDefaults.standard.set(encoded, forKey: "customPrompts")
-        }
-    }
 }
 
 enum EnhancementError: Error {
