@@ -37,6 +37,9 @@ struct AskAIView: View {
     // Citation sheet
     @State private var focusTranscription: Transcription?
 
+    // Embedding-model switch
+    @State private var pendingModelSwitch: EmbeddingModel?
+
     private var hasEmbeddingKey: Bool {
         let key = APIKeyManager.shared.getAPIKey(forProvider: indexService.model.providerName)
         return !(key ?? "").isEmpty
@@ -71,6 +74,21 @@ struct AskAIView: View {
             TranscriptionDetailView(transcription: t)
                 .frame(minWidth: 480, minHeight: 400)
         }
+        .confirmationDialog("切換 embedding 模型需要重建整個索引",
+                            isPresented: Binding(get: { pendingModelSwitch != nil },
+                                                 set: { if !$0 { pendingModelSwitch = nil } }),
+                            titleVisibility: .visible) {
+            if let target = pendingModelSwitch {
+                Button("清空並重建索引（\(allChunks.count) 個片段）", role: .destructive) {
+                    indexService.switchModel(to: target)
+                    pendingModelSwitch = nil
+                    startBackfill()
+                }
+            }
+            Button("取消", role: .cancel) { pendingModelSwitch = nil }
+        } message: {
+            Text("不同模型的向量空間互不相容，切換後現有索引會被清空並以新模型重新嵌入。")
+        }
     }
 
     // MARK: - Header controls
@@ -85,7 +103,34 @@ struct AskAIView: View {
                     Label("重建索引", systemImage: "arrow.clockwise")
                 }.help("重新索引所有轉錄（新增的會自動索引，這裡用於一次性回填舊資料）")
             }
+            Menu {
+                Picker("Embedding 模型", selection: embeddingModelBinding) {
+                    ForEach(EmbeddingModel.allCases, id: \.self) { m in
+                        Text(m.displayName).tag(m)
+                    }
+                }
+                Text("答案模型：跟隨 AI Models 的預設（\(aiService.selectedProvider.rawValue)）")
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .menuIndicator(.hidden)
+            .help("Embedding 模型設定")
         }
+    }
+
+    /// 換 embedding 模型:若索引非空,先確認(需全量重嵌);空索引直接切換。
+    private var embeddingModelBinding: Binding<EmbeddingModel> {
+        Binding(
+            get: { indexService.model },
+            set: { newModel in
+                guard newModel != indexService.model else { return }
+                if allChunks.isEmpty {
+                    indexService.switchModel(to: newModel)
+                } else {
+                    pendingModelSwitch = newModel
+                }
+            }
+        )
     }
 
     // MARK: - Conversation
