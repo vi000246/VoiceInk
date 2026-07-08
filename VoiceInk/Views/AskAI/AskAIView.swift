@@ -83,7 +83,14 @@ struct AskAIView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { sidebarModel.refresh(modelContext) }
+        .onAppear {
+            sidebarModel.refresh(modelContext)
+            // 後備：若 onReceive 沒接到（時序/首次建立），這裡再消費一次單檔提問目標。
+            if let id = AppNavigator.shared.pendingAskTranscriptionId {
+                focusScope(on: id)
+                AppNavigator.shared.consumePendingAsk()
+            }
+        }
         .sheet(item: $focusTranscription) { t in
             TranscriptionDetailView(transcription: t)
                 .frame(minWidth: 480, minHeight: 400)
@@ -448,16 +455,12 @@ struct AskAIView: View {
     }
 
     /// 從管理頁「Ask AI」進來：限定 scope 到單一錄音並開新對話。
+    /// 一律設定 id（scope 才會生效）;標題只是顯示用，抓不到也不影響提問。
     private func focusScope(on id: UUID) {
+        focusedTranscriptionId = id
         let match = (try? modelContext.fetch(FetchDescriptor<Transcription>(
             predicate: #Predicate { $0.id == id })))?.first
-        guard let match else {
-            NotificationManager.shared.showNotification(
-                title: "找不到該錄音（可能已刪除）", type: .warning, duration: 4)
-            return
-        }
-        focusedTranscriptionId = id
-        focusedTitle = match.recorderTitle ?? String(match.text.prefix(20))
+        focusedTitle = match?.recorderTitle ?? match.map { String($0.text.prefix(20)) } ?? "選定的錄音"
         thread = nil
         messages = []
     }

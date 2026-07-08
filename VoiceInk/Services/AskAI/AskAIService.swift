@@ -152,7 +152,8 @@ final class AskAIService: ObservableObject {
             predicate: #Predicate { $0.id == tid })))?.first else {
             return persistAssistant(text: "找不到這筆錄音（可能已刪除）。", citations: [], thread: thread, context: context)
         }
-        let full = (t.enhancedText?.isEmpty == false ? t.enhancedText! : t.text)
+        // 單檔問答用「最完整」的原始逐字稿（套用後結果常是精簡摘要，答不了細節）;原始為空才退回。
+        let full = t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (t.enhancedText ?? "") : t.text
         guard !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return persistAssistant(text: "這筆錄音沒有逐字稿內容可分析。", citations: [], thread: thread, context: context)
         }
