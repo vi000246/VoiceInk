@@ -232,6 +232,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             return
         }
 
+        // 對著 VoiceInk 自己的視窗聽寫（例如把問題講進 Ask AI 輸入框）→ 照常轉錄＋貼上，
+        // 但不留進「語音管理」歷史（那是使用者操作 App 的內容，不是要保存的語音筆記）。
+        let targetIsSelf = ActiveWindowService.shared.currentApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
+
         let transcription = makeRecordingTranscription(
             for: recordedFile,
             text: "",
@@ -247,6 +251,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             audioURL: recordedFile,
             contextStore: activeRecordingContextStore
         )
+
+        if targetIsSelf {
+            TranscriptIndexService.shared.deleteChunks(transcriptionId: transcription.id)
+            RecordingAudioFiles.removeAll(for: transcription)   // 先清音檔（還讀得到路徑）
+            modelContext.delete(transcription)
+            try? modelContext.save()
+        }
     }
 
     /// Resets per-recording state ahead of a new start.

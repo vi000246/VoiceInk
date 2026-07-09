@@ -270,6 +270,15 @@ class AudioTranscriptionManager: ObservableObject {
                 transcription.importFingerprint = fingerprint
                 transcription.recorderSourceLabel = sourceLabel
             }
+            // 手動轉錄的檔案由「錄音管理」負責：給它一個 importFingerprint（+ ledger 記檔名/大小），
+            // 讓它出現在錄音管理而非語音管理。無需內容雜湊去重，用 UUID 標記即可。
+            if case .manual = item.origin {
+                let fingerprint = "manual:\(UUID().uuidString)"
+                transcription.importFingerprint = fingerprint
+                let byteSize = (try? permanentURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                ImportLedger.shared.record(fingerprint: fingerprint, fileName: item.filename, byteSize: byteSize,
+                                           sourceDeviceId: nil, transcriptionId: transcription.id, in: modelContext)
+            }
             if chunkURLs.count > 1 {
                 transcription.audioChunkPathsRaw = chunkURLs.map { $0.path }.joined(separator: "\n")
             }

@@ -10,6 +10,7 @@ struct VoiceLibraryView: View {
     private var items: [Transcription]
 
     @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
+    @EnvironmentObject private var enhancementService: AIEnhancementService
     @State private var searchText = ""
     @State private var debouncedQuery = ""
     @State private var searchDebounceTask: Task<Void, Never>?
@@ -116,6 +117,7 @@ struct VoiceLibraryView: View {
         }
         .centeredModal(item: $detailTarget) { t in
             VoiceDetailSheet(transcription: t, onClose: { detailTarget = nil })
+                .environmentObject(enhancementService)
                 .frame(maxWidth: 900, maxHeight: 820)
                 .background(AppTheme.Surface.window, in: RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
@@ -320,9 +322,15 @@ private struct VoiceDetailSheet: View {
     let transcription: Transcription
     let onClose: () -> Void
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var enhancementService: AIEnhancementService
     @State private var showAnalysis = false
     @State private var tagText = ""
     @State private var confirmDelete = false
+    @State private var selectedTemplateId: UUID?
+    @State private var isApplying = false
+
+    /// 可套用到語音逐字稿的範本＝逐字稿範本中勾了「語音輸入」的那些。
+    private var voiceTemplates: [CustomPrompt] { TemplateStore.shared.templates(for: .voiceInput) }
 
     private var hasAnalysis: Bool { transcription.enhancedText?.isEmpty == false }
     private var displayText: String { (showAnalysis ? transcription.enhancedText : transcription.text) ?? transcription.text }
@@ -350,6 +358,24 @@ private struct VoiceDetailSheet: View {
                 }.controlSize(.small)
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
+
+            // 套用範本：挑一個逐字稿範本（勾了語音輸入的）把逐字稿整理成想要的格式 → 進「套用後」分頁。
+            if !voiceTemplates.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "text.alignleft").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Picker("套用範本", selection: $selectedTemplateId) {
+                        Text("選擇逐字稿範本…").tag(UUID?.none)
+                        ForEach(voiceTemplates) { p in Text(p.title).tag(UUID?.some(p.id)) }
+                    }.labelsHidden().frame(maxWidth: 240)
+                    Button("套用", action: applyTemplate).controlSize(.small)
+                        .disabled(selectedTemplateId == nil || isApplying)
+                    if isApplying {
+                        HStack(spacing: 5) { ProgressView().controlSize(.small); Text("處理中…").font(.system(size: 11)).foregroundStyle(.secondary) }
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+            }
 
             HStack(spacing: 6) {
                 tab("原始逐字稿", active: !showAnalysis) { showAnalysis = false }
@@ -384,6 +410,30 @@ private struct VoiceDetailSheet: View {
         transcription.manualTag = t.isEmpty ? nil : t
         try? modelContext.save()
         LibrarySidebarModel.shared.refresh(modelContext)
+    }
+
+    /// 用選定的逐字稿範本整理原始逐字稿，結果寫入 enhancedText（「套用後」分頁）。
+    private func applyTemplate() {
+        guard let pid = selectedTemplateId,
+              let prompt = voiceTemplates.first(where: { $0.id == pid }),
+              let ai = enhancementService.getAIService() else { return }
+        isApplying = true
+        Task {
+            defer { isApplying = false }
+            let config = EnhancementRuntimeConfiguration(
+                mode: nil, isEnabled: true, prompt: prompt,
+                provider: ai.selectedProvider, modelName: nil,
+                useClipboardContext: false, useSelectedTextContext: false, useScreenCaptureContext: false)
+            do {
+                let (enhanced, _, _) = try await enhancementService.enhance(transcription.text, configuration: config)
+                transcription.enhancedText = enhanced
+                try? modelContext.save()
+                showAnalysis = true
+            } catch {
+                NotificationManager.shared.showNotification(
+                    title: "套用失敗：\(error.localizedDescription)", type: .error, duration: 5)
+            }
+        }
     }
 
     private func tab(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
