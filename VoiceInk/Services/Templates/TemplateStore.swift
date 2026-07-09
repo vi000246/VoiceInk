@@ -85,4 +85,37 @@ final class TemplateStore: ObservableObject {
     private static func uniq(_ c: [TemplateCategory]) -> [TemplateCategory] {
         c.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
     }
+
+    // MARK: - Restore（一次性補救）
+
+    /// 把舊兩庫（`customPrompts` / `recorderCategoryPromptsV1`，遷移後仍保留）中「目前共用庫沒有的」
+    /// 範本補回來——依 id 判斷，**只新增、絕不刪除或修改**既有範本。用來還原先前遷移/覆蓋操作漏掉的
+    /// 使用者範本。冪等（跑過即跳過）。
+    func restoreMissingLegacyTemplatesOnce() {
+        let flag = "templatesRestoredFromLegacyV2"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        // 依「標題＋內容」判斷是否已存在（id 因重新種子而變動,不可靠;多個同名如「# ROLE」靠內容區分）。
+        func sig(_ p: CustomPrompt) -> String {
+            p.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                + "\u{1}" + p.promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var existing = Set(templates.map(sig))
+        var added = 0
+        func restore(_ key: String, category: TemplateCategory) {
+            guard let d = UserDefaults.standard.data(forKey: key),
+                  let arr = try? JSONDecoder().decode([CustomPrompt].self, from: d) else { return }
+            for var p in arr {
+                let s = sig(p)
+                if existing.contains(s) { continue }
+                p.categories = Self.uniq(p.categories + [category])
+                templates.append(p)
+                existing.insert(s)
+                added += 1
+            }
+        }
+        restore(legacyVoiceKey, category: .voiceInput)
+        restore(legacyRecorderKey, category: .recorderInput)
+        if added > 0 { save() }
+        UserDefaults.standard.set(true, forKey: flag)
+    }
 }

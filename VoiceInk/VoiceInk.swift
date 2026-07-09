@@ -140,6 +140,8 @@ struct VoiceInkApp: App {
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
         // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
         TemplateStore.shared.migrateIfNeeded()
+        // 一次性補救：把先前操作漏掉/被覆蓋的舊範本從 legacy key 補回（只新增、不動既有）。
+        TemplateStore.shared.restoreMissingLegacyTemplatesOnce()
         // Ask AI persona 範本預載（一次性、冪等;mainContext 也涵蓋 index store）。
         AskAITemplateStore.seedDefaultsIfNeeded(context: resolvedContainer.mainContext)
         // Seed default categories + recorder prompts once; migrate any previously-shared
