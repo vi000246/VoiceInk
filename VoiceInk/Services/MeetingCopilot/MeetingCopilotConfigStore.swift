@@ -23,6 +23,14 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let fastModelKey = "meetingCopilotFastModelV1"
     private let showInformationalCuesKey = "meetingCopilotShowInformationalCuesV1"
 
+    // Keys(M3 新增：deep model + 三層/接地開關)
+    private let deepProviderKey = "meetingCopilotDeepProviderV1"
+    private let deepModelKey = "meetingCopilotDeepModelV1"
+    private let prefetchEnabledKey = "meetingCopilotPrefetchV1"
+    private let domainPersonaKey = "meetingCopilotPersonaV1"
+    private let useHistoryRAGKey = "meetingCopilotUseRAGV1"
+    private let useScreenContextKey = "meetingCopilotUseScreenV1"
+
     // MARK: - Settings
 
     /// 總開關（kill switch）。**預設 false**。
@@ -58,6 +66,21 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// **預設 false**(仍會 persist,只是引擎層不暴露);UI 切換屬 M5。
     @Published private(set) var showInformationalCues: Bool = false
 
+    // MARK: - Settings(M3 新增：deep model + 三層回應/接地)
+
+    /// Tier 2 的 deep model(provider rawValue)。nil = 跟隨 AI Models 預設 provider。
+    @Published private(set) var deepProviderName: String?
+    /// deep model 名稱。nil = 用該 provider 的預設 model。
+    @Published private(set) var deepModelName: String?
+    /// FR-15:最新一則 cue 自動預跑 Tier 1。**預設 true**。
+    @Published private(set) var prefetchEnabled: Bool = true
+    /// 注入所有 tier system prompt 的 persona(讓答案針對領域)。
+    @Published private(set) var domainPersona: String = "你是資深後端工程師,專精分散式系統設計與演算法。"
+    /// FR-19:是否以歷史逐字稿 RAG 接地。**預設 true**。
+    @Published private(set) var useHistoryRAG: Bool = true
+    /// FR-20:是否在 Tier 2 擷取分享畫面 OCR 接地。**預設 true**。
+    @Published private(set) var useScreenContext: Bool = true
+
     // MARK: - Init
 
     init() {
@@ -80,6 +103,13 @@ final class MeetingCopilotConfigStore: ObservableObject {
         fastProviderName = d.string(forKey: fastProviderKey)
         fastModelName = d.string(forKey: fastModelKey)
         showInformationalCues = d.bool(forKey: showInformationalCuesKey)   // 未設定 → false
+
+        deepProviderName = d.string(forKey: deepProviderKey)
+        deepModelName = d.string(forKey: deepModelKey)
+        prefetchEnabled = (d.object(forKey: prefetchEnabledKey) as? Bool) ?? true   // 預設 true
+        if let p = d.string(forKey: domainPersonaKey), !p.isEmpty { domainPersona = p }
+        useHistoryRAG = (d.object(forKey: useHistoryRAGKey) as? Bool) ?? true
+        useScreenContext = (d.object(forKey: useScreenContextKey) as? Bool) ?? true
     }
 
     // MARK: - Mutators
@@ -115,5 +145,34 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setTranscribeLocalMic(_ value: Bool) {
         transcribeLocalMic = value
         UserDefaults.standard.set(value, forKey: transcribeLocalMicKey)
+    }
+
+    // MARK: - Mutators(M3)
+
+    func setDeepModel(provider: String?, model: String?) {
+        deepProviderName = provider
+        deepModelName = model
+        persistString(provider, deepProviderKey)
+        persistString(model, deepModelKey)
+    }
+
+    func setPrefetchEnabled(_ value: Bool) {
+        prefetchEnabled = value
+        UserDefaults.standard.set(value, forKey: prefetchEnabledKey)
+    }
+
+    func setDomainPersona(_ value: String) {
+        domainPersona = value
+        UserDefaults.standard.set(value, forKey: domainPersonaKey)
+    }
+
+    func setUseHistoryRAG(_ value: Bool) {
+        useHistoryRAG = value
+        UserDefaults.standard.set(value, forKey: useHistoryRAGKey)
+    }
+
+    func setUseScreenContext(_ value: Bool) {
+        useScreenContext = value
+        UserDefaults.standard.set(value, forKey: useScreenContextKey)
     }
 }
