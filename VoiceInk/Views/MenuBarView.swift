@@ -53,6 +53,12 @@ struct MenuBarView: View {
                 Task { await MeetingCaptureController.shared.toggle() }
             }
 
+            #if DEBUG
+            Button("Replay 會議音檔…（DEBUG）") {
+                Task { await MeetingReplayDebugRunner.shared.run() }
+            }
+            #endif
+
             Divider()
 
             Menu {
