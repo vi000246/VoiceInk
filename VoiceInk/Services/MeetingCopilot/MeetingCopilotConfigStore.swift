@@ -18,6 +18,11 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let asrModelNameKey = "meetingCopilotASRModelV1"
     private let transcribeLocalMicKey = "meetingCopilotTranscribeLocalMicV1"
 
+    // Keys(M2 新增)
+    private let fastProviderKey = "meetingCopilotFastProviderV1"
+    private let fastModelKey = "meetingCopilotFastModelV1"
+    private let showInformationalCuesKey = "meetingCopilotShowInformationalCuesV1"
+
     // MARK: - Settings
 
     /// 總開關（kill switch）。**預設 false**。
@@ -42,6 +47,17 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 不影響核心功能,只是 AI 少了「我已經說過什麼」的上下文。
     @Published private(set) var transcribeLocalMic: Bool = true
 
+    // MARK: - Settings(M2 新增：cue 抽取的 fast model + informational 暴露開關)
+
+    /// cue 抽取用的 fast model(provider rawValue)。nil = 跟隨 AI Models 的預設 provider
+    /// (經 `AskAIAnswerModel.resolve` 解析,見 MeetingCopilotController.makeFastCompleter)。
+    @Published private(set) var fastProviderName: String?
+    /// fast model 名稱。nil = 用該 provider 的預設 model。
+    @Published private(set) var fastModelName: String?
+    /// FR-11:informational cue 是否納入 `MeetingCopilotController.cues` 暴露面。
+    /// **預設 false**(仍會 persist,只是引擎層不暴露);UI 切換屬 M5。
+    @Published private(set) var showInformationalCues: Bool = false
+
     // MARK: - Init
 
     init() {
@@ -60,13 +76,35 @@ final class MeetingCopilotConfigStore: ObservableObject {
         if d.object(forKey: transcribeLocalMicKey) != nil {
             transcribeLocalMic = d.bool(forKey: transcribeLocalMicKey)
         }
+
+        fastProviderName = d.string(forKey: fastProviderKey)
+        fastModelName = d.string(forKey: fastModelKey)
+        showInformationalCues = d.bool(forKey: showInformationalCuesKey)   // 未設定 → false
     }
 
     // MARK: - Mutators
 
+    /// nil = removeObject（鏡射 RecorderConfigStore.persistString）。
+    private func persistString(_ value: String?, _ key: String) {
+        if let value { UserDefaults.standard.set(value, forKey: key) }
+        else { UserDefaults.standard.removeObject(forKey: key) }
+    }
+
     func setCopilotEnabled(_ value: Bool) {
         copilotEnabled = value
         UserDefaults.standard.set(value, forKey: copilotEnabledKey)
+    }
+
+    func setFastModel(provider: String?, model: String?) {
+        fastProviderName = provider
+        fastModelName = model
+        persistString(provider, fastProviderKey)
+        persistString(model, fastModelKey)
+    }
+
+    func setShowInformationalCues(_ value: Bool) {
+        showInformationalCues = value
+        UserDefaults.standard.set(value, forKey: showInformationalCuesKey)
     }
 
     func setASRModelName(_ value: String) {
