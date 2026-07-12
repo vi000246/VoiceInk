@@ -1,6 +1,6 @@
 # Spec Roadmap
 
-> Auto-updated index. Last updated: 2026-07-07
+> Auto-updated index. Last updated: 2026-07-12
 >
 > **AI Agents**: Read this file first to decide which specs to load. Load only what's relevant to
 > your task to avoid context bloat.
@@ -14,6 +14,7 @@
 | templates | [templates.spec.md](./templates.spec.md) | Supporting Domain | 單一共用範本庫 + 類別標籤（語音輸入／錄音輸入），語音/錄音模式以類別多選篩選共用範本;連帶側欄 IA 重構。Spec'd（WP1+WP2），未實作。 | — |
 | library-management | [library-management.spec.md](./library-management.spec.md) | Supporting Domain | Notion 式清單管理頁（欄位/排序/詳情彈窗/批次+星號保護）共用基建，供錄音管理與新語音管理兩頁。Spec'd（WP3+WP4），未實作。 | — |
 | voice-input | [voice-input.spec.md](./voice-input.spec.md) | Core Domain | 語音聽寫輸出路徑（Modes + TranscriptionDelivery）;新增「編輯後貼上」——貼上前用外部真 MacVim/nvim 阻塞編輯再貼回。Spec'd，未實作。 | — |
+| meeting-copilot | [meeting-copilot.spec.md](./meeting-copilot.spec.md) | Supporting Domain | 會議**即時**輔助。設計第一原則:瓶頸不是答案品質,是「開口的頭五秒」。聲道分流（mixToMono 之前切 tap=對方 / mic=我）取得零成本講者歸屬,免 diarization;`ResponseCueExtractor` 抓「需要我回應的東西」（含陳述句質疑,非只抓問號）;**三層漸進揭露**（Tier0 本機關鍵字 <0.5s 不呼叫 LLM ／ Tier1 fast model 產「開口稿」<1.5s 且最新一則預跑 ／ Tier2 deep model 產結構化 follow-up 預判）;答案接地於 brief + 歷史逐字稿 RAG + 分享畫面 OCR;`sharingType=.none` 的 overlay（toggle + peek 雙熱鍵、近鏡頭定位、說話時淡出、失敗靜默）。Spec'd,未實作。 | — |
 
 ## Loading Guide
 
@@ -27,6 +28,7 @@
 
 | Date | Module | Feature SRS | One-line Summary |
 |------|--------|-------------|-----------------|
+| 2026-07-12 | meeting-copilot | [meeting-copilot-live-assist.srs.md](../srs/meeting-copilot-live-assist.srs.md) | **新模組**:會議即時輔助——聲道分流取代 diarization 取得零成本講者歸屬;偵測「需要我回應的東西」（含陳述句質疑）;三層漸進揭露（Tier0 免 LLM <0.5s ／ Tier1 開口稿 <1.5s 且預跑 ／ Tier2 結構化 follow-up）;接地於 brief + 歷史 RAG + 螢幕 OCR;`sharingType=.none` 的 overlay（toggle+peek、近鏡頭、說話淡出、失敗靜默）;含不開 Teams/Meet 的離線 replay harness。 |
 | 2026-07-08 | voice-input | [edit-before-paste.srs.md](../srs/voice-input-edit-before-paste.srs.md) | 語音模式「編輯後貼上」:貼上前用外部真 MacVim/nvim（`mvim -f`）阻塞編輯暫存檔再讀回貼回,吃使用者真 vimrc。 |
 | 2026-07-08 | templates | [templates-shared-library-and-ia.srs.md](../srs/templates-shared-library-and-ia.srs.md) | WP1+WP2:合併語音+錄音範本為單一共用庫（類別標籤、模式多選篩選）+ 側欄 IA 重構。 |
 | 2026-07-08 | library-management | [library-management-pages.srs.md](../srs/library-management-pages.srs.md) | WP3+WP4:Notion 式錄音管理 + 新語音管理頁（表格/排序/詳情彈窗/批次+星號保護/改名→匯出對齊）。 |
