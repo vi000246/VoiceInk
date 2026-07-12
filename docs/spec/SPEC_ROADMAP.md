@@ -1,6 +1,6 @@
 # Spec Roadmap
 
-> Auto-updated index. Last updated: 2026-07-12
+> Auto-updated index. Last updated: 2026-07-13
 >
 > **AI Agents**: Read this file first to decide which specs to load. Load only what's relevant to
 > your task to avoid context bloat.
@@ -28,7 +28,11 @@
 
 | Date | Module | Feature SRS | One-line Summary |
 |------|--------|-------------|-----------------|
-| 2026-07-12 | meeting-copilot | [meeting-copilot-live-assist.srs.md](../srs/meeting-copilot-live-assist.srs.md) | **新模組**:會議即時輔助——聲道分流取代 diarization 取得零成本講者歸屬;偵測「需要我回應的東西」（含陳述句質疑）;三層漸進揭露（Tier0 免 LLM <0.5s ／ Tier1 開口稿 <1.5s 且預跑 ／ Tier2 結構化 follow-up）;接地於 brief + 歷史 RAG + 螢幕 OCR;`sharingType=.none` 的 overlay（toggle+peek、近鏡頭、說話淡出、失敗靜默）;含不開 Teams/Meet 的離線 replay harness。 |
+| 2026-07-13 | meeting-copilot | [m5-management-page.srs.md](../srs/meeting-copilot-m5-management-page.srs.md) | **M5 切片 spec'd + planned**:「會議錄音管理」側欄新頁（clone VoiceLibraryView）+ 完整設定 UI（fast/deep 雙 model picker、brief、grounding 開關、本機 ASR 無術語偏置明示）+ 修 .toggleMeetingRecording 缺失的 ShortcutRecorder。FR-29~31 / AC-18~19。 |
+| 2026-07-13 | meeting-copilot | [m4-overlay-hotkeys.srs.md](../srs/meeting-copilot-m4-overlay-hotkeys.srs.md) | **M4 切片 spec'd + planned**:隱蔽浮動 overlay（sharingType=.none + ignoresMouseEvents + .screenSaver + 近鏡頭定位 + 說話淡出）+ toggle/peek 雙熱鍵（peek 走 keyDown/keyUp）。**誠實記載 sharingType 在 macOS 15.4+ 被 SCK 忽略、分享整螢幕會被錄到**。FR-21~26,32 / AC-16~17（AC-15 人工 gate）。 |
+| 2026-07-13 | meeting-copilot | [m3-tiered-response.srs.md](../srs/meeting-copilot-m3-tiered-response.srs.md) | **M3 切片 spec'd + planned**:自持 SSE client（OpenAI-compat + Anthropic 兩 parser）+ AIService.streamChat + Tier0(免 LLM)/Tier1(開口稿)/Tier2(follow-up) + AnswerCoordinator(預跑/取消) + 接地(brief+RAG 直呼 retrieve+螢幕 OCR，靜默降級)。FR-13~20,27,28 / AC-5~14。 |
+| 2026-07-13 | meeting-copilot | [m2-cue-detection.srs.md](../srs/meeting-copilot-m2-cue-detection.srs.md) | **M2 切片 spec'd + planned**:SwiftData meeting.store（MeetingLiveSession/Cue）+ ResponseCueExtractor（四分類 directQuestion/impliedChallenge/assignedToMe/informational + Jaccard 去重）+ MeetingCopilotController MVP（接 M1 的 onRemoteCommitted → persist）。FR-8~12 / AC-4。 |
+| 2026-07-12 | meeting-copilot | [meeting-copilot-live-assist.srs.md](../srs/meeting-copilot-live-assist.srs.md) | **新模組（umbrella）**:會議即時輔助——聲道分流取代 diarization 取得零成本講者歸屬;偵測「需要我回應的東西」（含陳述句質疑）;三層漸進揭露（Tier0 免 LLM <0.5s ／ Tier1 開口稿 <1.5s 且預跑 ／ Tier2 結構化 follow-up）;接地於 brief + 歷史 RAG + 螢幕 OCR;`sharingType=.none` 的 overlay（toggle+peek、近鏡頭、說話淡出、失敗靜默）;含不開 Teams/Meet 的離線 replay harness。 |
 | 2026-07-08 | voice-input | [edit-before-paste.srs.md](../srs/voice-input-edit-before-paste.srs.md) | 語音模式「編輯後貼上」:貼上前用外部真 MacVim/nvim（`mvim -f`）阻塞編輯暫存檔再讀回貼回,吃使用者真 vimrc。 |
 | 2026-07-08 | templates | [templates-shared-library-and-ia.srs.md](../srs/templates-shared-library-and-ia.srs.md) | WP1+WP2:合併語音+錄音範本為單一共用庫（類別標籤、模式多選篩選）+ 側欄 IA 重構。 |
 | 2026-07-08 | library-management | [library-management-pages.srs.md](../srs/library-management-pages.srs.md) | WP3+WP4:Notion 式錄音管理 + 新語音管理頁（表格/排序/詳情彈窗/批次+星號保護/改名→匯出對齊）。 |

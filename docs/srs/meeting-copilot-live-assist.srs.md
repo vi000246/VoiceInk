@@ -12,9 +12,13 @@ linear_issue: null
 - **Source Linear Issue**: N/A
 - **Created**: 2026-07-12
 - **Grill level**: 1 (standard)
-- **Plans**:
-  - `docs/plans/meeting-copilot-m1-audio-backbone.plan.md`（M1 — 音訊分流骨幹 + 離線 replay harness；**未實作**）
-  - M2–M4 待 M1 完成後展開（路線圖見 M1 plan 末段）
+- **Milestone 切片**（本 umbrella SRS 拆成 5 個里程碑，各有獨立 SRS + plan）:
+  - M1 — 音訊分流骨幹 + 離線 replay harness：SRS 併於本文件；`docs/plans/meeting-copilot-m1-audio-backbone.plan.md`（**已實作，build 248**）
+  - M2 — cue 偵測引擎：`docs/srs/meeting-copilot-m2-cue-detection.srs.md` + `docs/plans/meeting-copilot-m2-cue-detection.plan.md`（spec'd + planned，未實作）
+  - M3 — 三層回應 + SSE + 接地：`docs/srs/meeting-copilot-m3-tiered-response.srs.md` + `docs/plans/meeting-copilot-m3-tiered-response.plan.md`（spec'd + planned，未實作）
+  - M4 — 隱蔽 overlay + 熱鍵：`docs/srs/meeting-copilot-m4-overlay-hotkeys.srs.md` + `docs/plans/meeting-copilot-m4-overlay-hotkeys.plan.md`（spec'd + planned，未實作）
+  - M5 — 管理頁 + 設定：`docs/srs/meeting-copilot-m5-management-page.srs.md` + `docs/plans/meeting-copilot-m5-management-page.plan.md`（spec'd + planned，未實作）
+  - 依賴鏈：M1 ✅ → M2 → M3 → M4 → M5
 
 > ⚠️ **M1 plan 頂部記載了對本 SRS 的四項修正**（E2E 測試不能用真 FluidAudio、ring buffer 已有現成的、
 > `handleIO` 已在 realtime thread 配置記憶體、`GraphRates` 丟掉了 tap 聲道數）。
