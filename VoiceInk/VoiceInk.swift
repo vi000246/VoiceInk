@@ -56,7 +56,9 @@ struct VoiceInkApp: App {
             EmbeddingChunk.self,
             AskAIThread.self,
             AskAIMessage.self,
-            AskAITemplate.self
+            AskAITemplate.self,
+            MeetingLiveSession.self,
+            MeetingLiveCue.self
         ])
         let resolvedContainer: ModelContainer
 
@@ -291,8 +293,19 @@ struct VoiceInkApp: App {
             cloudKitDatabase: .none
         )
 
+        // meeting-copilot 即時輔助:獨立 store(衍生資料——逐字稿/cue/答案,可整顆刪除重建,
+        // 不影響核心遷移)。鏡射 index.store。
+        let meetingStoreURL = appSupportURL.appendingPathComponent("meeting.store")
+        let meetingSchema = Schema([MeetingLiveSession.self, MeetingLiveCue.self])
+        let meetingConfig = ModelConfiguration(
+            "meeting",
+            schema: meetingSchema,
+            url: meetingStoreURL,
+            cloudKitDatabase: .none
+        )
+
         do {
-            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig, indexConfig)
+            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig, indexConfig, meetingConfig)
         } catch {
             logger.error("❌ Failed to create persistent ModelContainer:\n\(Self.fullErrorDescription(error), privacy: .public)")
             throw error
@@ -312,8 +325,11 @@ struct VoiceInkApp: App {
         let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self, AskAITemplate.self])
         let indexConfig = ModelConfiguration("index", schema: indexSchema, isStoredInMemoryOnly: true)
 
+        let meetingSchema = Schema([MeetingLiveSession.self, MeetingLiveCue.self])
+        let meetingConfig = ModelConfiguration("meeting", schema: meetingSchema, isStoredInMemoryOnly: true)
+
         do {
-            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig, indexConfig)
+            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig, indexConfig, meetingConfig)
         } catch {
             logger.error("❌ Failed to create in-memory ModelContainer:\n\(Self.fullErrorDescription(error), privacy: .public)")
             throw error
