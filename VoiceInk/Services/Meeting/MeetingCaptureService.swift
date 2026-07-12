@@ -45,6 +45,20 @@ import os
 private final class MeetingCaptureContext: @unchecked Sendable {
     let extFile: ExtAudioFileRef
 
+    /// [meeting-copilot] 即時 PCM seam。**nil = copilot 未啟用** → IOProc 只多一次 nil 檢查,
+    /// realtime thread 零額外工作(FR-3)。
+    ///
+    /// sink 只讀 `channelScratch`,把它 memcpy 進預先配置好的 ring buffer slot;
+    /// 切分(`MeetingChannelSplitter`)與降頻(`PCMDownsampler`)都在 consumer 側做,不在這裡。
+    let pcmSink: MeetingPCMSink?
+
+    /// [meeting-copilot] Tap 的聲道數 = remote(對方)/local(我) 的切點。
+    /// 裝置切換重建 tap 時會被更新(`rebuildGraphKeepingFile`) —— 漏更新會導致聲道錯位。
+    var tapChannelCount: Int
+
+    /// [meeting-copilot] Aggregate 的取樣率,供 consumer 側降頻到 16kHz。
+    var sampleRate: Double
+
     /// Deinterleave 用 scratch。首個 callback 依實際聲道數/frame 數配置,之後重複使用;
     /// 只有格式改變(裝置重建、buffer size 改變)才重新配置。只在 IOProc thread 上觸碰。
     private var channelScratch: [[Float]] = []
@@ -64,8 +78,16 @@ private final class MeetingCaptureContext: @unchecked Sendable {
     /// 成功送入 ExtAudioFileWriteAsync 的總 frame 數。0 = 檔案必為空殼。
     var framesWritten: UInt64 = 0
 
-    init(extFile: ExtAudioFileRef) {
+    init(
+        extFile: ExtAudioFileRef,
+        pcmSink: MeetingPCMSink? = nil,
+        tapChannelCount: Int = 0,
+        sampleRate: Double = 0
+    ) {
         self.extFile = extFile
+        self.pcmSink = pcmSink
+        self.tapChannelCount = tapChannelCount
+        self.sampleRate = sampleRate
     }
 
     /// IOProc 主體:把這一輪的所有 input stream(tap + 可選 mic)deinterleave 成
@@ -137,6 +159,23 @@ private final class MeetingCaptureContext: @unchecked Sendable {
         }
         tapPeak = peak
 
+        // ─── [meeting-copilot] realtime seam ────────────────────────────────────────
+        // 必須在 mixToMono **之前**:mixToMono 會把所有聲道等權平均壓成單聲道,
+        // 「哪些聲道是對方、哪些是我」的資訊在那一刻不可逆地消失。
+        //
+        // 這裡只做:一次 nil 檢查(未啟用時零成本) + memcpy 進預先配置的 ring slot。
+        // 切分與降頻都在 consumer 側 —— 本行做的事**嚴格少於**下一行的 mixToMono
+        // (它每個 callback 都會配置兩個 [Float])。
+        //
+        // sink 只讀 channelScratch,不改動它 —— 下方落檔路徑的樣本因此逐位元不變(AC-2)。
+        pcmSink?.write(
+            channelBuffers: channelScratch,
+            channelCount: totalChannels,
+            frameCount: frameCount,
+            sampleRate: sampleRate
+        )
+        // ────────────────────────────────────────────────────────────────────────────
+
         var mono = MeetingAudioMixer.mixToMono(channelBuffers: channelScratch, frameCount: frameCount)
         guard mono.count == frameCount else { return }
 
@@ -177,6 +216,14 @@ final class MeetingCaptureService: ObservableObject {
     }
 
     @Published private(set) var state: State = .idle
+
+    /// [meeting-copilot] 本次錄製的即時音訊環形緩衝。**nil = copilot 未啟用。**
+    /// `LiveMeetingAudioSource` 從這裡汲取,切分後餵給雙路串流 ASR。
+    private(set) var copilotRingBuffer: MeetingPCMRingBuffer?
+
+    /// [meeting-copilot] 本次錄製的 tap 聲道數(= remote/local 切點)。
+    /// 裝置切換重建後會更新。
+    private(set) var copilotTapChannelCount: Int = 0
 
     enum CaptureError: LocalizedError {
         case tapCreationFailed(OSStatus)
@@ -247,7 +294,27 @@ final class MeetingCaptureService: ObservableObject {
                 fileSampleRate: rates.tapSampleRate,
                 clientSampleRate: rates.aggregateSampleRate
             )
-            let context = MeetingCaptureContext(extFile: extFile)
+            // [meeting-copilot] 只有啟用時才建 ring buffer;否則 sink = nil,
+            // IOProc 的 seam 退化成一次 nil 檢查 → realtime thread 零額外工作(FR-3)。
+            let sink: MeetingPCMRingBuffer? = MeetingCopilotConfigStore.shared.copilotEnabled
+                ? MeetingPCMRingBuffer()
+                : nil
+            copilotRingBuffer = sink
+            copilotTapChannelCount = rates.tapChannelCount
+
+            if sink != nil {
+                logger.notice("🎧 meeting-copilot seam enabled — tapChannels=\(rates.tapChannelCount, privacy: .public) rate=\(rates.aggregateSampleRate, privacy: .public)")
+                if !MeetingChannelLayout.isVerified {
+                    logger.warning("🎧 MeetingChannelLayout.tapFirst 尚未實機量測(isVerified = false)。remote/local 可能顛倒 —— 見 MeetingChannelLayout 的量測步驟。")
+                }
+            }
+
+            let context = MeetingCaptureContext(
+                extFile: extFile,
+                pcmSink: sink,
+                tapChannelCount: rates.tapChannelCount,
+                sampleRate: rates.aggregateSampleRate
+            )
             captureContext = context
             fileClientSampleRate = rates.aggregateSampleRate
 
@@ -356,6 +423,9 @@ final class MeetingCaptureService: ObservableObject {
     private struct GraphRates {
         var tapSampleRate: Double
         var aggregateSampleRate: Double
+        /// Tap 的聲道數。meeting-copilot 用它當 remote(對方)/local(我) 的切點
+        /// (`MeetingChannelSplitter`)。裝置切換重建時會一併更新。
+        var tapChannelCount: Int
     }
 
     /// 步驟 2–4:建 tap、讀 tap 格式、建 private aggregate。
@@ -429,7 +499,11 @@ final class MeetingCaptureService: ObservableObject {
         logger.notice("🎬 Created aggregate device #\(newAggregateID, privacy: .public)")
 
         let aggregateRate = readNominalSampleRate(deviceID: newAggregateID) ?? tapFormat.mSampleRate
-        return GraphRates(tapSampleRate: tapFormat.mSampleRate, aggregateSampleRate: aggregateRate)
+        return GraphRates(
+            tapSampleRate: tapFormat.mSampleRate,
+            aggregateSampleRate: aggregateRate,
+            tapChannelCount: Int(tapFormat.mChannelsPerFrame)
+        )
     }
 
     /// 步驟 6–7:掛 IOProc(queue 傳 nil → HAL realtime thread)並啟動 aggregate。
@@ -603,6 +677,15 @@ final class MeetingCaptureService: ObservableObject {
         do {
             let rates = try createTapAndAggregate(micEnabled: micEnabled)
 
+            // [meeting-copilot] 裝置換了 → tap 格式可能改變(聲道數/取樣率)。
+            // ⚠️ 漏掉這步 → 切換耳機/喇叭後 remote 與 local 會錯位,而且症狀隱晦。
+            if context.tapChannelCount != rates.tapChannelCount || context.sampleRate != rates.aggregateSampleRate {
+                logger.notice("🎧 copilot: tap 格式改變 channels \(context.tapChannelCount, privacy: .public)→\(rates.tapChannelCount, privacy: .public) rate \(context.sampleRate, privacy: .public)→\(rates.aggregateSampleRate, privacy: .public)")
+            }
+            context.tapChannelCount = rates.tapChannelCount
+            context.sampleRate = rates.aggregateSampleRate
+            copilotTapChannelCount = rates.tapChannelCount
+
             // 新 aggregate 取樣率若改變,更新 client format,ExtAudioFile 會自動 SRC 到檔案格式。
             if rates.aggregateSampleRate != fileClientSampleRate {
                 var clientFormat = Self.makeClientFormat(sampleRate: rates.aggregateSampleRate)
@@ -685,6 +768,17 @@ final class MeetingCaptureService: ObservableObject {
             logger.warning("🎬 ExtAudioFileDispose returned \(status, privacy: .public)")
         }
         captureContext = nil
+
+        // [meeting-copilot] 回報丟棄計數並釋放 ring buffer。
+        // backpressure(consumer 太慢)與 capacity(格式超出預期)是兩種完全不同的病,分開報。
+        if let ring = copilotRingBuffer {
+            let drops = ring.droppedBreakdown
+            if drops.backpressure > 0 || drops.capacity > 0 {
+                logger.warning("🎧 copilot ring drops — backpressure=\(drops.backpressure, privacy: .public) capacity=\(drops.capacity, privacy: .public)")
+            }
+            copilotRingBuffer = nil
+        }
+        copilotTapChannelCount = 0
     }
 
     // MARK: - Zero-signal probe
