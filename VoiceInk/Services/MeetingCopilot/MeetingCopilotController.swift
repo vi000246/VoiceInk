@@ -29,6 +29,10 @@ final class MeetingCopilotController: ObservableObject {
     /// 已偵測的 cue(依 `showInformationalCues` 過濾;FR-11)。下游 M3/M4 消費這個。
     @Published private(set) var cues: [MeetingLiveCue] = []
 
+    /// M3 的三層回應編排器。設定後,每則新持久化的非 informational cue 會觸發
+    /// Tier 0 + 預跑 Tier 1(`AnswerCoordinator.onNewCue`)。nil = 只偵測不回應(M2 行為)。
+    var answerCoordinator: AnswerCoordinator?
+
     /// 在途抽取(每個 committed 一個 Task)。測試用 `drainInflight()` 等待。
     private var inflightTasks: [Task<Void, Never>] = []
 
@@ -101,6 +105,13 @@ final class MeetingCopilotController: ObservableObject {
             modelContext.insert(cue)
             persistedAny = true
             logger.notice("🧠 cue [\(e.kind.rawValue, privacy: .public)] \(e.text, privacy: .public)")
+
+            // M3:非 informational cue 觸發三層回應(Tier 0 + 預跑 Tier 1)。
+            // coordinator == nil 時(M2 行為)不動作。
+            if e.kind != .informational, let coordinator = answerCoordinator {
+                let cueRef = cue
+                Task { await coordinator.onNewCue(cueRef) }
+            }
         }
         if persistedAny { try? modelContext.save() }
         refreshPublishedCues()
