@@ -158,6 +158,7 @@ private extension ViewType {
         case .recorderMode: return "錄音設定"
         case .categories: return "錄音模式"
         case .recorderLog: return "Recording Management"
+        case .meetingCopilot: return "會議錄音管理"
         case .askAI: return "Ask AI"
         case .askAITemplates: return "Ask AI 範本"
         case .templateGuide: return "Template Guide"
@@ -172,7 +173,7 @@ private extension ViewType {
     static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
         (nil, [.dashboard]),
         ("語音輸入", [.modes, .history, .voiceSettings]),
-        ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog, .transcribeAudio]),
+        ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog, .transcribeAudio, .meetingCopilot]),
         ("Ask AI", [.askAI, .askAITemplates]),
         ("共用與系統", [.prompts, .models, .systemTemplate, .templateGuide, .dictionary, .audio, .settings, .license]),
     ]
@@ -199,6 +200,7 @@ private extension ViewType {
         case .recorderMode: return "slider.horizontal.3"
         case .categories: return "folder.fill.badge.gearshape"
         case .recorderLog: return "list.bullet.rectangle.fill"
+        case .meetingCopilot: return "person.2.wave.2.fill"
         case .askAI: return "bubble.left.and.text.bubble.right.fill"
         case .askAITemplates: return "person.crop.rectangle.stack.fill"
         case .systemTemplate: return "doc.badge.gearshape"
@@ -235,6 +237,8 @@ private extension ViewType {
         case .categories:
             return .init(background: AppTheme.Sidebar.fallback)
         case .recorderLog:
+            return .init(background: AppTheme.Sidebar.audio)
+        case .meetingCopilot:
             return .init(background: AppTheme.Sidebar.audio)
         case .askAI:
             return .init(background: AppTheme.Sidebar.modes)
