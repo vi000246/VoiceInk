@@ -31,9 +31,18 @@
 - [ ] 點擊 → 頁面開啟；齒輪 → 設定 modal，各控制項可操作
 - [ ] fast/deep model picker 列出已連線 provider 的模型
 
-## 🔴 最後整合缺口（feature 尚未 live）
+## ✅ 執行期整合（已完成，build 253）
 
-**所有 M1-M5 元件都已建置且測試通過,但尚未在 app 執行期接線成一條 live pipeline。** 目前 `make deploy`
+**下述接線已由 `MeetingCopilotLiveController` 實作完成**（`Services/MeetingCopilot/MeetingCopilotLiveController.swift`）：
+會議擷取啟動且 `copilotEnabled` 時，用 `service.copilotRingBuffer` 建 `LiveMeetingAudioSource` → `MeetingLiveTranscriber`
+（雙路 ASR）→ `MeetingCopilotController`（cue 偵測）→ `AnswerCoordinator`（三層回應）→ `CopilotOverlayWindowManager`；
+`onLocalLevel`/`onCueTapped` 在 `transcriber.start()` 前接好；停會議時停轉錄 + `endSession()`。
+`VoiceInk.swift` 啟動時 `MeetingCopilotLiveController.shared.configure(aiService:, modelContext:)` 注入依賴。
+編譯零錯誤、全套測試綠。**實際 live 行為需 `make deploy` + 真會議驗證。**
+
+以下為當初記載的接線設計（現已實作，保留供對照）：
+
+**所有 M1-M5 元件都已建置且測試通過。** 目前 `make deploy`
 後你會看到側欄新頁(空)與設定,但**不會**有即時 overlay/cue——因為沒有任何程式在會議開始時
 實例化 controller/transcriber/coordinator。需要一個**整合 task**(建議獨立小 milestone,因為
 需 `make deploy` + 真會議才能驗):
