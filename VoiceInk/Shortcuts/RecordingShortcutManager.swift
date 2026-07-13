@@ -231,6 +231,13 @@ class RecordingShortcutManager: ObservableObject {
             onKeyDown: { [weak self] action, eventTime in
                 Task { @MainActor in
                     guard let self else { return }
+                    // peek:按下顯示(keyUp 隱藏走 handleGlobalShortcut)。
+                    // ⚠️ 不得改用 recordingMode(for:) 路由——那會把事件送進
+                    // RecordingShortcutModeHandler(迷你錄音面板的聽寫 push-to-talk),目標錯誤。
+                    if action == .peekMeetingCopilotOverlay {
+                        CopilotOverlayWindowManager.shared.peekKeyDown(at: eventTime)
+                        return
+                    }
                     guard let mode = self.recordingMode(for: action) else { return }
                     await self.shortcutModeHandler.handleKeyDown(
                         action: action,
@@ -334,6 +341,12 @@ class RecordingShortcutManager: ObservableObject {
         case .toggleMeetingRecording:
             // 會議錄製與聽寫狀態機解耦——任何聽寫狀態下都可啟停。
             await MeetingCaptureController.shared.toggle()
+        case .toggleMeetingCopilotOverlay:
+            // overlay 與聽寫/會議錄製狀態機解耦——keyUp-only,樣式比照 .toggleMeetingRecording。
+            CopilotOverlayWindowManager.shared.toggle()
+        case .peekMeetingCopilotOverlay:
+            // press-and-hold 的放開端(keyDown 端在 refreshShortcutMonitor 的顯式 branch)。
+            CopilotOverlayWindowManager.shared.peekKeyUp()
         default:
             break
         }
