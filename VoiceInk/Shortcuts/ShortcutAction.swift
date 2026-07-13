@@ -10,6 +10,8 @@ enum ShortcutAction: Hashable {
     case openHistoryWindow
     case quickAddToDictionary
     case toggleMeetingRecording
+    case toggleMeetingCopilotOverlay
+    case peekMeetingCopilotOverlay
     case mode(UUID)
     case recorderPanelEscape
     case recorderPanelMode(Int)
@@ -47,6 +49,10 @@ enum ShortcutAction: Hashable {
             return "quickAddToDictionary"
         case .toggleMeetingRecording:
             return "toggleMeetingRecording"
+        case .toggleMeetingCopilotOverlay:
+            return "toggleMeetingCopilotOverlay"
+        case .peekMeetingCopilotOverlay:
+            return "peekMeetingCopilotOverlay"
         case .mode(let id):
             return "mode_\(id.uuidString)"
         case .recorderPanelEscape:
@@ -76,6 +82,10 @@ enum ShortcutAction: Hashable {
             return String(localized: "Quick Add to Dictionary")
         case .toggleMeetingRecording:
             return String(localized: "Toggle Meeting Recording")
+        case .toggleMeetingCopilotOverlay:
+            return String(localized: "Toggle Meeting Copilot Overlay")
+        case .peekMeetingCopilotOverlay:
+            return String(localized: "Peek Meeting Copilot Overlay")
         case .mode(let id):
             if let config = ModeManager.shared.getConfiguration(with: id) {
                 return String(format: String(localized: "%@ Mode"), config.name)
@@ -99,7 +109,9 @@ enum ShortcutAction: Hashable {
         .retryLastTranscription,
         .openHistoryWindow,
         .quickAddToDictionary,
-        .toggleMeetingRecording
+        .toggleMeetingRecording,
+        .toggleMeetingCopilotOverlay,
+        .peekMeetingCopilotOverlay
     ]
 
     static let recorderPanelStoredActions: [Self] = [
@@ -114,7 +126,13 @@ enum ShortcutAction: Hashable {
         .retryLastTranscription,
         .cancelRecorder,
         .openHistoryWindow,
-        .quickAddToDictionary
+        .quickAddToDictionary,
+        // FR-32:自 build 227 起 .toggleMeetingRecording 不在此清單 → 其鍵逃過
+        // ShortcutValidator 的衝突偵測(雙向隱形)。加入修復;三者皆為新動作,
+        // legacyKeyboardShortcutsNames 回 []、migrate no-op。
+        .toggleMeetingRecording,
+        .toggleMeetingCopilotOverlay,
+        .peekMeetingCopilotOverlay
     ]
 
     private static func displayNumber(forRecorderPanelIndex index: Int) -> String {
