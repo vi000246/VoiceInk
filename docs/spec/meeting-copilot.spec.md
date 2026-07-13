@@ -17,6 +17,7 @@
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
+| 2026-07-13 | N/A（使用者需求） | `docs/srs/meeting-copilot-m8-notes-rag-auto-deep.srs.md` | **M8 spec'd：筆記 RAG + auto-deep 閱讀保護 + 離線覆盤 + 即時翻譯（四組綁定升級）** — (A) cue 五分類：新增 `aboutMe`（問我本人／我的專案／**績效考核**——行為面試從 informational 搬出），同一次抽取呼叫多輸出 `searchHint` 檢索改寫（零新增 LLM 呼叫）；新 `ObsidianNoteIndexService` 把 Obsidian vault（**重用** `RecorderConfigStore.vaultRootBookmark`）嵌入 `EmbeddingChunk(sourceKind:"obsidian")`，`gather(sources:)` 按 cue 種類路由（aboutMe → 只查筆記；技術 cue 明確排除筆記除非 opt-in）；aboutMe tier prompt 變體＝記憶錨點助記詞、只用筆記不編造。**兩個地雷**：`reconcileOrphans` 須跳過 obsidian chunks、`switchModel` 清索引後須重嵌筆記。(B) auto-deep：最新 cue Tier1 完成自動跑 Tier2 並自動展開；**閱讀保護不變量**（展開中 cue 不被 maxCuesShown 擠出／不被搶展開／in-flight Tier2 不被取消）＋展開 toggle 熱鍵（第四處熱鍵四點註冊）；`expandedCueId` 從 view @State 升級 controller 層。(C) 離線覆盤：錄音管理詳情頁對非即時錄音「產生會議copilot覆盤」——從**逐字稿**（不重跑 ASR）分段餵同一條抽取→tier 管線，session 標 `sourceRaw:"replay"`、可重複產生（configSnapshot A/B）；**漏抓掃描**（無主題過濾通用 prompt 掃全文 → Jaccard 對已偵測 cues → 未匹配＝漏抓）persist 至 `reviewSweepRaw`；覆盤詳情三層排序（有回應→無回應→漏抓）＝分類調校迴圈。(D) 即時翻譯：remote committed 的第二個獨立 consumer，LLM 翻譯（混語自動辨識）譯入 `targetLanguage`（預設繁中）；overlay 上翻譯字幕流／下 cue 回應區明確區隔；所有 tier 回應恆以目標語言輸出；設定頁改 tab（一般／即時翻譯）。FR-41~64 / AC-28~47。Plan：`docs/plans/meeting-copilot-m8-notes-rag-auto-deep.plan.md`（Mode B／balanced，Task 1–20 依 A→B→C→D）。 |
 | 2026-07-13 | N/A（使用者需求） | N/A（直接實作） | **觀測資料持久化（調校迴圈的原始資料）** — 目標：讓每則 cue 事後可完整重建「怎麼被偵測到、AI 回應時看到了什麼上下文、花了多久、哪裡失敗」，供持續調校。新增 `@Model MeetingLiveSegment`（每段 committed 一筆：remote/local 時間軸＋remote 段的抽取 provenance——實際 fast model、**原始 LLM 回覆**、耗時、抽出數、**去重丟棄數**、失敗原因；抽出 0 則也留檔＝漏抓分析的基礎）。`MeetingLiveCue` 加觀測欄位（`sourceSegmentId`／`detectionElapsedMs`／tier1・tier2 的**實際 user prompt 全文**（接地內容在內）／原始回覆／耗時／錯誤／接地降級備註）；`fastModelName`/`deepModelName` 從佔位 "fast"/"deep" 改記實名 "provider/model"。`MeetingLiveSession.configSnapshotRaw` 存當場執行設定 JSON（`MeetingCopilotRunConfig`：模型、開關、persona、**三個 system prompt 全文**、去重參數）；`remoteTranscriptRaw`/`localTranscriptRaw` **補上回填**（宣告以來從未寫入，覆盤頁一直空白）。`MeetingGrounding.ragError` 讓 RAG 靜默降級留下原因。覆盤頁新增逐段偵測時間軸、per-cue 診斷收合區、設定快照、**「匯出診斷 JSON」**（`MeetingSessionDiagnostics`，可直接餵 LLM 做漏抓/誤抓/答非所問分析）。行為不變（純記錄）；`recentContext` 欄位照實記錄目前恆空的滑動窗，為 Open Question 的窗口調校預留 A/B 資料。 |
 | 2026-07-13 | N/A（使用者需求） | `docs/srs/meeting-copilot-m7-preset-scripts.srs.md` | **M7 spec'd:預設講稿讀稿器（獨立提詞面板）** — 使用者事先寫好多份具名講稿（自我介紹、對某議題的立場…），開會時用一個私人浮動面板看著唸（等同 PowerPoint 簡報者檢視 / 讀稿機）。動機：ADHD 看稿安全感。**硬界線**：只顯示使用者自寫文字，**完全不接 AI/ASR/LLM、不讀 cue 清單、不整合進 cue overlay**；獨立於 `copilotEnabled`，copilot 關閉也可用。新增 `PresenterScript`＋`PresenterScriptStore`（UserDefaults）＋`PresenterScriptPanel/…WindowManager/…View`（複製 overlay 的螢幕分享排除＋不搶焦點＋手動拖曳「視窗技術」，但不持有 controller）＋設定頁講稿管理＋`togglePresenterScript` 熱鍵。FR-33~40 / AC-20~27。 |
 | 2026-07-12 | N/A（使用者需求） | `docs/srs/meeting-copilot-live-assist.srs.md` | **新模組 spec'd（未實作）** — 會議即時輔助。核心：(1) 在 `mixToMono` 之前按聲道切開 tap（對方）與 mic（我）→ 雙路串流 ASR，**講者歸屬零成本、免 diarization**；(2) `ResponseCueExtractor` 抓「需要我回應的東西」（含陳述句質疑，非只抓問號）；(3) **三層漸進揭露**——Tier 0 本機關鍵字（<0.5s，不呼叫 LLM）／Tier 1 fast model 產「開口稿」（<1.5s，**最新一則預跑**）／Tier 2 deep model 產結構化 follow-up 預判；(4) 答案接地於**會前 brief + 歷史逐字稿 RAG（重用 Ask AI 的 `RetrievalService`）+ 分享畫面 OCR（重用 `ScreenCaptureService`）**；(5) `sharingType = .none` 的 overlay，toggle + **peek（按住顯示）**雙熱鍵，錨定螢幕上方近鏡頭處，我說話時自動淡出。含不開 Teams/Meet 的離線 replay 驗證 harness。 |
@@ -51,7 +52,14 @@
 | **Local stream** | Aggregate device 中麥克風 sub-device 的聲道 —— **我自己**的聲音。作上下文與「我在說話」偵測，不抽 cue。 |
 | **Channel split** | 在 `MeetingAudioMixer.mixToMono` 把所有聲道等權壓成單聲道**之前**，依 `tapChannelCount` 把 `channelScratch` 切成 remote / local。本模組講者歸屬的唯一來源——**不使用 diarization**。 |
 | **Tap channel count** | Process tap 的聲道數（`kAudioTapPropertyFormat` 於 setup 時讀得）。即 channel split 的切點。裝置切換時可能改變。 |
-| **Response cue** | 從 remote 流偵測到的**「需要我回應的東西」**。四類：`directQuestion`（直接問句）／`impliedChallenge`（陳述句形式的質疑，如「我對效能有點擔心」）／`assignedToMe`（被點名）／`informational`（不需回應）。**刻意不叫「問題」**——真實會議裡需要回應的多半沒有問號。 |
+| **Response cue** | 從 remote 流偵測到的**「需要我回應的東西」**。五類（M8 起）：`directQuestion`（直接問句）／`impliedChallenge`（陳述句形式的質疑，如「我對效能有點擔心」）／`assignedToMe`（被點名）／`aboutMe`（問我本人／我做過的專案／績效考核與行為面試——需要「回憶我的經歷」才能答的）／`informational`（不需回應）。**刻意不叫「問題」**——真實會議裡需要回應的多半沒有問號。 |
+| **aboutMe cue / 記憶錨點** | 問「我」的 cue 走個人筆記 RAG：檢索 Obsidian 筆記，Tier 1 輸出**記憶錨點**（專案名／我的角色／具體貢獻／量化成果）而非論述句——看到錨點，記憶自己會接上（ADHD 場景的核心交付）。鐵律：只用筆記與 `aboutMeBrief`，沒記載就說沒記。 |
+| **searchHint** | cue 抽取對 aboutMe 額外輸出的**檢索改寫**（同一次 fast model 呼叫）：把「哪個專案最有成就感」這類模糊考核題改寫成筆記用語的檢索詞。空則退回 cue 原文。 |
+| **auto-deep** | 最新 cue 的 Tier 1 完成後**自動**接跑 Tier 2 並（在無人閱讀時）自動展開。latest-only，鏡射 Tier 1 預跑的成本邊界。 |
+| **閱讀保護** | 「展開中 = 閱讀中」的不變量組：展開的 cue 不被 `maxCuesShown` 擠出、展開狀態不被自動展開搶走、其 in-flight Tier 2 不被新 cue 取消、tier 內容寫入後不變。展開由點擊或 **toggle 熱鍵**控制。 |
+| **離線覆盤（replay session）** | 對非即時來源的錄音，從**既有逐字稿**（不重跑 ASR）分段重演 cue→tier 管線產生的 session（`sourceRaw:"replay"`）。同一錄音可多次產生，各帶 configSnapshot——分類 prompt 調校的 A/B 基礎。 |
+| **漏抓掃描（miss sweep）** | 「偵測器的偵測器」：無主題過濾的通用 prompt 掃全逐字稿列出所有應回應項，與已偵測 cues 做 bigram Jaccard 匹配，**未匹配 = 漏抓候選**，覆盤排最下供調校。本身不觸發 tier。 |
+| **即時翻譯** | remote committed 的第二個獨立 consumer：LLM 單句翻譯（天然處理混語）譯入目標語言（預設繁中），overlay 翻譯字幕區與 cue 區明確區隔。等 committed 才譯（partial 會回改）。 |
 | **Tier 0** | < 0.5s，**不呼叫 LLM**（關鍵字表 + 本機 embedding 相似度）。輸出領域標籤 + 2-3 關鍵字。任何 LLM 往返都不可能穩定低於 0.5s。 |
 | **Tier 1 / 開口稿（opener）** | < 1.5s，fast model SSE。輸出 `opener`（**一句可直接說出口的話**）+ 恰 3 個 bullet。`opener` 不是答案摘要，是**讓你開口、爭取時間的一句話**——整個功能的關鍵欄位。 |
 | **Tier 2** | < 15s，deep model SSE，帶入 Tier 1 草稿。輸出 `analysis` + **結構化 `followUps[]`** + `uncertainties[]`。 |
@@ -209,6 +217,8 @@ ASR 的 `.committed` 推動 cue 偵測；cue 出現立即觸發 Tier 0，並對*
     var importFingerprint: String = ""    // 關聯錄音檔（= Transcription.importFingerprint）
     var configSnapshotRaw: String = ""    // 當場執行設定 JSON（MeetingCopilotRunConfig：
                                           // 模型/開關/persona/三個 system prompt 全文/去重參數）
+    var sourceRaw: String = "live"        // [M8] live | replay（離線覆盤 badge）
+    var reviewSweepRaw: String = ""       // [M8] 漏抓掃描結果 JSON（未匹配項＋建議分類）
     @Relationship(deleteRule: .cascade, inverse: \MeetingLiveCue.session)
     var cues: [MeetingLiveCue]? = []
     @Relationship(deleteRule: .cascade, inverse: \MeetingLiveSegment.session)
@@ -219,7 +229,9 @@ ASR 的 `.committed` 推動 cue 偵測；cue 出現立即觸發 Tier 0，並對*
     var id: UUID = UUID()
     var session: MeetingLiveSession? = nil
     var text: String = ""
-    var kindRaw: String = "informational" // directQuestion | impliedChallenge | assignedToMe | informational
+    var kindRaw: String = "informational" // directQuestion | impliedChallenge | assignedToMe | aboutMe(M8) | informational
+    var searchHint: String = ""           // [M8] aboutMe 的檢索改寫（同次抽取呼叫輸出）
+    var tier2TriggerRaw: String = ""      // [M8] auto | manual | 空=未跑（成本歸因）
     var askedAt: Date = Date()
     var contextExcerpt: String = ""       // 觸發 committed 的 300 字節錄
     var statusRaw: String = "detected"    // detected | answered
@@ -265,6 +277,9 @@ ASR 的 `.committed` 推動 cue 偵測；cue 出現立即觸發 Tier 0，並對*
     var extractedCount: Int = -1          // -1 = 沒跑抽取（local 段）；0 = 跑了沒抽到
     var dedupDroppedCount: Int = 0        // FR-10 去重丟棄數（dedup 調校訊號）
     var extractionError: String = ""
+    var translatedText: String = ""       // [M8] 即時翻譯結果（remote 段；覆盤雙語對照）
+    var translationElapsedMs: Int = 0     // [M8]
+    var translationError: String = ""     // [M8] 失敗原因（該句 overlay 顯示原文）
 }
 ```
 
@@ -354,6 +369,11 @@ Tier 1 / Tier 2 的輸出**必須是結構化欄位，不是散文**——overla
 | `ShortcutAction` 等 4 處 | 新增 toggle + peek 兩個熱鍵 | 標準流程 | **Yes**（並順手修 `.toggleMeetingRecording` 缺失的設定 UI） |
 | `ContentView` / `AppSidebar` | 新增 `ViewType.meetingCopilot` | 2 檔 6 處；DEBUG assert 強制側欄涵蓋所有 case | **Yes** |
 | `VoiceInk.swift` | 新增 `meeting.store` | 三處註冊 | **Yes** — 不觸及既有 store |
+| `RecorderConfigStore.vaultRootBookmark`（M8） | **唯讀重用** | 筆記索引的 vault 位置＝錄音匯出的 vault；不新增 vault 設定 | **Yes** |
+| `EmbeddingChunk` / `TranscriptIndexService`（M8） | **寫入**（新 sourceKind `"obsidian"`）＋行為修改 | `reconcileOrphans` 跳過 obsidian chunks；`switchModel` 後筆記重嵌 | **Yes** — 轉錄索引行為不變，僅多保護分支 |
+| `TranscriptChunker` / `EmbeddingClient`（M8） | 唯讀重用（純函式） | 筆記切塊與嵌入沿用同一套 | **Yes** |
+| 錄音管理詳情頁（M8） | 新增「產生會議copilot覆盤」按鈕 | 逐字稿 → replay 管線 → `sourceRaw:"replay"` session（既有 fingerprint 連動顯示覆盤） | **Yes** |
+| `ShortcutAction` 等 4 處（M8） | 新增展開 toggle 熱鍵 | 標準四點註冊流程 | **Yes** |
 
 ### Rollout Strategy
 
@@ -428,6 +448,14 @@ Tier 1 / Tier 2 的輸出**必須是結構化欄位，不是散文**——overla
 | 會後三欄覆盤 | **不做** | 做 | 使用者明確排除（2026-07-12）。 |
 | 預設講稿讀稿器（M7）的定位 | **獨立提詞面板**，只顯示使用者自寫文字 | 做成 cue overlay 的一個分頁 | 把「顯示我自己的稿」和「AI 即時代答」綁成同一產品不妥；獨立面板既滿足「看稿＋隨時切回自己的講稿清單」，又與 AI 回應乾淨切割（2026-07-13）。 |
 | 讀稿器與 AI 的關係（M7） | **零耦合**：不接 ASR/LLM、不讀 cue、獨立於 `copilotEnabled` | 讓讀稿面板也能吃 AI 生成的答案 | 讀稿器的正當性正建立在「內容是你自己準備的」；一旦餵 AI 即時答案就變成另一回事，明確排除（2026-07-13）。 |
+| aboutMe 分類的掛載點（M8） | 掛在**既有** cue 抽取呼叫（五分類＋searchHint 同次輸出） | 獨立分類器呼叫；Tier 0 關鍵字判斷 | 零新增 LLM 往返、零新增延遲；fast model 反正每段都看過全文。 |
+| 筆記索引儲存（M8） | **重用 `EmbeddingChunk`**（新 sourceKind），非新表 | 獨立 SwiftData model＋獨立檢索 | 檢索層（scope.sources）零改動即支援；代價是 reconcile/switchModel 兩個地雷，顯式處理並鎖測試。 |
+| 筆記 vault 位置（M8） | 重用 `RecorderConfigStore.vaultRootBookmark` | 新增獨立 vault 設定 | 使用者已為錄音匯出設定過 vault；兩個 vault 設定必然漂移。 |
+| auto-deep 範圍（M8） | **只有最新 cue**（鏡射 prefetch） | 全部 cue 自動；僅 aboutMe 自動 | deep 成本有界、體感與「自動」無異（使用者 2026-07-13 選定）。 |
+| 閱讀保護訊號（M8） | **展開 = 閱讀中**＋toggle 熱鍵 | 明確釘選按鈕；hover 偵測 | 零新手勢；自動展開的結果天然受保護（使用者 2026-07-13 選定，並要求熱鍵）。 |
+| 離線覆盤的等同性邊界（M8） | 從**逐字稿之後**重演（分段→抽取→tier） | 重播音訊過 ASR | 錄音筆音訊是混音單聲道，重播 ASR 既無聲道歸屬也無新資訊，只有成本。 |
+| 漏抓的呈現（M8） | 覆盤內建 miss sweep＋三層排序 | 只靠「匯出診斷 JSON 餵 LLM」 | 調校迴圈要在 app 內閉環：有回應→無回應→漏抓一眼可掃，diagnostics 匯出仍保留為深度分析出口。 |
+| 翻譯實作（M8） | 既有 LLM provider 單句非串流、等 committed | 專用翻譯 API；逐 partial 翻譯 | LLM 天然處理混語（中英混講）；partial 會回改、譯了閃爍浪費。 |
 
 ---
 
