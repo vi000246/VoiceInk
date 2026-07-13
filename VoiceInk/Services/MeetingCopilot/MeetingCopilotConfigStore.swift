@@ -31,6 +31,11 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let useHistoryRAGKey = "meetingCopilotUseRAGV1"
     private let useScreenContextKey = "meetingCopilotUseScreenV1"
 
+    // Keys(M4 新增：overlay 行為)
+    private let overlayClickThroughKey = "meetingCopilotOverlayClickThroughV1"
+    private let speakingOpacityKey = "meetingCopilotSpeakingOpacityV1"
+    private let maxCuesShownKey = "meetingCopilotMaxCuesShownV1"
+
     // MARK: - Settings
 
     /// 總開關（kill switch）。**預設 false**。
@@ -81,6 +86,15 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// FR-20:是否在 Tier 2 擷取分享畫面 OCR 接地。**預設 true**。
     @Published private(set) var useScreenContext: Bool = true
 
+    // MARK: - Settings(M4 新增：overlay 行為;設定頁 UI row 屬 M5)
+
+    /// 點擊穿透。決定 `CopilotOverlayPanel.ignoresMouseEvents`。預設 false(可點 cue 觸發 Tier 2)。
+    @Published private(set) var overlayClickThrough: Bool = false
+    /// 我說話時 overlay 的不透明度(FR-25)。夾在 [0.05, 1.0]。
+    @Published private(set) var speakingOpacity: Double = 0.35
+    /// overlay 最多列出幾則 cue(FR-26)。夾在 [1, 20]。
+    @Published private(set) var maxCuesShown: Int = 5
+
     // MARK: - Init
 
     init() {
@@ -110,6 +124,14 @@ final class MeetingCopilotConfigStore: ObservableObject {
         if let p = d.string(forKey: domainPersonaKey), !p.isEmpty { domainPersona = p }
         useHistoryRAG = (d.object(forKey: useHistoryRAGKey) as? Bool) ?? true
         useScreenContext = (d.object(forKey: useScreenContextKey) as? Bool) ?? true
+
+        overlayClickThrough = d.bool(forKey: overlayClickThroughKey)   // 未設定 → false
+        if d.object(forKey: speakingOpacityKey) != nil {
+            speakingOpacity = min(max(d.double(forKey: speakingOpacityKey), 0.05), 1.0)
+        }
+        if d.object(forKey: maxCuesShownKey) != nil {
+            maxCuesShown = min(max(d.integer(forKey: maxCuesShownKey), 1), 20)
+        }
     }
 
     // MARK: - Mutators
@@ -174,5 +196,24 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setUseScreenContext(_ value: Bool) {
         useScreenContext = value
         UserDefaults.standard.set(value, forKey: useScreenContextKey)
+    }
+
+    // MARK: - Mutators(M4 overlay)
+
+    func setOverlayClickThrough(_ value: Bool) {
+        overlayClickThrough = value
+        UserDefaults.standard.set(value, forKey: overlayClickThroughKey)
+    }
+
+    func setSpeakingOpacity(_ value: Double) {
+        let clamped = min(max(value, 0.05), 1.0)
+        speakingOpacity = clamped
+        UserDefaults.standard.set(clamped, forKey: speakingOpacityKey)
+    }
+
+    func setMaxCuesShown(_ value: Int) {
+        let clamped = min(max(value, 1), 20)
+        maxCuesShown = clamped
+        UserDefaults.standard.set(clamped, forKey: maxCuesShownKey)
     }
 }

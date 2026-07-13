@@ -47,6 +47,14 @@ final class MeetingLiveTranscriber: ObservableObject {
     /// **這是 M2 的接點** —— `ResponseCueExtractor`(偵測「需要我回應的東西」)直接掛在這裡。
     var onRemoteCommitted: ((String) -> Void)?
 
+    /// 每個含 local 聲道的音訊 frame 的 RMS。**M4 overlay 說話淡出的接點**(FR-25)。
+    ///
+    /// - 在 `start()` **之前**設定(pump 啟動時拷貝一份 closure)。
+    /// - 與 `localStream`(ASR)無關:`transcribeLocalMic` 關閉時照樣回報——
+    ///   淡出保護不因省 ASR 而失效。
+    /// - 於 MainActor 上呼叫。
+    var onLocalLevel: ((Float) -> Void)?
+
     // MARK: - Init
 
     init(
@@ -78,10 +86,19 @@ final class MeetingLiveTranscriber: ObservableObject {
         let source = self.source
         let remote = self.remoteStream
         let local = self.localStream
+        let onLocalLevel = self.onLocalLevel
 
         pumpTask = Task.detached(priority: .userInitiated) {
             for await frame in source.frames {
                 if Task.isCancelled { break }
+
+                // 我在說話的能量 → overlay 淡出(M4)。與 local ASR 是否啟用無關。
+                if let onLocalLevel, !frame.local.isEmpty {
+                    let rms = OverlayDimmingModel.rms(
+                        channelBuffers: frame.local,
+                        frameCount: frame.frameCount)
+                    Task { @MainActor in onLocalLevel(rms) }
+                }
 
                 // 對方 → 降頻 → 送 remote ASR
                 if !frame.remote.isEmpty {
