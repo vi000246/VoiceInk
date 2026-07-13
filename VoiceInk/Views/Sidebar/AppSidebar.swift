@@ -174,8 +174,8 @@ private extension ViewType {
     static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
         (nil, [.dashboard]),
         ("語音輸入", [.modes, .history, .voiceSettings]),
-        ("錄音輸入", [.recorders, .recorderMode, .meetingCopilotSettings, .categories, .recorderLog, .meetingCopilot, .transcribeAudio]),
-        ("Ask AI", [.askAI, .askAITemplates]),
+        ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog, .transcribeAudio]),
+        ("Ask AI", [.askAI, .askAITemplates, .meetingCopilot, .meetingCopilotSettings]),
         ("共用與系統", [.prompts, .models, .systemTemplate, .templateGuide, .dictionary, .audio, .settings, .license]),
     ]
 
