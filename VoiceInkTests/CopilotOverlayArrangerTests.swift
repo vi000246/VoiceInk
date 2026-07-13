@@ -1,0 +1,56 @@
+import XCTest
+@testable import VoiceInk
+
+/// FR-26:opener 最大字級的載體是「focus」emphasis——最新一則未回答 cue。
+/// generic 純函式,用素 struct 測,不碰 SwiftData。
+final class CopilotOverlayArrangerTests: XCTestCase {
+
+    private struct StubCue {
+        let name: String
+        let askedAt: Date
+        let answered: Bool
+    }
+
+    private func arrange(_ cues: [StubCue], maxCount: Int = 5) -> [(cue: StubCue, emphasis: CopilotOverlayEmphasis)] {
+        CopilotOverlayArranger.arrange(
+            cues,
+            askedAt: { $0.askedAt },
+            isAnswered: { $0.answered },
+            maxCount: maxCount
+        )
+    }
+
+    private func cue(_ name: String, secondsAgo: TimeInterval, answered: Bool = false) -> StubCue {
+        StubCue(name: name, askedAt: Date(timeIntervalSinceNow: -secondsAgo), answered: answered)
+    }
+
+    func testNewestUnansweredIsFocusAndFirst() {
+        let out = arrange([cue("old", secondsAgo: 60), cue("new", secondsAgo: 5), cue("mid", secondsAgo: 30)])
+        XCTAssertEqual(out.map(\.cue.name), ["new", "mid", "old"], "由新到舊")
+        XCTAssertEqual(out.map(\.emphasis), [.focus, .recent, .recent])
+    }
+
+    func testAnsweredCueIsDimmedAndFocusSkipsIt() {
+        let out = arrange([cue("answered", secondsAgo: 5, answered: true), cue("open", secondsAgo: 30)])
+        XCTAssertEqual(out.map(\.cue.name), ["answered", "open"], "順序仍按時間,不重排")
+        XCTAssertEqual(out[0].emphasis, .answered)
+        XCTAssertEqual(out[1].emphasis, .focus, "最新未回答者才是 focus")
+    }
+
+    func testCapsAtMaxCount() {
+        let cues = (0..<10).map { cue("c\($0)", secondsAgo: TimeInterval($0)) }
+        let out = arrange(cues, maxCount: 3)
+        XCTAssertEqual(out.count, 3)
+        XCTAssertEqual(out.map(\.cue.name), ["c0", "c1", "c2"])
+    }
+
+    func testEmptyAndZeroMax() {
+        XCTAssertTrue(arrange([]).isEmpty)
+        XCTAssertTrue(arrange([cue("x", secondsAgo: 1)], maxCount: 0).isEmpty)
+    }
+
+    func testAllAnsweredYieldsNoFocus() {
+        let out = arrange([cue("a", secondsAgo: 5, answered: true), cue("b", secondsAgo: 10, answered: true)])
+        XCTAssertFalse(out.contains { $0.emphasis == .focus })
+    }
+}
