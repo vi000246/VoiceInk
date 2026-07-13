@@ -73,7 +73,7 @@ final class MeetingCueDetectionReplayTests: XCTestCase {
         ])
 
         let container = try ModelContainer(
-            for: MeetingLiveSession.self, MeetingLiveCue.self,
+            for: MeetingLiveSession.self, MeetingLiveCue.self, MeetingLiveSegment.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = ModelContext(container)
 

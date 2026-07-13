@@ -217,13 +217,22 @@ final class MeetingCaptureService: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
-    /// [meeting-copilot] 本次錄製的即時音訊環形緩衝。**nil = copilot 未啟用。**
+    /// [meeting-copilot] 本次錄製的即時音訊環形緩衝。**錄製中恆存在**(nil = 未在錄製):
+    /// 常駐建立才能讓使用者在會議中途補開 copilot(掛 consumer 前先 `resetToLatest()`)。
+    /// 無 consumer 時的成本只有 IOProc 每輪一次 memcpy(數 KB)與滿載後的原子計數,可忽略。
     /// `LiveMeetingAudioSource` 從這裡汲取,切分後餵給雙路串流 ASR。
     private(set) var copilotRingBuffer: MeetingPCMRingBuffer?
 
     /// [meeting-copilot] 本次錄製的 tap 聲道數(= remote/local 切點)。
     /// 裝置切換重建後會更新。
     private(set) var copilotTapChannelCount: Int = 0
+
+    /// [meeting-copilot] 本場錄製是否掛過 consumer(live pipeline)。
+    /// 只用來決定 finalize 時要不要警告 ring 丟棄 —— 沒掛過 consumer 的丟棄是預期行為。
+    private var copilotConsumerAttached = false
+
+    /// 由 `MeetingCaptureController` 在啟動 live pipeline 時呼叫。
+    func noteCopilotConsumerAttached() { copilotConsumerAttached = true }
 
     enum CaptureError: LocalizedError {
         case tapCreationFailed(OSStatus)
@@ -294,19 +303,16 @@ final class MeetingCaptureService: ObservableObject {
                 fileSampleRate: rates.tapSampleRate,
                 clientSampleRate: rates.aggregateSampleRate
             )
-            // [meeting-copilot] 只有啟用時才建 ring buffer;否則 sink = nil,
-            // IOProc 的 seam 退化成一次 nil 檢查 → realtime thread 零額外工作(FR-3)。
-            let sink: MeetingPCMRingBuffer? = MeetingCopilotConfigStore.shared.copilotEnabled
-                ? MeetingPCMRingBuffer()
-                : nil
+            // [meeting-copilot] ring buffer 恆建立(原 FR-3 是「未啟用 → sink=nil 零工作」,
+            // 改為常駐以支援會議中途補開 copilot;無 consumer 時只多一次 memcpy)。
+            let sink = MeetingPCMRingBuffer()
             copilotRingBuffer = sink
             copilotTapChannelCount = rates.tapChannelCount
+            copilotConsumerAttached = false
 
-            if sink != nil {
-                logger.notice("🎧 meeting-copilot seam enabled — tapChannels=\(rates.tapChannelCount, privacy: .public) rate=\(rates.aggregateSampleRate, privacy: .public)")
-                if !MeetingChannelLayout.isVerified {
-                    logger.warning("🎧 MeetingChannelLayout.tapFirst 尚未實機量測(isVerified = false)。remote/local 可能顛倒 —— 見 MeetingChannelLayout 的量測步驟。")
-                }
+            logger.notice("🎧 meeting-copilot seam ready — tapChannels=\(rates.tapChannelCount, privacy: .public) rate=\(rates.aggregateSampleRate, privacy: .public)")
+            if MeetingCopilotConfigStore.shared.copilotEnabled, !MeetingChannelLayout.isVerified {
+                logger.warning("🎧 MeetingChannelLayout.tapFirst 尚未實機量測(isVerified = false)。remote/local 可能顛倒 —— 見 MeetingChannelLayout 的量測步驟。")
             }
 
             let context = MeetingCaptureContext(
@@ -771,14 +777,16 @@ final class MeetingCaptureService: ObservableObject {
 
         // [meeting-copilot] 回報丟棄計數並釋放 ring buffer。
         // backpressure(consumer 太慢)與 capacity(格式超出預期)是兩種完全不同的病,分開報。
+        // 只在掛過 consumer 時警告 —— ring 常駐建立後,整場沒開 copilot 的滿載丟棄是預期行為。
         if let ring = copilotRingBuffer {
             let drops = ring.droppedBreakdown
-            if drops.backpressure > 0 || drops.capacity > 0 {
+            if copilotConsumerAttached, drops.backpressure > 0 || drops.capacity > 0 {
                 logger.warning("🎧 copilot ring drops — backpressure=\(drops.backpressure, privacy: .public) capacity=\(drops.capacity, privacy: .public)")
             }
             copilotRingBuffer = nil
         }
         copilotTapChannelCount = 0
+        copilotConsumerAttached = false
     }
 
     // MARK: - Zero-signal probe

@@ -116,19 +116,24 @@ class StreamingTranscriptionService {
     private let modelContext: ModelContext
     private let fluidAudioService: FluidAudioTranscriptionService?
     private var onPartialTranscript: ((String) -> Void)?
+    /// 每個 committed 段落抵達時即時回報(串流中途就會觸發,不等 stop)。
+    /// meeting-copilot 的 cue 偵測靠這個;聽寫路徑不設定,行為不變。
+    private var onCommittedSegment: ((String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
     private var firstPartialLogged = false
     private var firstCommitLogged = false
 
-    init(modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil, onPartialTranscript: ((String) -> Void)? = nil) {
+    init(modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil, onPartialTranscript: ((String) -> Void)? = nil, onCommittedSegment: ((String) -> Void)? = nil) {
         self.modelContext = modelContext
         self.fluidAudioService = fluidAudioService
         self.onPartialTranscript = onPartialTranscript
+        self.onCommittedSegment = onCommittedSegment
     }
 
     deinit {
         onPartialTranscript = nil
+        onCommittedSegment = nil
         sendTask?.cancel()
         eventConsumerTask?.cancel()
         chunkSource.finish()
@@ -226,6 +231,7 @@ class StreamingTranscriptionService {
     func cancel() {
         state = .cancelled
         onPartialTranscript = nil
+        onCommittedSegment = nil
         eventConsumerTask?.cancel()
         eventConsumerTask = nil
         sendTask?.cancel()
@@ -321,6 +327,7 @@ class StreamingTranscriptionService {
                         }
                         if !trimmed.isEmpty {
                             self.committedSegments.append(trimmed)
+                            self.onCommittedSegment?(trimmed)
                         }
                         // Refresh the live preview so it keeps showing the full running transcript
                         // after a commit (instead of resetting to empty until the next partial).
@@ -397,6 +404,7 @@ class StreamingTranscriptionService {
 
     private func cleanupStreaming() async {
         onPartialTranscript = nil
+        onCommittedSegment = nil
         eventConsumerTask?.cancel()
         eventConsumerTask = nil
         sendTask?.cancel()

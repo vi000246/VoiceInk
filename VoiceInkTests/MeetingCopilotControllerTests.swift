@@ -29,7 +29,7 @@ final class MeetingCopilotControllerTests: XCTestCase {
 
     private func makeContext() throws -> ModelContext {
         let container = try ModelContainer(
-            for: MeetingLiveSession.self, MeetingLiveCue.self,
+            for: MeetingLiveSession.self, MeetingLiveCue.self, MeetingLiveSegment.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         return ModelContext(container)
     }

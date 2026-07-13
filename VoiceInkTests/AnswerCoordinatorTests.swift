@@ -16,7 +16,7 @@ final class AnswerCoordinatorTests: XCTestCase {
 
     override func setUpWithError() throws {
         let container = try ModelContainer(
-            for: MeetingLiveSession.self, MeetingLiveCue.self,
+            for: MeetingLiveSession.self, MeetingLiveCue.self, MeetingLiveSegment.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         ctx = ModelContext(container)
     }
@@ -60,6 +60,31 @@ final class AnswerCoordinatorTests: XCTestCase {
 
         // Tier0 也寫了（領域關鍵字）。
         XCTAssertFalse(cue.tier0Keywords.isEmpty)
+
+        // 觀測資料:兩層的實際 prompt 與原始回覆都 persist(覆盤時能還原模型看到/回了什麼)。
+        XCTAssertEqual(cue.tier1PromptUser, fast.lastUser, "persist 的 prompt 必須 = 實際送出的")
+        XCTAssertEqual(cue.tier2PromptUser, deep.lastUser)
+        XCTAssertTrue(cue.tier1RawReply.contains("我會先確認規模"))
+        XCTAssertTrue(cue.tier2RawReply.contains("深度分析"))
+        XCTAssertTrue(cue.tier1Error.isEmpty)
+        XCTAssertTrue(cue.tier2Error.isEmpty)
+    }
+
+    /// 觀測資料:注入實名 label → fastModelName/deepModelName 記真實 "provider/model";
+    /// 未注入(空)→ 維持 M3 佔位標記 "fast"/"deep"(向後相容)。
+    func testModelLabelsPersisted() async {
+        let fast = FakeStreamingChatCompleting(script: ["OPENER: 好\n- a\n- b\n- c"])
+        let deep = FakeStreamingChatCompleting(script: [#"{"analysis":"x","followUps":[],"uncertainties":[]}"#])
+        let coord = AnswerCoordinator(
+            fast: fast, deep: deep, grounding: NoopGrounding(), config: makeConfig(),
+            fastLabel: "groq/llama-3.1-8b-instant", deepLabel: "anthropic/claude-sonnet-4")
+        let cue = makeCue(text: "設計 rate limiter")
+
+        await coord.onNewCue(cue)
+        await coord.requestDeep(cue)
+
+        XCTAssertEqual(cue.fastModelName, "groq/llama-3.1-8b-instant")
+        XCTAssertEqual(cue.deepModelName, "anthropic/claude-sonnet-4")
     }
 
     /// AC-13:Tier2 失敗 → 保留 Tier1、status 不變 .answered、無可見 UI。
@@ -75,6 +100,7 @@ final class AnswerCoordinatorTests: XCTestCase {
         XCTAssertEqual(cue.tier1Opener, "開口", "Tier1 保留")
         XCTAssertNotEqual(cue.status, .answered, "Tier2 失敗 → 不標 answered（降級）")
         XCTAssertTrue(cue.tier2Analysis.isEmpty)
+        XCTAssertFalse(cue.tier2Error.isEmpty, "觀測資料:Tier2 失敗原因必須 persist(原本 log-only 查不到)")
     }
 
     /// Tier1 失敗 → 保留 Tier0，不跑 Tier2。
@@ -90,5 +116,7 @@ final class AnswerCoordinatorTests: XCTestCase {
         XCTAssertFalse(cue.tier0Keywords.isEmpty, "Tier0 保留")
         XCTAssertTrue(cue.tier1Opener.isEmpty, "Tier1 失敗未寫")
         XCTAssertEqual(deep.callCount, 0, "Tier1 失敗 → 不跑 Tier2")
+        XCTAssertFalse(cue.tier1Error.isEmpty, "觀測資料:Tier1 失敗原因必須 persist")
+        XCTAssertFalse(cue.tier2Error.isEmpty, "觀測資料:Tier2 中止原因必須 persist")
     }
 }

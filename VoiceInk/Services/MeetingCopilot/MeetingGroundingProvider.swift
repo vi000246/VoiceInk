@@ -46,6 +46,7 @@ final class MeetingGroundingProvider {
     ///   - includeScreen: 通常 Tier 2 才為 true(= `config.useScreenContext`)
     func gather(cueText: String, brief: String, includeRAG: Bool, includeScreen: Bool) async -> MeetingGrounding {
         var ragExcerpts: [String] = []
+        var ragError: String?
 
         if includeRAG {
             let model = TranscriptIndexService.shared.model
@@ -61,7 +62,9 @@ final class MeetingGroundingProvider {
                 }
             } catch {
                 // 無 embedding key / 網路失敗 → 靜默,回無 RAG 接地(FR-19)。
+                // 原因記進 grounding(→ cue.groundingNote),否則「為什麼沒接地」事後無從查起。
                 ragExcerpts = []
+                ragError = String(describing: error)
             }
         }
 
@@ -71,6 +74,6 @@ final class MeetingGroundingProvider {
             screenText = await screen.captureAndExtractText()
         }
 
-        return MeetingGrounding(brief: brief, ragExcerpts: ragExcerpts, screenText: screenText)
+        return MeetingGrounding(brief: brief, ragExcerpts: ragExcerpts, screenText: screenText, ragError: ragError)
     }
 }

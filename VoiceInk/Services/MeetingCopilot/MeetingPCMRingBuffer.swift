@@ -125,6 +125,18 @@ final class MeetingPCMRingBuffer: MeetingPCMSink, @unchecked Sendable {
 
     // MARK: - Consumer（一般執行緒 — 可配置）
 
+    /// [mid-meeting attach] 把讀游標跳到目前寫入位置,並歸零丟棄計數。
+    /// 會議中途才開啟 copilot 時,ring 裡是至多 8 秒的舊音訊 + 無 consumer 期間累積的
+    /// backpressure 計數 —— 兩者都不該進入剛掛上的 pipeline / 診斷。
+    /// **只能在 consumer 尚未開始讀(或已停止)時呼叫**:readIndex 是 consumer 的變數,
+    /// SPSC 不變式要求同一時間只有一個執行緒動它。
+    func resetToLatest() {
+        let w = writeIndex.load(ordering: .acquiring)
+        readIndex.store(w, ordering: .releasing)
+        droppedBackpressure.store(0, ordering: .relaxed)
+        droppedCapacity.store(0, ordering: .relaxed)
+    }
+
     /// 取出下一輪。空的時候回傳 nil。
     func read() -> Slot? {
         let r = readIndex.load(ordering: .relaxed)

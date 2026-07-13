@@ -20,6 +20,7 @@ enum ViewType: String, CaseIterable, Identifiable {
     case askAI = "Ask AI"
     case askAITemplates = "Ask AI Templates"
     case meetingCopilot = "Meeting Copilot"
+    case meetingCopilotSettings = "Meeting Copilot Settings"
     case settings = "Settings"
     case license = "VoiceInk Pro"
 
@@ -114,6 +115,8 @@ struct ContentView: View {
             AskAITemplatesView()
         case .meetingCopilot:
             MeetingCopilotPageView()
+        case .meetingCopilotSettings:
+            MeetingCopilotSettingsView()
         case .settings:
             SettingsView()
         case .license:

@@ -16,6 +16,7 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
     private let copilotEnabledKey = "meetingCopilotEnabledV1"
     private let asrModelNameKey = "meetingCopilotASRModelV1"
+    private let asrLanguageKey = "meetingCopilotASRLanguageV1"
     private let transcribeLocalMicKey = "meetingCopilotTranscribeLocalMicV1"
 
     // Keys(M2 新增)
@@ -33,17 +34,16 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
     // Keys(M4 新增：overlay 行為)
     private let overlayClickThroughKey = "meetingCopilotOverlayClickThroughV1"
-    private let speakingOpacityKey = "meetingCopilotSpeakingOpacityV1"
     private let maxCuesShownKey = "meetingCopilotMaxCuesShownV1"
 
     // MARK: - Settings
 
-    /// 總開關（kill switch）。**預設 false**。
+    /// 總開關（kill switch）。**預設 true**（2026-07-13 依使用者要求改:會議錄製時
+    /// 預設就開啟即時監聽,不必每次手動開）。
     ///
     /// 關閉時 `MeetingCaptureService` 不會建立 ring buffer,`MeetingCaptureContext.pcmSink` 為 nil,
     /// `handleIO` 的 seam 只剩一次 nil 檢查 → **realtime thread 零額外工作、零 ASR、零 LLM、零成本**。
-    /// 亦即:未啟用時本模組對既有 app 的行為與效能影響為零。
-    @Published private(set) var copilotEnabled: Bool = false
+    @Published private(set) var copilotEnabled: Bool = true
 
     /// 即時轉錄模型。預設本機 FluidAudio Parakeet（免 API key、免網路往返、隱私）。
     ///
@@ -53,6 +53,13 @@ final class MeetingCopilotConfigStore: ObservableObject {
     ///   這條路徑。所以「免費 + 隱私」與「專案代號不會被轉錯」**無法兩全**——M4 的設定 UI
     ///   必須把這個取捨明白告訴使用者,因為術語轉錯會直接讓 cue 抽取失準。
     @Published private(set) var asrModelName: String = "parakeet-tdt-0.6b-v3"
+
+    /// 即時轉錄語言(語言碼,格式依所選模型的 `supportedLanguages`)。預設 "auto"。
+    ///
+    /// - Important: **"auto" 對非目標語言可能整段誤判**——實測(2026-07-13)Parakeet V3
+    ///   auto 模式把中文 TTS 轉成俄語亂碼,cue 偵測全滅。中文會議必須選支援 zh 的模型
+    ///   (Nemotron Multilingual / 雲端)並明確指定語言。
+    @Published private(set) var asrLanguage: String = "auto"
 
     /// 是否也即時轉錄我自己的麥克風（local 流）。
     ///
@@ -81,17 +88,19 @@ final class MeetingCopilotConfigStore: ObservableObject {
     @Published private(set) var prefetchEnabled: Bool = true
     /// 注入所有 tier system prompt 的 persona(讓答案針對領域)。
     @Published private(set) var domainPersona: String = "你是資深後端工程師,專精分散式系統設計與演算法。"
-    /// FR-19:是否以歷史逐字稿 RAG 接地。**預設 true**。
-    @Published private(set) var useHistoryRAG: Bool = true
-    /// FR-20:是否在 Tier 2 擷取分享畫面 OCR 接地。**預設 true**。
-    @Published private(set) var useScreenContext: Bool = true
+    /// FR-19:是否以歷史逐字稿 RAG 接地。**預設 false**(2026-07-13 依使用者要求改:
+    /// 接地讓 Tier 1/2 各多等數秒~十餘秒,先求快;要接地的人自行到設定頁開)。
+    @Published private(set) var useHistoryRAG: Bool = false
+    /// FR-20:是否在 Tier 2 擷取分享畫面 OCR 接地。**預設 false**(同上;螢幕截圖+OCR 最耗時)。
+    @Published private(set) var useScreenContext: Bool = false
 
     // MARK: - Settings(M4 新增：overlay 行為;設定頁 UI row 屬 M5)
 
     /// 點擊穿透。決定 `CopilotOverlayPanel.ignoresMouseEvents`。預設 false(可點 cue 觸發 Tier 2)。
     @Published private(set) var overlayClickThrough: Bool = false
-    /// 我說話時 overlay 的不透明度(FR-25)。夾在 [0.05, 1.0]。
-    @Published private(set) var speakingOpacity: Double = 0.35
+    // (原 FR-25「我說話時淡出」的 speakingOpacity 已整個移除——2026-07-13 依使用者要求,
+    //  overlay 恆為不透明。)
+
     /// overlay 最多列出幾則 cue(FR-26)。夾在 [1, 20]。
     @Published private(set) var maxCuesShown: Int = 5
 
@@ -104,10 +113,14 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private func load() {
         let d = UserDefaults.standard
 
-        copilotEnabled = d.bool(forKey: copilotEnabledKey)   // 未設定 → false
+        copilotEnabled = (d.object(forKey: copilotEnabledKey) as? Bool) ?? true   // 未設定 → true
 
         if let m = d.string(forKey: asrModelNameKey), !m.isEmpty {
             asrModelName = m
+        }
+
+        if let l = d.string(forKey: asrLanguageKey), !l.isEmpty {
+            asrLanguage = l
         }
 
         if d.object(forKey: transcribeLocalMicKey) != nil {
@@ -122,13 +135,10 @@ final class MeetingCopilotConfigStore: ObservableObject {
         deepModelName = d.string(forKey: deepModelKey)
         prefetchEnabled = (d.object(forKey: prefetchEnabledKey) as? Bool) ?? true   // 預設 true
         if let p = d.string(forKey: domainPersonaKey), !p.isEmpty { domainPersona = p }
-        useHistoryRAG = (d.object(forKey: useHistoryRAGKey) as? Bool) ?? true
-        useScreenContext = (d.object(forKey: useScreenContextKey) as? Bool) ?? true
+        useHistoryRAG = (d.object(forKey: useHistoryRAGKey) as? Bool) ?? false
+        useScreenContext = (d.object(forKey: useScreenContextKey) as? Bool) ?? false
 
         overlayClickThrough = d.bool(forKey: overlayClickThroughKey)   // 未設定 → false
-        if d.object(forKey: speakingOpacityKey) != nil {
-            speakingOpacity = min(max(d.double(forKey: speakingOpacityKey), 0.05), 1.0)
-        }
         if d.object(forKey: maxCuesShownKey) != nil {
             maxCuesShown = min(max(d.integer(forKey: maxCuesShownKey), 1), 20)
         }
@@ -162,6 +172,11 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setASRModelName(_ value: String) {
         asrModelName = value
         UserDefaults.standard.set(value, forKey: asrModelNameKey)
+    }
+
+    func setASRLanguage(_ value: String) {
+        asrLanguage = value
+        UserDefaults.standard.set(value, forKey: asrLanguageKey)
     }
 
     func setTranscribeLocalMic(_ value: Bool) {
@@ -203,12 +218,6 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setOverlayClickThrough(_ value: Bool) {
         overlayClickThrough = value
         UserDefaults.standard.set(value, forKey: overlayClickThroughKey)
-    }
-
-    func setSpeakingOpacity(_ value: Double) {
-        let clamped = min(max(value, 0.05), 1.0)
-        speakingOpacity = clamped
-        UserDefaults.standard.set(clamped, forKey: speakingOpacityKey)
     }
 
     func setMaxCuesShown(_ value: Int) {

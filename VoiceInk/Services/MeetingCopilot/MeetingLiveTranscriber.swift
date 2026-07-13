@@ -47,6 +47,10 @@ final class MeetingLiveTranscriber: ObservableObject {
     /// **這是 M2 的接點** —— `ResponseCueExtractor`(偵測「需要我回應的東西」)直接掛在這裡。
     var onRemoteCommitted: ((String) -> Void)?
 
+    /// 每當**我**有一段 committed 文字時呼叫(觀測資料:local 段落入逐字稿時間軸)。
+    /// 不抽 cue;`transcribeLocalMic` 關閉時 local 流不存在,自然不觸發。
+    var onLocalCommitted: ((String) -> Void)?
+
     /// 每個含 local 聲道的音訊 frame 的 RMS。**M4 overlay 說話淡出的接點**(FR-25)。
     ///
     /// - 在 `start()` **之前**設定(pump 啟動時拷貝一份 closure)。
@@ -166,6 +170,7 @@ final class MeetingLiveTranscriber: ObservableObject {
                     guard !text.isEmpty else { continue }
                     self.localTranscript += (self.localTranscript.isEmpty ? "" : " ") + text
                     self.localPartial = ""
+                    self.onLocalCommitted?(text)
 
                 case .error(let error):
                     self.logger.error("🎧 local ASR error: \(error.localizedDescription, privacy: .public)")

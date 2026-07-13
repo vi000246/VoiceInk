@@ -308,12 +308,24 @@ final class RecorderImportService: NSObject, ObservableObject {
 
     /// 會議錄製完成 → 走既有管線。與 importNewFiles 對稱：inFlight 護欄、pendingMeta 供 ledger、
     /// Recorder Mode 轉錄、開始/失敗通知。成功 enqueue 後刪除 capture 暫存原檔（app 內部檔案，非使用者資料）。
-    func importMeetingFile(_ src: URL, sourceLabel: String) {
+    func importMeetingFile(_ src: URL, sourceLabel: String, meetingSessionIds: [UUID] = []) {
         guard let modelContext, let engine else { logger.error("Import service not configured"); return }
         Task { @MainActor in
             guard let staged = try? await stageMeetingFile(src) else {
                 NotificationManager.shared.showNotification(title: "會議錄音匯入失敗", type: .error, duration: 5)
                 return
+            }
+            // [meeting-copilot] 把本場會議的 copilot session 關聯到這個錄音檔
+            // (稍後建立的 Transcription.importFingerprint 是同一個值)。刻意放在
+            // dup-skip 之前:重複匯入時既有 Transcription 的 fingerprint 相同,關聯仍成立。
+            if !meetingSessionIds.isEmpty {
+                let fp = staged.fingerprint
+                let descriptor = FetchDescriptor<MeetingLiveSession>(
+                    predicate: #Predicate { meetingSessionIds.contains($0.id) })
+                if let sessions = try? modelContext.fetch(descriptor), !sessions.isEmpty {
+                    for s in sessions { s.importFingerprint = fp }
+                    try? modelContext.save()
+                }
             }
             // Duplicate cases deliberately do NOT delete `src` (capture temp file kept for
             // inspection) — but still note it, mirroring finalizeImport's logger.notice style.

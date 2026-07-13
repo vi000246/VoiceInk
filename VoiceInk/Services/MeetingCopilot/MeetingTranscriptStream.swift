@@ -34,32 +34,81 @@ final class LiveMeetingTranscriptStream: MeetingTranscriptStream {
     private let service: StreamingTranscriptionService
     private let model: any TranscriptionModel
     private let label: String
+    /// 轉錄語言碼(nil = 跟隨聽寫路徑的 currentDefaults)。
+    private let language: String?
     private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+    /// 停頓切段器(見 `MeetingPartialSegmenter` 的設計說明)。
+    private let segmenter: MeetingPartialSegmenterBox
+    private var tickTask: Task<Void, Never>?
 
     nonisolated let events: AsyncStream<StreamingTranscriptionEvent>
 
-    /// - Parameter label: 診斷用("remote" / "local")。
-    init(modelContext: ModelContext, model: any TranscriptionModel, label: String) {
+    /// - Parameters:
+    ///   - label: 診斷用("remote" / "local")。
+    ///   - fluidAudioService: **FluidAudio 家族模型必傳**(nemotron / parakeet-unified 之外的
+    ///     型號,如預設的 parakeet v2/v3,其 provider 需要它載模型)。漏傳時
+    ///     `createProvider(for:)` 會直接 `fatalError` 把整個 app 弄死 —— build 253 的
+    ///     會議錄製 crash 就是這裡。remote/local 兩條流應共用同一實例(共用模型快取)。
+    init(modelContext: ModelContext, model: any TranscriptionModel, label: String,
+         fluidAudioService: FluidAudioTranscriptionService? = nil,
+         language: String? = nil) {
         self.model = model
         self.label = label
+        self.language = language
 
         var cont: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         self.events = AsyncStream(bufferingPolicy: .bufferingNewest(512)) { cont = $0 }
         self.continuation = cont
 
-        // `StreamingTranscriptionService` 只透過 closure 回報 partial;committed 由它內部累積,
-        // 在 `stopAndGetFinalText()` 時一次交出。因此 partial 直接轉發,committed 於 finish() 補一則。
+        let segmenter = MeetingPartialSegmenterBox()
+        self.segmenter = segmenter
+        // init 內 self 尚未可用,closure 需要自己的 logger 實例。
+        let closureLogger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MeetingCopilot")
+
+        // committed 段落 = 停頓切段(`MeetingPartialSegmenter`):partial(已被 service
+        // 正規化成累積全文)停止變化 1.5s → 吐出 delta。cue 偵測掛在 committed 事件上,
+        // 不能等底層 ASR 的 confirm —— FluidAudio 的 agreement engine 對中文/短會議
+        // 幾乎永遠不 confirm(句尾標點只認 ASCII、永遠保留最後 2 句當 hypothesis),
+        // 實測整場 31 秒零次 mid-stream confirm。底層真的 confirm 時(雲端 provider
+        // 每句觸發)由 onCommittedSegment 立即切段;兩條路共用同一個 emitted 偏移,
+        // 結構上不會重複發同一段。
         self.service = StreamingTranscriptionService(
             modelContext: modelContext,
+            fluidAudioService: fluidAudioService,
             onPartialTranscript: { text in
+                segmenter.observe(partial: text, at: ProcessInfo.processInfo.systemUptime)
                 cont.yield(.partial(text: text))
+            },
+            onCommittedSegment: { _ in
+                if let segment = segmenter.forceSegment() {
+                    closureLogger.notice("🎼 [\(label, privacy: .public)] ASR confirm 切段 \(segment.count, privacy: .public) 字: \(segment, privacy: .public)")
+                    cont.yield(.committed(text: segment))
+                }
             }
         )
     }
 
     func start() async throws {
-        try await service.startStreaming(model: model, context: .currentDefaults)
+        // 語言用 meeting 專屬設定覆蓋(auto 對非目標語言會整段誤判,見 MeetingCopilotConfigStore.asrLanguage)。
+        let base = TranscriptionRequestContext.currentDefaults
+        let context = TranscriptionRequestContext(language: language ?? base.language, prompt: base.prompt)
+        try await service.startStreaming(model: model, context: context)
         continuation.yield(.sessionStarted)
+
+        // 停頓偵測 tick:500ms 輪詢遠細於 1.5s 的停頓門檻,不會成為延遲瓶頸。
+        let segmenter = self.segmenter
+        let cont = self.continuation
+        let logger = self.logger
+        let label = self.label
+        tickTask = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                if let segment = segmenter.poll(at: ProcessInfo.processInfo.systemUptime) {
+                    logger.notice("🎼 [\(label, privacy: .public)] 停頓切段 \(segment.count, privacy: .public) 字: \(segment, privacy: .public)")
+                    cont.yield(.committed(text: segment))
+                }
+            }
+        }
     }
 
     /// `nonisolated` —— 才能直接從 consumer thread 呼叫,不必繞 MainActor。
@@ -70,15 +119,20 @@ final class LiveMeetingTranscriptStream: MeetingTranscriptStream {
     }
 
     func finish() async {
+        tickTask?.cancel()
+        tickTask = nil
         do {
-            let text = try await service.stopAndGetFinalText()
-            if !text.isEmpty {
-                continuation.yield(.committed(text: text))
-            }
+            // 中途段落已由停頓切段/onCommittedSegment 即時發出,這裡**不補發全文**
+            // ——否則 cue 偵測會對整份逐字稿重跑一次、累積逐字稿也會整份重複。
+            // stop 時 finalize 的最後一段經 onCommittedSegment 切出;flush 收殘餘。
+            _ = try await service.stopAndGetFinalText()
         } catch {
             // 失敗必須靜默(分享螢幕時任何 modal 都會暴露本功能)—— 只記 log。
             logger.error("🎧 [\(self.label, privacy: .public)] stopAndGetFinalText failed: \(error.localizedDescription, privacy: .public)")
             continuation.yield(.error(error))
+        }
+        if let residual = segmenter.flush() {
+            continuation.yield(.committed(text: residual))
         }
         continuation.finish()
     }

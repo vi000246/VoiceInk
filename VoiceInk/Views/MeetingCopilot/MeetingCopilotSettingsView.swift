@@ -2,24 +2,43 @@ import SwiftUI
 
 /// 「會議即時輔助」設定(FR-30)。clone `RecorderModeSettingsView` 的 Form + Binding 模式。
 /// 繁中字面;config 的 @Published 是 private(set),每個控制項用 `Binding(get:set:)` 包。
+/// 獨立側欄頁(位於「錄音設定」之下);「會議錄音管理」頁的齒輪也導覽到這裡。
 struct MeetingCopilotSettingsView: View {
     @StateObject private var store = MeetingCopilotConfigStore.shared
+    @StateObject private var scriptStore = PresenterScriptStore.shared
     @EnvironmentObject private var aiService: AIService
-    let onClose: () -> Void
+
+    /// 講稿編輯 sheet 的暫存(nil = 未開啟)。
+    @State private var scriptDraft: ScriptDraft?
 
     var body: some View {
         VStack(spacing: 0) {
-            AppPanelHeader(title: "會議即時輔助設定", onClose: onClose)
-            Divider()
+            AppScreenHeader(
+                title: "會議copilot設定",
+                infoMessage: "開會時偵測對方提出的問題,在浮動視窗給你可直接開口的回應建議。快捷鍵、回應模型、答案接地與浮動視窗行為都在這裡設定。",
+                infoURL: nil
+            ) { EmptyView() }
+
             Form {
                 enableSection
                 asrSection
                 modelSection
                 groundingSection
+                presetScriptsSection
                 overlaySection
                 hotkeySection
             }
             .formStyle(.grouped)
+            .sheet(item: $scriptDraft) { draft in
+                ScriptEditorSheet(
+                    draft: draft,
+                    onSave: { title, body in
+                        if draft.isNew { scriptStore.add(title: title, body: body) }
+                        else { scriptStore.update(id: draft.id, title: title, body: body) }
+                        scriptDraft = nil
+                    },
+                    onCancel: { scriptDraft = nil })
+            }
         }
     }
 
@@ -35,10 +54,65 @@ struct MeetingCopilotSettingsView: View {
 
     private var asrSection: some View {
         Section("即時轉錄") {
+            Picker("轉錄模型", selection: asrModelBinding) {
+                ForEach(streamingModels, id: \.name) { m in
+                    Text("\(m.displayName)（\(m.provider.rawValue)）").tag(m.name)
+                }
+            }
+            Picker("語言", selection: asrLanguageBinding) {
+                ForEach(asrLanguageOptions, id: \.key) { option in
+                    Text(option.value).tag(option.key)
+                }
+            }
             Toggle("同時轉錄我的麥克風", isOn: bind(\.transcribeLocalMic, store.setTranscribeLocalMic))
-            Text("⚠️ 預設用本機模型(免費、隱私、不上傳),但**本機模型不支援術語偏置**——專案代號、\("服務名")容易被轉錯,進而讓問題偵測失準。需要術語準確度請在「錄音設定」改用雲端轉錄模型(Deepgram / Soniox / Speechmatics)。")
+            Text("⚠️ 預設的 Parakeet V3 **只支援英文與歐洲語言**——中文會議請改用支援中文的模型(如 ElevenLabs Scribe V2 / Nemotron Multilingual)並明確指定語言;選 Auto-detect 時非目標語言可能整段誤判。雲端模型只列出已設定 API key 的 provider(到「AI Models」頁設定)。本機模型不支援術語偏置,需要專案代號/術語準確請用 Deepgram / Soniox / Speechmatics。")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - ASR helpers
+
+    /// 與 `MeetingCopilotLiveController.start` 同一來源(支援串流者),再加一層 UI 過濾:
+    /// 雲端模型只列**已設定 API key** 的 provider(keychain key 與各 StreamingProvider
+    /// 取用的字串一致 = `ModelProvider.rawValue`);本機模型免 key 恆列。
+    /// 目前選用中的模型即使 key 被移除也保留,避免 Picker 選中項懸空。
+    private var streamingModels: [any TranscriptionModel] {
+        TranscriptionModelRegistry.models.filter { m in
+            guard m.supportsStreaming else { return false }
+            guard m.provider.usesCloudUpload else { return true }
+            return m.name == store.asrModelName
+                || APIKeyManager.shared.hasAPIKey(forProvider: m.provider.rawValue)
+        }
+    }
+
+    private var asrModelBinding: Binding<String> {
+        Binding(
+            get: { store.asrModelName },
+            set: { name in
+                store.setASRModelName(name)
+                // 換模型後,若目前語言不在新模型的支援清單 → 退回 auto,避免無效語言碼。
+                if let m = streamingModels.first(where: { $0.name == name }),
+                   m.supportedLanguages[store.asrLanguage] == nil {
+                    store.setASRLanguage("auto")
+                }
+            })
+    }
+
+    private var asrLanguageBinding: Binding<String> {
+        Binding(get: { store.asrLanguage }, set: { store.setASRLanguage($0) })
+    }
+
+    /// 目前所選模型的語言清單(auto 置頂,其餘依顯示名排序)。
+    private var asrLanguageOptions: [(key: String, value: String)] {
+        let langs = streamingModels.first(where: { $0.name == store.asrModelName })?.supportedLanguages
+            ?? ["auto": "Auto-detect"]
+        return langs
+            .sorted {
+                if $0.key == "auto" { return true }
+                if $1.key == "auto" { return false }
+                return $0.value < $1.value
+            }
+            .map { (key: $0.key, value: $0.value) }
     }
 
     private var modelSection: some View {
@@ -75,14 +149,43 @@ struct MeetingCopilotSettingsView: View {
         }
     }
 
+    private var presetScriptsSection: some View {
+        Section("預設講稿") {
+            ForEach(scriptStore.scripts) { s in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(s.title.isEmpty ? "（未命名）" : s.title)
+                            .font(.system(size: 13, weight: .medium))
+                        if !s.body.isEmpty {
+                            Text(s.body).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                    Button("編輯") {
+                        scriptDraft = ScriptDraft(id: s.id, title: s.title, body: s.body, isNew: false)
+                    }
+                    .buttonStyle(.borderless)
+                    Button(role: .destructive) {
+                        scriptStore.delete(id: s.id)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            Button {
+                scriptDraft = ScriptDraft(id: UUID(), title: "", body: "", isNew: true)
+            } label: {
+                Label("新增講稿", systemImage: "plus")
+            }
+            Text("事先寫好你自己的講稿（自我介紹、對某議題的立場…），開會時用讀稿面板（熱鍵或選單列開啟）看著唸。這裡只存你打的文字，**不接任何 AI**——它不會聽對方講話、也不會生成任何內容。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var overlaySection: some View {
         Section("浮動視窗") {
             Toggle("點擊穿透(滑鼠事件穿到底層)", isOn: bind(\.overlayClickThrough, store.setOverlayClickThrough))
-            HStack {
-                Text("我說話時淡出")
-                Slider(value: bind(\.speakingOpacity, store.setSpeakingOpacity), in: 0.05...1.0)
-                Text(String(format: "%.0f%%", store.speakingOpacity * 100)).monospacedDigit().frame(width: 44)
-            }
             Stepper("最多顯示 \(store.maxCuesShown) 則問題",
                     value: bind(\.maxCuesShown, store.setMaxCuesShown), in: 1...20)
             Text("🔴 分享「整個螢幕」時此視窗**會被錄到**(macOS 15.4+ 限制,無公開 API 可防)。安全模式:只分享單一視窗或分頁。")
@@ -97,6 +200,9 @@ struct MeetingCopilotSettingsView: View {
             }
             LabeledContent("按住瞄一眼") {
                 ShortcutRecorder(action: .peekMeetingCopilotOverlay).controlSize(.small)
+            }
+            LabeledContent("開/關讀稿面板") {
+                ShortcutRecorder(action: .togglePresenterScript).controlSize(.small)
             }
             LabeledContent("開/關會議錄製") {
                 ShortcutRecorder(action: .toggleMeetingRecording).controlSize(.small)
@@ -126,5 +232,58 @@ struct MeetingCopilotSettingsView: View {
                 return RecorderModelChoice(provider: p, model: m)
             },
             set: { store.setDeepModel(provider: $0?.provider, model: $0?.model) })
+    }
+}
+
+// MARK: - 講稿編輯 sheet(M7)
+
+/// 講稿編輯 sheet 的暫存 draft。`id` 為既有講稿 id,或新建時的新 UUID。
+private struct ScriptDraft: Identifiable {
+    let id: UUID
+    var title: String
+    var body: String
+    let isNew: Bool
+}
+
+/// 新增/編輯一則講稿。純使用者輸入,存回 `PresenterScriptStore`。
+private struct ScriptEditorSheet: View {
+    let draft: ScriptDraft
+    let onSave: (String, String) -> Void
+    let onCancel: () -> Void
+
+    @State private var titleText: String
+    @State private var bodyText: String
+
+    init(draft: ScriptDraft,
+         onSave: @escaping (String, String) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.draft = draft
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _titleText = State(initialValue: draft.title)
+        _bodyText = State(initialValue: draft.body)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(draft.isNew ? "新增講稿" : "編輯講稿").font(.headline)
+            TextField("標題（如：自我介紹）", text: $titleText)
+                .textFieldStyle(.roundedBorder)
+            Text("講稿內容").font(.system(size: 12)).foregroundStyle(.secondary)
+            TextEditor(text: $bodyText)
+                .font(.system(size: 13))
+                .frame(minWidth: 420, minHeight: 240)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            HStack {
+                Spacer()
+                Button("取消", action: onCancel)
+                Button("儲存") { onSave(titleText, bodyText) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(titleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              && bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
     }
 }

@@ -22,12 +22,17 @@ final class MeetingCopilotController: ObservableObject {
     private let extractor: ResponseCueExtractor
     private let config: MeetingCopilotConfigStore
     private let modelContext: ModelContext
+    /// cue 抽取實際用的 fast model("provider/model",觀測資料;由 live controller 解析後注入)。
+    private let extractionModelLabel: String
 
     /// 目前的 live session(beginSession 建立並 persist;copilot 關閉時恆為 nil)。
     private(set) var session: MeetingLiveSession?
 
     /// 已偵測的 cue(依 `showInformationalCues` 過濾;FR-11)。下游 M3/M4 消費這個。
     @Published private(set) var cues: [MeetingLiveCue] = []
+
+    /// Tier 2 進行中的 cue id(overlay 顯示「深度分析中…」;由點擊 handler 設定/清除)。
+    @Published var deepInFlightCueId: UUID?
 
     /// M3 的三層回應編排器。設定後,每則新持久化的非 informational cue 會觸發
     /// Tier 0 + 預跑 Tier 1(`AnswerCoordinator.onNewCue`)。nil = 只偵測不回應(M2 行為)。
@@ -39,19 +44,23 @@ final class MeetingCopilotController: ObservableObject {
     init(
         extractor: ResponseCueExtractor,
         config: MeetingCopilotConfigStore,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        extractionModelLabel: String = ""
     ) {
         self.extractor = extractor
         self.config = config
         self.modelContext = modelContext
+        self.extractionModelLabel = extractionModelLabel
     }
 
     // MARK: - Session lifecycle
 
     /// 建立並 persist 一個新 session。`copilotEnabled == false` 時 no-op(AC-9)。
-    func beginSession(appName: String = "") {
+    /// `configSnapshot` = 本場執行設定的 JSON(`MeetingCopilotRunConfig`),供事後調校對照。
+    func beginSession(appName: String = "", configSnapshot: String = "") {
         guard config.copilotEnabled else { return }
         let s = MeetingLiveSession(appName: appName)
+        s.configSnapshotRaw = configSnapshot
         modelContext.insert(s)
         try? modelContext.save()
         session = s
@@ -59,15 +68,22 @@ final class MeetingCopilotController: ObservableObject {
     }
 
     /// 掛上 M1 的接點。**只掛既有 closure,不改 MeetingLiveTranscriber 本體。**
-    func attach(to transcriber: MeetingLiveTranscriber, appName: String = "") {
+    func attach(to transcriber: MeetingLiveTranscriber, appName: String = "", configSnapshot: String = "") {
         guard config.copilotEnabled else { return }
-        beginSession(appName: appName)
+        beginSession(appName: appName, configSnapshot: configSnapshot)
         transcriber.onRemoteCommitted = { [weak self] text in
             self?.handleRemoteCommitted(text)
         }
+        // local 段只進逐字稿時間軸(不抽 cue)——「我當時說了什麼」是覆盤上下文的另一半。
+        transcriber.onLocalCommitted = { [weak self] text in
+            self?.recordSegment(channel: .local, text: text)
+        }
     }
 
-    func endSession() {
+    /// 收 session。傳入雙軌逐字稿快照(來自 transcriber,**stop 之後**讀,含最後 flush 的段落)。
+    func endSession(remoteTranscript: String = "", localTranscript: String = "") {
+        if !remoteTranscript.isEmpty { session?.remoteTranscriptRaw = remoteTranscript }
+        if !localTranscript.isEmpty { session?.localTranscriptRaw = localTranscript }
         session?.endedAt = Date()
         try? modelContext.save()
     }
@@ -76,24 +92,60 @@ final class MeetingCopilotController: ObservableObject {
 
     /// 每段對方 committed → 開一個 Task 抽 cue。立即返回,不阻塞轉錄事件迴圈。
     func handleRemoteCommitted(_ text: String) {
-        guard config.copilotEnabled, session != nil else { return }
+        guard config.copilotEnabled, session != nil else {
+            logger.notice("🧠 committed 到達但被略過(enabled=\(self.config.copilotEnabled, privacy: .public) session=\(self.session != nil, privacy: .public))")
+            return
+        }
+        logger.notice("🧠 remote committed \(text.count, privacy: .public) 字 → cue 抽取")
+        // 先落 segment:就算抽出 0 則,「這段話當時被看過、模型怎麼回」也要留下——
+        // 漏抓只能從完整時間軸對照出來。
+        let segment = recordSegment(channel: .remote, text: text)
         let extractor = self.extractor
+        let logger = self.logger
         let task = Task { [weak self] in
-            // completeChat 為 async——await 期間讓出 main;失敗 extractor 已回 []。
-            let extracted = await extractor.extract(committed: text)
-            guard !Task.isCancelled, !extracted.isEmpty else { return }
-            self?.ingest(extracted, sourceText: text, at: Date())
+            // completeChat 為 async——await 期間讓出 main;失敗 extractor 已回空 outcome。
+            let outcome = await extractor.extract(committed: text)
+            guard !Task.isCancelled else { return }
+            self?.recordExtraction(outcome, on: segment)
+            guard !outcome.cues.isEmpty else {
+                logger.notice("🧠 cue 抽取結果:0 則(fast model 判定無 cue,或呼叫失敗——見 🥡 log)")
+                return
+            }
+            self?.ingest(outcome.cues, sourceText: text, at: Date(), segment: segment)
         }
         inflightTasks.append(task)
     }
 
+    /// 一段 committed 落入逐字稿時間軸。@MainActor(context 非 Sendable)。
+    @discardableResult
+    func recordSegment(channel: MeetingSegmentChannel, text: String) -> MeetingLiveSegment? {
+        guard config.copilotEnabled, let session else { return nil }
+        let segment = MeetingLiveSegment(session: session, channel: channel, text: text)
+        modelContext.insert(segment)
+        try? modelContext.save()
+        return segment
+    }
+
+    /// 抽取結果(含失敗)回寫 segment 的偵測 provenance。
+    private func recordExtraction(_ outcome: CueExtractionOutcome, on segment: MeetingLiveSegment?) {
+        guard let segment else { return }
+        segment.extractionModel = extractionModelLabel
+        segment.extractionReplyRaw = outcome.rawReply
+        segment.extractionError = outcome.errorDescription
+        segment.extractionElapsedMs = outcome.elapsedMs
+        segment.extractedCount = outcome.cues.count
+        try? modelContext.save()
+    }
+
     /// 去重 + persist + 更新暴露面。@MainActor(context 非 Sendable)。
-    func ingest(_ extracted: [ExtractedCue], sourceText: String, at time: Date) {
+    func ingest(_ extracted: [ExtractedCue], sourceText: String, at time: Date, segment: MeetingLiveSegment? = nil) {
         guard let session else { return }
         var persistedAny = false
+        var dedupDropped = 0
         for e in extracted {
             let existing = (session.cues ?? []).map { (text: $0.text, askedAt: $0.askedAt) }
             if MeetingCueDeduplicator.isDuplicate(text: e.text, at: time, existing: existing) {
+                dedupDropped += 1
                 continue   // FR-10:相似 cue 不重覆 persist
             }
             let cue = MeetingLiveCue(
@@ -102,6 +154,11 @@ final class MeetingCopilotController: ObservableObject {
                 kind: e.kind,
                 askedAt: time,
                 contextExcerpt: String(sourceText.prefix(300)))
+            cue.sourceSegmentId = segment?.id
+            // committed 到 persist 的全程延遲(含抽取 LLM 往返)——「cue 多久才浮上 overlay」。
+            if let segment {
+                cue.detectionElapsedMs = max(0, Int(time.timeIntervalSince(segment.committedAt) * 1000))
+            }
             modelContext.insert(cue)
             persistedAny = true
             logger.notice("🧠 cue [\(e.kind.rawValue, privacy: .public)] \(e.text, privacy: .public)")
@@ -113,7 +170,8 @@ final class MeetingCopilotController: ObservableObject {
                 Task { await coordinator.onNewCue(cueRef) }
             }
         }
-        if persistedAny { try? modelContext.save() }
+        segment?.dedupDroppedCount = dedupDropped
+        if persistedAny || dedupDropped > 0 { try? modelContext.save() }
         refreshPublishedCues()
     }
 

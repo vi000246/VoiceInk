@@ -36,18 +36,21 @@ enum MeetingChannelLayout {
 
     /// `true` = tap（系統音／對方）的聲道排在 mic（我）之前。
     ///
-    /// - Note: **⚠️ 尚未實機量測。** 目前是「tap list 先於 sub-device list」的合理預設,
-    ///   與 `createTapAndAggregate` 中 composition dictionary 的建構順序一致,但**這不是保證**。
-    ///   請依上方步驟量測後回填,並把本註解改成量測結果。
+    /// - Note: **實機量測結果:mic 在前,tap 在後 → `false`。**
+    ///   量測方法:🎚️ probe(LiveMeetingAudioSource)觀察 Google 翻譯 TTS 經系統音訊
+    ///   播放時的逐聲道 RMS——ch0 恆為 ~0.01 的類比噪音底(靜音時也不歸零 = mic);
+    ///   ch1/ch2 在 TTS 播放時能量**位元級相同**(同一 mono 訊號的立體聲兩路 = tap),
+    ///   數位靜音時精確為 0.0000。composition dictionary 的 key 順序果然不代表
+    ///   stream 順序——aggregate 把 sub-device(mic)排在 tap 之前。
     ///
-    ///   量測日期:_尚未量測_
-    ///   量測機器:_尚未量測_
-    ///   macOS 版本:_尚未量測_
-    static let tapFirst: Bool = true
+    ///   量測日期:2026-07-13
+    ///   量測機器:Logan 的 Mac(Darwin 25.5.0)
+    ///   證據:log 260713 13:23 場次,`🎚️ REMOTE[0.0144, 0.1931] | LOCAL[0.1931]`
+    static let tapFirst: Bool = false
 
     /// 這個值是否已經過實機驗證。`false` 時 `LiveMeetingAudioSource` 會在啟動時
     /// 印一則 warning,提醒使用者跑 probe——避免「以為量過了其實沒有」。
-    static let isVerified: Bool = false
+    static let isVerified: Bool = true
 
     /// 逐聲道 RMS。供 probe 與 debug log 使用（純函式,可測）。
     ///

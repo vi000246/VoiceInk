@@ -40,6 +40,14 @@ struct RecorderHistoryView: View {
         Array(Set(items.compactMap { $0.recorderCategoryName })).sorted()
     }
 
+    /// 來源篩選（頁內下拉;側欄維持分類篩選不變）。nil = 全部來源。
+    @State private var sourceFilter: String?
+
+    /// Distinct sources actually present（會議即時錄製／各裝置名／手動匯入…）。
+    private var availableSources: [String] {
+        Array(Set(items.map { RecorderRowDisplay.sourceLabel($0) })).sorted()
+    }
+
     private func fileName(_ t: Transcription) -> String? { t.importFingerprint.flatMap { fileNameByFingerprint[$0] } }
     private func byteSize(_ t: Transcription) -> Int? { t.importFingerprint.flatMap { byteSizeByFingerprint[$0] } }
 
@@ -65,6 +73,7 @@ struct RecorderHistoryView: View {
         let q = debouncedQuery
         return items.filter { t in
             if let categoryFilter = sidebarModel.recorderCategoryFilter, t.recorderCategoryName != categoryFilter { return false }
+            if let sourceFilter, RecorderRowDisplay.sourceLabel(t) != sourceFilter { return false }
             guard !q.isEmpty else { return true }
             // Short-circuit field by field: no joined+lowercased copy of the (possibly huge)
             // transcript is allocated, and cheap fields match without touching the text at all.
@@ -166,6 +175,13 @@ struct RecorderHistoryView: View {
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Capsule().fill(AppTheme.Surface.card))
             .frame(maxWidth: .infinity)
+
+            Picker("來源", selection: $sourceFilter) {
+                Text("全部來源").tag(String?.none)
+                ForEach(availableSources, id: \.self) { s in Text(s).tag(String?.some(s)) }
+            }
+            .labelsHidden()
+            .frame(width: 140)
 
             Picker("分類", selection: $sidebarModel.recorderCategoryFilter) {
                 Text("全部分類").tag(String?.none)
@@ -761,6 +777,21 @@ enum RecorderRowDisplay {
     static func recordingDate(_ t: Transcription, fileName: String?) -> Date {
         (fileName.flatMap { RecorderRecordingTime.parse(fromFileName: $0) }) ?? t.timestamp
     }
+
+    /// 來源標籤（表格「來源」欄與來源篩選共用）。從既有欄位推導,不需 schema 遷移:
+    /// 會議擷取寫 `recorderSourceLabel`、裝置匯入寫 `recorderSourceDeviceId`、
+    /// 手動轉錄的 fingerprint 帶 `manual:` 前綴。
+    /// @MainActor:查 `RecorderConfigStore`(MainActor)的裝置名;呼叫端皆為 view。
+    @MainActor
+    static func sourceLabel(_ t: Transcription) -> String {
+        if t.recorderSourceLabel != nil { return "會議即時錄製" }
+        if let deviceId = t.recorderSourceDeviceId {
+            // 裝置顯示名（錄音筆名稱、iPhone 語音備忘錄等）;裝置已被刪除時退回通稱。
+            return RecorderConfigStore.shared.device(byId: deviceId)?.displayName ?? "錄音筆"
+        }
+        if t.importFingerprint?.hasPrefix("manual:") == true { return "手動匯入" }
+        return "其他"
+    }
     /// 顯示標題：自動標題（yyyyMMdd HHmm 摘要）會用檔名時間重新蓋章;使用者改名的原樣顯示;皆無則用檔名。
     static func title(_ t: Transcription, fileName: String?) -> String {
         if let title = t.recorderTitle, !title.isEmpty {
@@ -785,6 +816,7 @@ private struct RecorderTableHeader: View {
             Color.clear.frame(width: 37, height: 1)   // 對齊：勾選(15)+星號(12)欄
             sortLabel("標題", field: .title).frame(maxWidth: .infinity, alignment: .leading)
             sortLabel("日期", field: .date).frame(width: 150, alignment: .leading)
+            Text("來源").frame(width: 90, alignment: .leading)
             Text("分類").frame(width: 110, alignment: .leading)
             sortLabel("大小", field: .size).frame(width: 72, alignment: .trailing)
             Text("已匯出").frame(width: 48, alignment: .center)
@@ -852,6 +884,11 @@ private struct RecorderTableRow: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 .frame(width: 150, alignment: .leading)
 
+            // 來源（會議即時錄製／裝置名／手動匯入）
+            Text(RecorderRowDisplay.sourceLabel(transcription))
+                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                .frame(width: 90, alignment: .leading)
+
             // 分類
             Group {
                 if postProcessor.processingIds.contains(transcription.id) {
@@ -900,6 +937,10 @@ private struct RecorderDetailSheet: View {
     let byteSize: Int?
     let onClose: () -> Void
 
+    @Environment(\.modelContext) private var modelContext
+    /// 這筆錄音對應的 copilot session(依 importFingerprint 反查;nil = 非會議或當時沒開輔助)。
+    @State private var meetingSessionId: UUID?
+
     var body: some View {
         VStack(spacing: 0) {
             AppPanelHeader(title: "錄音詳情", onClose: onClose)
@@ -911,9 +952,27 @@ private struct RecorderDetailSheet: View {
                     Label("Ask AI 針對這筆提問", systemImage: "bubble.left.and.text.bubble.right.fill")
                 }
                 .controlSize(.small)
+                if let meetingSessionId {
+                    Button {
+                        onClose()
+                        AppNavigator.shared.openMeetingReview(sessionId: meetingSessionId)
+                    } label: {
+                        Label("會議copilot覆盤", systemImage: "person.2.wave.2.fill")
+                    }
+                    .controlSize(.small)
+                    .help("查看這場會議偵測到的問題與回應建議")
+                }
                 Spacer()
             }
             .padding(.horizontal, 16).padding(.top, 12)
+            .onAppear {
+                guard let fp = transcription.importFingerprint, !fp.isEmpty else { return }
+                var d = FetchDescriptor<MeetingLiveSession>(
+                    predicate: #Predicate { $0.importFingerprint == fp },
+                    sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
+                d.fetchLimit = 1
+                meetingSessionId = (try? modelContext.fetch(d))?.first?.id
+            }
             RecordingCard(
                 transcription: transcription,
                 fileName: fileName,

@@ -77,7 +77,9 @@ final class MeetingReplayDebugRunner {
         let remoteStream = LiveMeetingTranscriptStream(
             modelContext: context,
             model: model,
-            label: "remote"
+            label: "remote",
+            // DEBUG 工具自建實例即可(模型快取只在 replay 期間重複)。缺了 FluidAudio 模型會 fatalError。
+            fluidAudioService: model.provider == .fluidAudio ? FluidAudioTranscriptionService() : nil
         )
 
         let t = MeetingLiveTranscriber(

@@ -11,12 +11,14 @@
 - **Owner**: TBD（personal fork — vi000246/VoiceInk）
 - **Status**: ACTIVE — living document
 - **Created**: 2026-07-12
-- **Last Updated**: 2026-07-12
+- **Last Updated**: 2026-07-13
 
 ## Change History
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
+| 2026-07-13 | N/A（使用者需求） | N/A（直接實作） | **觀測資料持久化（調校迴圈的原始資料）** — 目標：讓每則 cue 事後可完整重建「怎麼被偵測到、AI 回應時看到了什麼上下文、花了多久、哪裡失敗」，供持續調校。新增 `@Model MeetingLiveSegment`（每段 committed 一筆：remote/local 時間軸＋remote 段的抽取 provenance——實際 fast model、**原始 LLM 回覆**、耗時、抽出數、**去重丟棄數**、失敗原因；抽出 0 則也留檔＝漏抓分析的基礎）。`MeetingLiveCue` 加觀測欄位（`sourceSegmentId`／`detectionElapsedMs`／tier1・tier2 的**實際 user prompt 全文**（接地內容在內）／原始回覆／耗時／錯誤／接地降級備註）；`fastModelName`/`deepModelName` 從佔位 "fast"/"deep" 改記實名 "provider/model"。`MeetingLiveSession.configSnapshotRaw` 存當場執行設定 JSON（`MeetingCopilotRunConfig`：模型、開關、persona、**三個 system prompt 全文**、去重參數）；`remoteTranscriptRaw`/`localTranscriptRaw` **補上回填**（宣告以來從未寫入，覆盤頁一直空白）。`MeetingGrounding.ragError` 讓 RAG 靜默降級留下原因。覆盤頁新增逐段偵測時間軸、per-cue 診斷收合區、設定快照、**「匯出診斷 JSON」**（`MeetingSessionDiagnostics`，可直接餵 LLM 做漏抓/誤抓/答非所問分析）。行為不變（純記錄）；`recentContext` 欄位照實記錄目前恆空的滑動窗，為 Open Question 的窗口調校預留 A/B 資料。 |
+| 2026-07-13 | N/A（使用者需求） | `docs/srs/meeting-copilot-m7-preset-scripts.srs.md` | **M7 spec'd:預設講稿讀稿器（獨立提詞面板）** — 使用者事先寫好多份具名講稿（自我介紹、對某議題的立場…），開會時用一個私人浮動面板看著唸（等同 PowerPoint 簡報者檢視 / 讀稿機）。動機：ADHD 看稿安全感。**硬界線**：只顯示使用者自寫文字，**完全不接 AI/ASR/LLM、不讀 cue 清單、不整合進 cue overlay**；獨立於 `copilotEnabled`，copilot 關閉也可用。新增 `PresenterScript`＋`PresenterScriptStore`（UserDefaults）＋`PresenterScriptPanel/…WindowManager/…View`（複製 overlay 的螢幕分享排除＋不搶焦點＋手動拖曳「視窗技術」，但不持有 controller）＋設定頁講稿管理＋`togglePresenterScript` 熱鍵。FR-33~40 / AC-20~27。 |
 | 2026-07-12 | N/A（使用者需求） | `docs/srs/meeting-copilot-live-assist.srs.md` | **新模組 spec'd（未實作）** — 會議即時輔助。核心：(1) 在 `mixToMono` 之前按聲道切開 tap（對方）與 mic（我）→ 雙路串流 ASR，**講者歸屬零成本、免 diarization**；(2) `ResponseCueExtractor` 抓「需要我回應的東西」（含陳述句質疑，非只抓問號）；(3) **三層漸進揭露**——Tier 0 本機關鍵字（<0.5s，不呼叫 LLM）／Tier 1 fast model 產「開口稿」（<1.5s，**最新一則預跑**）／Tier 2 deep model 產結構化 follow-up 預判；(4) 答案接地於**會前 brief + 歷史逐字稿 RAG（重用 Ask AI 的 `RetrievalService`）+ 分享畫面 OCR（重用 `ScreenCaptureService`）**；(5) `sharingType = .none` 的 overlay，toggle + **peek（按住顯示）**雙熱鍵，錨定螢幕上方近鏡頭處，我說話時自動淡出。含不開 Teams/Meet 的離線 replay 驗證 harness。 |
 
 ## Summary
@@ -152,6 +154,7 @@ CoreAudio IOProc ──►│ handleIO: deinterleave → channelScratch      │
 | Component | Responsibility | Interface |
 |---|---|---|
 | `MeetingChannelSplitter` | 依 `tapChannelCount` 切 remote / local | 純函式（可測） |
+| `PresenterScript*`（M7，**獨立子功能**） | 私人提詞面板：顯示使用者自寫講稿；store（UserDefaults CRUD）＋panel/manager/view。**不接 AI/ASR/LLM、不引用 live pipeline 型別** | 複製 overlay 的視窗技術（分享排除／不搶焦點／手動拖曳），非機能耦合 |
 | `MeetingPCMRingBuffer` | SPSC lock-free 環形緩衝；滿溢丟最舊並計數 | 預配置指標，原子 head/tail |
 | `PCMDownsampler` | Float32 多聲道 → mono 16kHz Int16 LE | 純函式（自 `CoreAudioRecorder.swift:930-1000` 抽出，兩處共用） |
 | `MeetingAudioSource`（協定） | 音源注入 seam | `start()` / `stop()` / `frames: AsyncStream<MeetingAudioFrame>` |
@@ -188,45 +191,86 @@ ASR 的 `.committed` 推動 cue 偵測；cue 出現立即觸發 Tier 0，並對*
 
 | Entity | Owner | Lifecycle |
 |---|---|---|
-| `MeetingLiveSession` | meeting-copilot | 會議開始建立；結束補 `endedAt`；可於「會議錄音管理」頁刪除 |
+| `MeetingLiveSession` | meeting-copilot | 會議開始建立（含執行設定快照）；結束補 `endedAt` 與雙軌逐字稿；可於「會議錄音管理」頁刪除 |
 | `MeetingLiveCue` | meeting-copilot | cue 被偵測時建立；cascade 隨 session 刪除 |
+| `MeetingLiveSegment` | meeting-copilot | 每段 committed 逐字稿建立（remote 段帶抽取 provenance）；cascade 隨 session 刪除 |
 
 ### Schema（新 store：`meeting.store`，`cloudKitDatabase: .none`）
 
 ```
 @Model MeetingLiveSession {
     var id: UUID = UUID()
-    var startedAt: Date = Date.distantPast
+    var startedAt: Date = Date()
     var endedAt: Date? = nil
     var appName: String = ""              // 前景 app（沿用既有 sourceLabel 慣例）
     var brief: String = ""                // 會前 brief — 注入所有 tier 的 system prompt
-    var remoteTranscriptRaw: String = ""  // 對方逐字稿（累積 committed）
-    var localTranscriptRaw: String = ""   // 我的逐字稿
+    var remoteTranscriptRaw: String = ""  // 對方逐字稿（stop 後自 transcriber 回填）
+    var localTranscriptRaw: String = ""   // 我的逐字稿（同上）
+    var importFingerprint: String = ""    // 關聯錄音檔（= Transcription.importFingerprint）
+    var configSnapshotRaw: String = ""    // 當場執行設定 JSON（MeetingCopilotRunConfig：
+                                          // 模型/開關/persona/三個 system prompt 全文/去重參數）
     @Relationship(deleteRule: .cascade, inverse: \MeetingLiveCue.session)
     var cues: [MeetingLiveCue]? = []
+    @Relationship(deleteRule: .cascade, inverse: \MeetingLiveSegment.session)
+    var segments: [MeetingLiveSegment]? = []
 }
 
 @Model MeetingLiveCue {
     var id: UUID = UUID()
     var session: MeetingLiveSession? = nil
     var text: String = ""
-    var kind: String = "directQuestion"   // directQuestion | impliedChallenge | assignedToMe | informational
-    var askedAt: Date = Date.distantPast
-    var contextExcerpt: String = ""
-    var status: String = "pending"        // pending | tier0 | tier1 | tier2 | failed
+    var kindRaw: String = "informational" // directQuestion | impliedChallenge | assignedToMe | informational
+    var askedAt: Date = Date()
+    var contextExcerpt: String = ""       // 觸發 committed 的 300 字節錄
+    var statusRaw: String = "detected"    // detected | answered
 
-    var tier0Keywords: String = ""        // JSON [String]
+    var tier0Keywords: String = ""
     var tier1Opener: String = ""          // 一句可直接說出口的話
     var tier1BulletsRaw: String = ""      // JSON [String]（恰 3 個）
     var tier2Analysis: String = ""
-    var tier2FollowUpsRaw: String = ""    // JSON [{question, oneLineAnswer}]
+    var tier2FollowUpsRaw: String = ""    // JSON [String]（question → oneLineAnswer 顯示行）
     var tier2UncertaintiesRaw: String = ""// JSON [String]
 
-    var fastModelName: String = ""
+    var fastModelName: String = ""        // 實名 "provider/model"（歷史資料可能是佔位 "fast"）
     var deepModelName: String = ""
     var answeredAt: Date? = nil
+
+    // 觀測欄位（調校迴圈；即時路徑只寫不讀）
+    var sourceSegmentId: UUID? = nil      // 觸發本 cue 的 segment
+    var detectionElapsedMs: Int = 0       // committed → cue persist（含抽取 LLM 往返）
+    var tier1PromptUser: String = ""      // 實際送出的完整 user prompt（接地內容在內）
+    var tier1RawReply: String = ""        // 解析前的原始模型回覆
+    var tier1ElapsedMs: Int = 0
+    var tier1At: Date? = nil
+    var tier1Error: String = ""           // 失敗原因（成功清空）
+    var tier1GroundingNote: String = ""   // 接地降級備註（RAG 失敗原因）
+    var tier2PromptUser: String = ""      // 含 Tier1 草稿＋接地＋螢幕 OCR
+    var tier2RawReply: String = ""
+    var tier2GroundingElapsedMs: Int = 0
+    var tier2StreamElapsedMs: Int = 0
+    var tier2Error: String = ""
+    var tier2GroundingNote: String = ""
+}
+
+@Model MeetingLiveSegment {               // 逐字稿時間軸 + 偵測 provenance
+    var id: UUID = UUID()
+    var session: MeetingLiveSession? = nil
+    var channelRaw: String = "remote"     // remote | local（local 不抽 cue）
+    var text: String = ""                 // committed 原文（= cue 抽取的輸入）
+    var committedAt: Date = Date()
+    var recentContext: String = ""        // 抽取時帶的滑動窗（目前恆空，照實記錄）
+    var extractionModel: String = ""      // 實際 fast model "provider/model"
+    var extractionReplyRaw: String = ""   // fast model 原始回覆（誤抓/錯分類的覆盤線索）
+    var extractionElapsedMs: Int = 0
+    var extractedCount: Int = -1          // -1 = 沒跑抽取（local 段）；0 = 跑了沒抽到
+    var dedupDroppedCount: Int = 0        // FR-10 去重丟棄數（dedup 調校訊號）
+    var extractionError: String = ""
 }
 ```
+
+診斷匯出：覆盤頁「匯出診斷 JSON」把整場 session（時間軸＋偵測 provenance＋每則 cue 的
+三層 prompt/回覆/耗時/錯誤＋設定快照）dump 成一份 JSON（`MeetingSessionDiagnostics`），
+可直接餵給 LLM 做「漏抓／誤抓／答非所問」的調校分析。
 
 陣列欄位沿用 repo 慣例的 **JSON-in-raw-String + `@Transient` 快取**
 （`Transcription.swift:76-121` 的 `speakerSegmentsRaw` 即此模式）。
@@ -382,6 +426,8 @@ Tier 1 / Tier 2 的輸出**必須是結構化欄位，不是散文**——overla
 | 持久化位置 | 第 5 個 store `meeting.store` | `default.store` | 不可能破壞使用者逐字稿歷史的 migration。先例：`index.store`。 |
 | 音源抽象 | `MeetingAudioSource` 協定 + replay 實作 | 只測純函式；用真會議測 | 讓**真正要上線的 pipeline** 能在不開會議軟體、不開 CoreAudio 下端到端驗證。 |
 | 會後三欄覆盤 | **不做** | 做 | 使用者明確排除（2026-07-12）。 |
+| 預設講稿讀稿器（M7）的定位 | **獨立提詞面板**，只顯示使用者自寫文字 | 做成 cue overlay 的一個分頁 | 把「顯示我自己的稿」和「AI 即時代答」綁成同一產品不妥；獨立面板既滿足「看稿＋隨時切回自己的講稿清單」，又與 AI 回應乾淨切割（2026-07-13）。 |
+| 讀稿器與 AI 的關係（M7） | **零耦合**：不接 ASR/LLM、不讀 cue、獨立於 `copilotEnabled` | 讓讀稿面板也能吃 AI 生成的答案 | 讀稿器的正當性正建立在「內容是你自己準備的」；一旦餵 AI 即時答案就變成另一回事，明確排除（2026-07-13）。 |
 
 ---
 

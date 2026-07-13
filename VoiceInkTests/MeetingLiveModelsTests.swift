@@ -8,13 +8,13 @@ final class MeetingLiveModelsTests: XCTestCase {
     /// in-memory container(房子風格:AskAIAnswerTests.makeContext)。
     private func makeContext() throws -> ModelContext {
         let container = try ModelContainer(
-            for: MeetingLiveSession.self, MeetingLiveCue.self,
+            for: MeetingLiveSession.self, MeetingLiveCue.self, MeetingLiveSegment.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         return ModelContext(container)
     }
 
-    /// AC-6:刪 session → cascade 刪全部 cue,無孤兒。
-    func testDeletingSessionCascadesCues() throws {
+    /// AC-6:刪 session → cascade 刪全部 cue 與 segment,無孤兒。
+    func testDeletingSessionCascadesCuesAndSegments() throws {
         let ctx = try makeContext()
         let session = MeetingLiveSession(appName: "teams")
         ctx.insert(session)
@@ -22,14 +22,18 @@ final class MeetingLiveModelsTests: XCTestCase {
             ctx.insert(MeetingLiveCue(
                 session: session, text: "cue \(i)", kind: .directQuestion))
         }
+        ctx.insert(MeetingLiveSegment(session: session, channel: .remote, text: "seg"))
         try ctx.save()
         XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveCue>()).count, 3)
         XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveSession>()).first?.cues?.count, 3)
+        XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveSegment>()).count, 1)
 
         ctx.delete(session)
         try ctx.save()
         XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveCue>()).count, 0,
                        ".cascade 應連帶刪除全部 cue")
+        XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveSegment>()).count, 0,
+                       ".cascade 應連帶刪除全部 segment")
     }
 
     /// String-in-raw 列舉:round-trip + 未知值回退不崩(向前相容)。

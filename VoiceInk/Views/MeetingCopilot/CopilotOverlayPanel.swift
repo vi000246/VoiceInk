@@ -24,7 +24,9 @@ final class CopilotOverlayPanel: NSPanel {
         level = .screenSaver
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        // 不可移動:避免使用者不小心把它拖進被分享的視窗區域。
+        // 拖曳改走 CopilotOverlayView 的把手(SwiftUI 手勢 → setFrameOrigin):
+        // AppKit 的 isMovableByWindowBackground 系統拖曳會**激活 app**,主視窗因此跳到前景
+        // (2026-07-13 實測回報)。手動移動不經過 activation 路徑,panel 保持完全不搶焦點。
         isMovable = false
         isMovableByWindowBackground = false
         backgroundColor = .clear

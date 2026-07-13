@@ -20,7 +20,25 @@ final class AppNavigator: ObservableObject {
     /// Consumed by Ask AI: scope the next conversation to a single recording (管理頁「Ask AI」按鈕）。
     @Published private(set) var pendingAskTranscriptionId: UUID?
 
+    /// Consumed by 會議copilot覆盤頁:導頁後直接打開這個 session 的詳情(錄音管理「覆盤」按鈕)。
+    @Published private(set) var pendingMeetingSessionId: UUID?
+
     private init() {}
+
+    /// 開啟會議copilot覆盤頁並展開指定 session 的詳情。
+    func openMeetingReview(sessionId: UUID) {
+        if Thread.isMainThread {
+            pendingMeetingSessionId = sessionId
+            pendingDestination = .meetingCopilot
+        } else {
+            DispatchQueue.main.async {
+                self.pendingMeetingSessionId = sessionId
+                self.pendingDestination = .meetingCopilot
+            }
+        }
+    }
+
+    func consumePendingMeetingSession() { pendingMeetingSessionId = nil }
 
     /// Open Ask AI scoped to a single recording.
     func askAI(about id: UUID) {

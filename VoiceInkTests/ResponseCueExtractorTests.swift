@@ -77,14 +77,19 @@ final class ResponseCueExtractorTests: XCTestCase {
         ]}
         """
         let extractor = ResponseCueExtractor(chat: FakeChatCompleting(reply: json))
-        let cues = await extractor.extract(
+        let outcome = await extractor.extract(
             committed: "你會怎麼設計一個短網址服務？我對這個寫入效能有點擔心。我們上週上線了 v2。")
+        let cues = outcome.cues
 
         XCTAssertEqual(cues.count, 3)
         XCTAssertEqual(cues[0].kind, .directQuestion)
         XCTAssertEqual(cues[1].kind, .impliedChallenge, "陳述句質疑(無問號)必須被偵測")
         XCTAssertEqual(cues[1].text, "我對這個寫入效能有點擔心")
         XCTAssertEqual(cues[2].kind, .informational)
+
+        // 觀測資料:原始回覆完整保留(誤抓/錯分類的覆盤線索),成功時無錯誤。
+        XCTAssertEqual(outcome.rawReply, json)
+        XCTAssertTrue(outcome.errorDescription.isEmpty)
     }
 
     /// AC-2:抽取+四分類 = 恰一次呼叫(單趟非串流,未分兩趟)。
@@ -96,11 +101,13 @@ final class ResponseCueExtractorTests: XCTestCase {
         XCTAssertEqual(fake.callCount, 1, "抽取與四分類必須合併為單次 completeChat")
     }
 
-    /// 靜默容錯:LLM throw → [](不 throw、不跳 UI)。
+    /// 靜默容錯:LLM throw → 空 cues(不 throw、不跳 UI);失敗原因留在 outcome 供覆盤。
     func testLLMFailureReturnsEmpty() async {
         let extractor = ResponseCueExtractor(chat: FakeChatCompleting(shouldThrow: true))
-        let cues = await extractor.extract(committed: "任何話")
-        XCTAssertTrue(cues.isEmpty)
+        let outcome = await extractor.extract(committed: "任何話")
+        XCTAssertTrue(outcome.cues.isEmpty)
+        XCTAssertFalse(outcome.errorDescription.isEmpty, "失敗原因必須留下(→ segment.extractionError)")
+        XCTAssertTrue(outcome.rawReply.isEmpty)
     }
 
     /// JSON 契約 golden:欄位名 text/kind、envelope key cues——鎖定,M3 依賴此契約。

@@ -214,7 +214,9 @@ final class WordAgreementEngine {
     private func applyPunctuationRule(words: [TimedWord]) -> Int {
         guard !words.isEmpty else { return 0 }
 
-        let sentenceEnders: Set<Character> = [".", "!", "?", ";"]
+        // 全形標點:中文轉錄若只認 ASCII,punctuationIndices 永遠為空 → 永不 confirm,
+        // 音訊 buffer 也因此永不 trim(每輪重轉整段,越轉越慢)。
+        let sentenceEnders: Set<Character> = [".", "!", "?", ";", "。", "！", "？", "；"]
 
         var punctuationIndices: [Int] = []
         for i in 0..<words.count {

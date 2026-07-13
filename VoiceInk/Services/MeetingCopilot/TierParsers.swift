@@ -58,9 +58,16 @@ enum TierParsers {
             guard !q.isEmpty else { return nil }
             return FollowUp(question: q, oneLineAnswer: a)
         }
-        return Tier2Analysis(
+        let result = Tier2Analysis(
             analysis: (decoded.analysis ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
             followUps: followUps,
             uncertainties: (decoded.uncertainties ?? []).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        // 防呆:RawTier2 全欄位 optional,「合法 JSON 但鍵名不符」(大小寫、外包一層殼)
+        // 會 decode「成功」而全 nil → 三欄皆空。這種情況同樣降級成全文,不能丟資訊
+        // ——否則 UI 看起來就是「轉圈完什麼都沒有」。
+        if result.analysis.isEmpty && result.followUps.isEmpty && result.uncertainties.isEmpty {
+            return Tier2Analysis(analysis: trimmed, followUps: [], uncertainties: [])
+        }
+        return result
     }
 }

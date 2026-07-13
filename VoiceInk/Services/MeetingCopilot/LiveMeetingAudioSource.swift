@@ -49,12 +49,26 @@ final class LiveMeetingAudioSource: MeetingAudioSource {
         let cont = self.continuation
         let tapFirst = MeetingChannelLayout.tapFirst
 
+        let logger = self.logger
         pumpTask = Task.detached(priority: .userInitiated) {
+            var frameCounter = 0
             while !Task.isCancelled {
                 var drainedAny = false
 
                 while let slot = ring.read() {
                     drainedAny = true
+
+                    // 🎚️ 聲道能量 probe(MeetingChannelLayout 量測步驟依賴這則 log):
+                    // 每 ~24 輪(4096 frames @48k ≈ 85ms/輪 → 約 2 秒)印一次逐聲道 RMS,
+                    // 用來實機驗證 tapFirst(remote/local 是否顛倒)與診斷「哪個聲道沒聲音」。
+                    frameCounter += 1
+                    if frameCounter % 24 == 1 {
+                        let rms = MeetingChannelLayout.channelRMS(
+                            channelBuffers: slot.channelBuffers, frameCount: slot.frameCount)
+                        let desc = MeetingChannelLayout.describe(
+                            rms: rms, tapChannelCount: tapCount, tapFirst: tapFirst)
+                        logger.notice("🎚️ \(desc, privacy: .public)")
+                    }
 
                     let split = MeetingChannelSplitter.split(
                         channelBuffers: slot.channelBuffers,

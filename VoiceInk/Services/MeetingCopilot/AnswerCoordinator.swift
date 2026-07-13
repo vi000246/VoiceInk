@@ -29,6 +29,9 @@ final class AnswerCoordinator: ObservableObject {
     private let deep: StreamingChatCompleting
     private let grounding: MeetingGroundingProviding
     private let config: MeetingCopilotConfigStore
+    /// 觀測資料:實際模型名("provider/model")。空字串時退回 M3 的佔位標記 "fast"/"deep"。
+    private let fastLabel: String
+    private let deepLabel: String
 
     private var prefetchTask: Task<Void, Never>?
     private var deepTask: Task<Void, Never>?
@@ -39,12 +42,16 @@ final class AnswerCoordinator: ObservableObject {
         fast: StreamingChatCompleting,
         deep: StreamingChatCompleting,
         grounding: MeetingGroundingProviding,
-        config: MeetingCopilotConfigStore = .shared
+        config: MeetingCopilotConfigStore = .shared,
+        fastLabel: String = "",
+        deepLabel: String = ""
     ) {
         self.fast = fast
         self.deep = deep
         self.grounding = grounding
         self.config = config
+        self.fastLabel = fastLabel
+        self.deepLabel = deepLabel
     }
 
     // MARK: - 新 cue:Tier 0 + 預跑 Tier 1
@@ -68,11 +75,15 @@ final class AnswerCoordinator: ObservableObject {
     // MARK: - Tier 1
 
     private func runTier1(_ cue: MeetingLiveCue) async {
+        let started = Date()
         let g = await grounding.gather(
             cueText: cue.text, brief: cue.session?.brief ?? "",
             includeRAG: config.useHistoryRAG, includeScreen: false)   // Tier1 不抓螢幕
         let system = TierPrompts.tier1System(persona: config.domainPersona)
         let user = TierPrompts.tier1User(cue: cue.text, grounding: g)
+        // 觀測資料:模型看到的完整 user prompt(接地內容全在裡面);system 在 session 快照。
+        cue.tier1PromptUser = user
+        cue.tier1GroundingNote = g.ragError.map { "RAG 降級:\($0)" } ?? ""
 
         var acc = ""
         do {
@@ -81,8 +92,10 @@ final class AnswerCoordinator: ObservableObject {
                 acc += d
             }
         } catch {
-            // Tier 1 失敗 → 保留 Tier 0,log-only(FR-28)。
+            // Tier 1 失敗 → 保留 Tier 0,log-only(FR-28);失敗原因 persist 供覆盤。
             logger.error("🧠 tier1 failed: \(error.localizedDescription, privacy: .public)")
+            cue.tier1Error = error.localizedDescription
+            try? cue.modelContext?.save()
             return
         }
         guard !Task.isCancelled else { return }
@@ -91,20 +104,29 @@ final class AnswerCoordinator: ObservableObject {
         drafts[cue.id] = draft
         cue.tier1Opener = draft.opener
         cue.tier1Bullets = draft.bullets.filter { !$0.isEmpty }
-        cue.fastModelName = "fast"   // 具體 model 名由 live completer 端已知;M3 標記已產生
+        cue.tier1RawReply = acc
+        cue.tier1ElapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+        cue.tier1At = Date()
+        cue.tier1Error = ""
+        cue.fastModelName = fastLabel.isEmpty ? "fast" : fastLabel
         try? cue.modelContext?.save()
     }
 
     // MARK: - Tier 2(點擊才跑,帶入 Tier 1 草稿)
 
     func requestDeep(_ cue: MeetingLiveCue) async {
+        logger.notice("🫆 tier2 requested: \(cue.text.prefix(40), privacy: .public)")
         // 先確保 Tier 1 完成(等待預跑,或補跑)。
         await prefetchTask?.value
         if drafts[cue.id] == nil {
+            logger.notice("🫆 tier1 draft 缺失 → 先補跑 tier1")
             await runTier1(cue)
         }
         guard let draft = drafts[cue.id] else {
-            // Tier 1 也失敗 → 不跑 Tier 2(保留 Tier 0)。
+            // Tier 1 也失敗 → 不跑 Tier 2(保留 Tier 0)。中止原因 persist 供覆盤。
+            logger.error("🫆 tier1 補跑仍無草稿(fast model 失敗?見 🧠 tier1 failed log)→ tier2 中止")
+            cue.tier2Error = "Tier 1 無草稿(fast model 失敗)→ Tier 2 中止"
+            try? cue.modelContext?.save()
             return
         }
 
@@ -118,12 +140,20 @@ final class AnswerCoordinator: ObservableObject {
     }
 
     private func runTier2(_ cue: MeetingLiveCue, draft: Tier1Draft) async {
+        let groundingStart = Date()
         let g = await grounding.gather(
             cueText: cue.text, brief: cue.session?.brief ?? "",
             includeRAG: config.useHistoryRAG, includeScreen: config.useScreenContext)   // Tier2 才抓螢幕
+        let groundingElapsed = Date().timeIntervalSince(groundingStart)
+        logger.notice("🫆 tier2 接地完成 elapsed=\(groundingElapsed, format: .fixed(precision: 1), privacy: .public)s → deep model 串流開始")
         let system = TierPrompts.tier2System(persona: config.domainPersona)
         let user = TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
+        // 觀測資料:Tier2 的完整 user prompt(Tier1 草稿 + 接地 + 螢幕 OCR 全在裡面)。
+        cue.tier2PromptUser = user
+        cue.tier2GroundingElapsedMs = Int(groundingElapsed * 1000)
+        cue.tier2GroundingNote = g.ragError.map { "RAG 降級:\($0)" } ?? ""
 
+        let streamStart = Date()
         var acc = ""
         do {
             for try await d in deep.stream(system: system, user: user) {
@@ -133,15 +163,22 @@ final class AnswerCoordinator: ObservableObject {
         } catch {
             // Tier 2 失敗 → 保留 Tier 1(status 不變 .answered),log-only,無可見 UI(FR-28)。
             logger.error("🧠 tier2 failed: \(error.localizedDescription, privacy: .public)")
+            cue.tier2Error = error.localizedDescription
+            try? cue.modelContext?.save()
             return
         }
         guard !Task.isCancelled else { return }
-
-        let analysis = TierParsers.parseTier2(AIEnhancementOutputFilter.filter(acc))
+        logger.notice("🫆 tier2 完成 streamElapsed=\(Date().timeIntervalSince(streamStart), format: .fixed(precision: 1), privacy: .public)s chars=\(acc.count, privacy: .public)")
+        let filtered = AIEnhancementOutputFilter.filter(acc)
+        let analysis = TierParsers.parseTier2(filtered)
+        logger.notice("🫆 tier2 解析: analysis=\(analysis.analysis.count, privacy: .public)字 followUps=\(analysis.followUps.count, privacy: .public) 開頭=\(String(filtered.prefix(120)), privacy: .public)")
         cue.tier2Analysis = analysis.analysis
         cue.tier2FollowUps = analysis.followUps.map(\.displayLine)
         cue.tier2Uncertainties = analysis.uncertainties
-        cue.deepModelName = "deep"
+        cue.tier2RawReply = acc
+        cue.tier2StreamElapsedMs = Int(Date().timeIntervalSince(streamStart) * 1000)
+        cue.tier2Error = ""
+        cue.deepModelName = deepLabel.isEmpty ? "deep" : deepLabel
         cue.answeredAt = Date()
         cue.status = .answered
         try? cue.modelContext?.save()

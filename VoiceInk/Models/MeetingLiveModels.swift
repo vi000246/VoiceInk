@@ -1,9 +1,9 @@
 import Foundation
 import SwiftData
 
-/// meeting-copilot 的即時會議 session 與偵測到的 cue。
+/// meeting-copilot 的即時會議 session、偵測到的 cue、與逐字稿 segment 時間軸。
 ///
-/// **兩個 model 都存於獨立的 `meeting.store`**(`cloudKitDatabase: .none`,只存本機)——
+/// **三個 model 都存於獨立的 `meeting.store`**(`cloudKitDatabase: .none`,只存本機)——
 /// 本模組 schema 初期必然反覆調整,獨立 store 檔案不可能破壞 `default.store` 的
 /// migration,崩壞時可整檔刪除重來。先例:`index.store`(見 AskAIModels.swift 檔頭)。
 ///
@@ -41,11 +41,22 @@ final class MeetingLiveSession {
     /// 對方/我的累積逐字稿快照(session 結束時回填;M2 只宣告)。
     var remoteTranscriptRaw: String = ""
     var localTranscriptRaw: String = ""
+    /// 對應的錄音檔內容指紋(= `Transcription.importFingerprint`,會議停止匯入時回填)。
+    /// 錄音管理詳情頁靠這個找到本 session 顯示「會議copilot覆盤」按鈕。空字串 = 未關聯。
+    var importFingerprint: String = ""
+    /// 本場的執行設定快照(JSON,`MeetingCopilotRunConfig`;attach 時寫入)。
+    /// 調校迴圈的錨點:沒有它,事後無法知道「這批 cue/回應是在哪組模型、開關、prompt 下產生的」。
+    /// 空字串 = 舊資料(欄位引入前)。
+    var configSnapshotRaw: String = ""
 
     /// 父端:cascade + inverse(鏡射 AskAIThread.messages,AskAIModels.swift:45-46)。
     /// **OPTIONAL 陣列、預設 []** ——兩者缺一不可。
     @Relationship(deleteRule: .cascade, inverse: \MeetingLiveCue.session)
     var cues: [MeetingLiveCue]? = []
+
+    /// 逐字稿時間軸(每段 committed 一筆,含 remote 段的偵測 provenance)。同上的 cascade 語法。
+    @Relationship(deleteRule: .cascade, inverse: \MeetingLiveSegment.session)
+    var segments: [MeetingLiveSegment]? = []
 
     init(startedAt: Date = Date(), appName: String = "", brief: String = "") {
         self.id = UUID()
@@ -78,9 +89,37 @@ final class MeetingLiveCue {
     var tier2Analysis: String = ""
     var tier2FollowUpsRaw: String = ""
     var tier2UncertaintiesRaw: String = ""
+    /// 實際使用的模型("provider/model";歷史資料可能是佔位字串 "fast"/"deep")。
     var fastModelName: String = ""
     var deepModelName: String = ""
     var answeredAt: Date?
+
+    // MARK: - 觀測欄位(調校迴圈用;每欄有預設值 = lightweight migration 安全)
+    //
+    // 目的:讓每則 cue 事後可完整重建「怎麼被偵測到、AI 回應時看到了什麼上下文、
+    // 花了多久、哪裡失敗」。即時路徑只寫入,不讀取。
+
+    /// 觸發本 cue 的 `MeetingLiveSegment.id`(完整偵測上下文從那裡查)。nil = 舊資料。
+    var sourceSegmentId: UUID?
+    /// committed 到 cue persist 的耗時(含 fast model 抽取往返)。
+    var detectionElapsedMs: Int = 0
+    /// Tier 1 實際送出的完整 user prompt(接地內容都在裡面 —— 即「AI 看到的上下文範圍」)。
+    var tier1PromptUser: String = ""
+    /// Tier 1 的原始模型回覆(解析前;parser 出問題時的唯一線索)。
+    var tier1RawReply: String = ""
+    var tier1ElapsedMs: Int = 0
+    var tier1At: Date?
+    /// Tier 1 失敗原因(成功時清空;FR-28 的 log-only 降級從此有資料可查)。
+    var tier1Error: String = ""
+    /// Tier 1 接地降級備註(例:RAG embed 失敗原因;空 = 無異常)。
+    var tier1GroundingNote: String = ""
+    /// Tier 2 實際送出的完整 user prompt(含 Tier 1 草稿 + 接地 + 螢幕 OCR)。
+    var tier2PromptUser: String = ""
+    var tier2RawReply: String = ""
+    var tier2GroundingElapsedMs: Int = 0
+    var tier2StreamElapsedMs: Int = 0
+    var tier2Error: String = ""
+    var tier2GroundingNote: String = ""
 
     init(
         session: MeetingLiveSession?,
@@ -171,5 +210,66 @@ final class MeetingLiveCue {
             uncertaintiesCacheRaw = tier2UncertaintiesRaw
             uncertaintiesCacheValue = newValue
         }
+    }
+}
+
+/// segment 的來源聲道。String-in-raw 慣例同 `MeetingCueKind`。
+enum MeetingSegmentChannel: String, Codable {
+    /// 對方(process tap)——只有這條會跑 cue 抽取。
+    case remote
+    /// 我(mic)——純上下文,不抽 cue。
+    case local
+}
+
+/// 一段 committed 逐字稿 + 它觸發的 cue 抽取結果(偵測 provenance)。
+///
+/// 這是調校迴圈的原始資料:漏抓(該回應卻沒偵測到)只能從「完整的 committed 時間軸
+/// vs 已偵測 cue」對照出來;誤抓/錯分類要靠 `extractionReplyRaw` 還原 fast model
+/// 當下的判斷。unified log 只保留數小時,persist 才能跨場次累積。
+@Model
+final class MeetingLiveSegment {
+    var id: UUID = UUID()
+    /// 子端:裸的可選反向參照(非對稱 cascade 語法,同 `MeetingLiveCue.session`)。
+    var session: MeetingLiveSession?
+    var channelRaw: String = MeetingSegmentChannel.remote.rawValue
+    /// committed 原文(= 當下送進 cue 抽取的輸入)。
+    var text: String = ""
+    var committedAt: Date = Date()
+
+    // MARK: - 偵測 provenance(remote 段才寫;local 段恆為預設值)
+
+    /// 抽取時一併送入的滑動窗上下文(`ResponseCueExtractor.extract` 的 `recentContext`)。
+    /// 目前實作恆為空 —— 照實記錄,窗口調校(spec Open Question)時改這裡就有 A/B 資料。
+    var recentContext: String = ""
+    /// 實際用的 fast model("provider/model")。
+    var extractionModel: String = ""
+    /// fast model 的原始回覆(JSON 或壞掉的字串;解析失敗時的唯一線索)。
+    var extractionReplyRaw: String = ""
+    var extractionElapsedMs: Int = 0
+    /// 本段抽出的 cue 數。**-1 = 沒跑抽取**(local 段,或抽取尚未完成)。
+    var extractedCount: Int = -1
+    /// 抽出但被 FR-10 去重丟棄的數量(dedup 過猛/過鬆的調校訊號)。
+    var dedupDroppedCount: Int = 0
+    /// 抽取失敗原因(LLM 呼叫失敗;空 = 成功)。
+    var extractionError: String = ""
+
+    init(
+        session: MeetingLiveSession?,
+        channel: MeetingSegmentChannel,
+        text: String,
+        committedAt: Date = Date(),
+        recentContext: String = ""
+    ) {
+        self.id = UUID()
+        self.session = session
+        self.channelRaw = channel.rawValue
+        self.text = text
+        self.committedAt = committedAt
+        self.recentContext = recentContext
+    }
+
+    var channel: MeetingSegmentChannel {
+        get { MeetingSegmentChannel(rawValue: channelRaw) ?? .remote }
+        set { channelRaw = newValue.rawValue }
     }
 }

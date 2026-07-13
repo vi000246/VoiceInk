@@ -33,8 +33,11 @@ struct CopilotPeekGuard {
 /// hide 只 orderOut,panel 重用)——**但不抄它的 frozen-frame bug**:`show()` 每次重算 + `setFrame`。
 ///
 /// 焦點契約:panel `canBecomeKey=false` + 只用 `orderFrontRegardless()`——從不搶焦點。
+///
+/// `ObservableObject`:錄音指示器與選單列的視窗開關按鈕觀察 `isPinned`,
+/// 與熱鍵共用同一份釘住狀態。
 @MainActor
-final class CopilotOverlayWindowManager {
+final class CopilotOverlayWindowManager: ObservableObject {
 
     static let shared = CopilotOverlayWindowManager()
 
@@ -45,36 +48,68 @@ final class CopilotOverlayWindowManager {
     private weak var controller: MeetingCopilotController?
     private var onCueTapped: ((MeetingLiveCue) -> Void)?
 
-    private var dimming = OverlayDimmingModel()
     private var peekGuard = CopilotPeekGuard()
 
-    /// toggle 熱鍵釘住的狀態。peek 放開時只在「未釘住」才隱藏。
-    private(set) var isPinned = false
+    /// 釘住狀態(toggle 熱鍵/UI 按鈕共用)。peek 放開時只在「未釘住」才隱藏。
+    @Published private(set) var isPinned = false
 
-    /// 接線點:M2/M3 建立 `MeetingCopilotController` 與 M1 `MeetingLiveTranscriber` 之處呼叫。
-    /// `onLocalLevel` 必須在 transcriber.start() **前**掛上(pump 啟動時定格 closure)。
+    /// 接線點:M2/M3 建立 `MeetingCopilotController` 之處呼叫。
+    /// (原本還掛 transcriber.onLocalLevel 做「說話淡出」——2026-07-13 依使用者要求整個移除,
+    /// overlay 恆為不透明;onLocalLevel 無訂閱者時 transcriber 端零成本。)
     func configure(
         controller: MeetingCopilotController,
-        transcriber: MeetingLiveTranscriber?,
         onCueTapped: ((MeetingLiveCue) -> Void)? = nil
     ) {
+        // 換場(新的 live session)時必須丟棄舊 panel:hosting view 對上一場的
+        // controller 是強持有,重用會讓 overlay 永遠顯示上一場的殭屍 cue。
+        if self.controller !== controller, panel != nil {
+            panel?.orderOut(nil)
+            panel = nil
+            windowController = nil
+            NotificationCenter.default.removeObserver(
+                self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        }
         self.controller = controller
         self.onCueTapped = onCueTapped
-        transcriber?.onLocalLevel = { [weak self] rms in
-            self?.applyLocalLevel(rms)
-        }
+    }
+
+    /// live pipeline 停止時呼叫:取消釘住並隱藏,讓按鈕/熱鍵狀態歸零,
+    /// 避免會議結束後 overlay 還掛在螢幕上。
+    func hideAndUnpin() {
+        isPinned = false
+        hide()
+    }
+
+    // MARK: - 手動拖曳(CopilotOverlayView 的把手呼叫)
+
+    /// panel 目前的螢幕座標原點(AppKit y 向上)。
+    var panelOrigin: NSPoint? { panel?.frame.origin }
+
+    /// 直接設定 panel 原點——把手用 NSEvent.mouseLocation 的螢幕座標計算,
+    /// 不用 SwiftUI translation(視窗跟著游標移動時,視窗座標系的 translation 會歸零)。
+    func setPanelOrigin(_ origin: NSPoint) {
+        panel?.setFrameOrigin(origin)
+    }
+
+    /// 移到指定螢幕:重新錨定近鏡頭位置(只在 overlay 已顯示 = panel 存在時)。
+    func move(to screen: NSScreen) {
+        guard let panel else { return }
+        let f = screen.visibleFrame
+        panel.setFrame(Self.anchorRect(visibleFrame: f, size: Self.hostSize(visibleFrame: f)), display: true)
     }
 
     // MARK: - 熱鍵入口(RecordingShortcutManager 呼叫)
 
-    /// `.toggleMeetingCopilotOverlay`(keyUp-only)。
+    /// `.toggleMeetingCopilotOverlay` 熱鍵(keyUp-only)與 UI 按鈕共用入口。
     func toggle() {
         if isPinned {
             isPinned = false
             hide()
         } else {
-            isPinned = true
             show()
+            // show() 失敗(live pipeline 未跑、controller 未 configure)時 panel 仍為 nil
+            // —— 不假裝釘住,否則按鈕會亮著但螢幕上什麼都沒有。
+            isPinned = panel != nil
         }
     }
 
@@ -95,7 +130,8 @@ final class CopilotOverlayWindowManager {
     func show() {
         if panel == nil { initializeWindow() }
         guard let panel else { return }
-        panel.setFrame(Self.calculateWindowMetrics(), display: true)   // 每次 show 重算
+        // 不在每次 show 重算位置——panel 可拖曳後,重算會蓋掉使用者拖到的位置。
+        // 初始位置由 initializeWindow 錨定,螢幕組態變更由 handleScreenParametersChange 處理。
         panel.ignoresMouseEvents = MeetingCopilotConfigStore.shared.overlayClickThrough
         panel.alphaValue = 1.0
         panel.orderFrontRegardless()          // 絕不 makeKeyAndOrderFront(不搶焦點)
@@ -138,23 +174,16 @@ final class CopilotOverlayWindowManager {
         }
     }
 
-    // MARK: - FR-25:說話淡出
-
-    private func applyLocalLevel(_ rms: Float) {
-        guard let panel, panel.isVisible else { return }
-        dimming.speakingOpacity = MeetingCopilotConfigStore.shared.speakingOpacity
-        let target = CGFloat(dimming.update(rms: rms, at: ProcessInfo.processInfo.systemUptime))
-        guard abs(panel.alphaValue - target) > 0.01 else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            panel.animator().alphaValue = target
-        }
-    }
-
     // MARK: - FR-24:近鏡頭定位
 
-    /// oversized host——可視卡片大小由 SwiftUI 決定。
+    /// oversized host——可視卡片大小由 SwiftUI 決定(卡片寬 = panel 寬,高度 hug 內容)。
     nonisolated static let overlaySize = NSSize(width: 560, height: 400)
+
+    /// 動態 host 尺寸:寬 ≈ 螢幕可視寬的 1/3(夾在 [420, 800],小螢幕仍可讀、超寬螢幕不氾濫);
+    /// 高度給足 660 讓換行後的長分析有捲動空間(卡片本身 hug 內容 + 內部 ScrollView 上限 520)。
+    nonisolated static func hostSize(visibleFrame: NSRect) -> NSSize {
+        NSSize(width: min(max(visibleFrame.width / 3, 420), 800), height: 660)
+    }
 
     /// 螢幕上方中央 = 近鏡頭:讀 overlay 時視線最接近鏡頭。純幾何,nonisolated。
     nonisolated static func anchorRect(visibleFrame: NSRect, size: NSSize = overlaySize) -> NSRect {
@@ -171,7 +200,8 @@ final class CopilotOverlayWindowManager {
         guard let screen else {
             return NSRect(origin: .zero, size: overlaySize)
         }
-        return anchorRect(visibleFrame: screen.visibleFrame)
+        let f = screen.visibleFrame
+        return anchorRect(visibleFrame: f, size: hostSize(visibleFrame: f))
     }
 
     /// 優先會議 app 所在螢幕(FR-24)。找不到 → nil,呼叫端退回 `NSScreen.main`。

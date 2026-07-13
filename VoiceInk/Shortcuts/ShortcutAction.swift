@@ -12,6 +12,7 @@ enum ShortcutAction: Hashable {
     case toggleMeetingRecording
     case toggleMeetingCopilotOverlay
     case peekMeetingCopilotOverlay
+    case togglePresenterScript
     case mode(UUID)
     case recorderPanelEscape
     case recorderPanelMode(Int)
@@ -53,6 +54,8 @@ enum ShortcutAction: Hashable {
             return "toggleMeetingCopilotOverlay"
         case .peekMeetingCopilotOverlay:
             return "peekMeetingCopilotOverlay"
+        case .togglePresenterScript:
+            return "togglePresenterScript"
         case .mode(let id):
             return "mode_\(id.uuidString)"
         case .recorderPanelEscape:
@@ -86,6 +89,8 @@ enum ShortcutAction: Hashable {
             return String(localized: "Toggle Meeting Copilot Overlay")
         case .peekMeetingCopilotOverlay:
             return String(localized: "Peek Meeting Copilot Overlay")
+        case .togglePresenterScript:
+            return String(localized: "Toggle Presenter Script")
         case .mode(let id):
             if let config = ModeManager.shared.getConfiguration(with: id) {
                 return String(format: String(localized: "%@ Mode"), config.name)
@@ -111,7 +116,8 @@ enum ShortcutAction: Hashable {
         .quickAddToDictionary,
         .toggleMeetingRecording,
         .toggleMeetingCopilotOverlay,
-        .peekMeetingCopilotOverlay
+        .peekMeetingCopilotOverlay,
+        .togglePresenterScript
     ]
 
     static let recorderPanelStoredActions: [Self] = [
@@ -132,7 +138,8 @@ enum ShortcutAction: Hashable {
         // legacyKeyboardShortcutsNames 回 []、migrate no-op。
         .toggleMeetingRecording,
         .toggleMeetingCopilotOverlay,
-        .peekMeetingCopilotOverlay
+        .peekMeetingCopilotOverlay,
+        .togglePresenterScript
     ]
 
     private static func displayNumber(forRecorderPanelIndex index: Int) -> String {

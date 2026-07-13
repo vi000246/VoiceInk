@@ -6,7 +6,6 @@ final class CopilotOverlayConfigTests: XCTestCase {
 
     private let keys = [
         "meetingCopilotOverlayClickThroughV1",
-        "meetingCopilotSpeakingOpacityV1",
         "meetingCopilotMaxCuesShownV1"
     ]
     private var saved: [String: Any?] = [:]
@@ -30,28 +29,17 @@ final class CopilotOverlayConfigTests: XCTestCase {
     func testOverlayDefaults() {
         let store = MeetingCopilotConfigStore()
         XCTAssertFalse(store.overlayClickThrough, "預設不穿透——第一次用得先能點得到")
-        XCTAssertEqual(store.speakingOpacity, 0.35, accuracy: 1e-9)
         XCTAssertEqual(store.maxCuesShown, 5)
     }
 
     func testOverlaySettingsPersistAndReload() {
         let store = MeetingCopilotConfigStore()
         store.setOverlayClickThrough(true)
-        store.setSpeakingOpacity(0.5)
         store.setMaxCuesShown(3)
 
         let reloaded = MeetingCopilotConfigStore()
         XCTAssertTrue(reloaded.overlayClickThrough)
-        XCTAssertEqual(reloaded.speakingOpacity, 0.5, accuracy: 1e-9)
         XCTAssertEqual(reloaded.maxCuesShown, 3)
-    }
-
-    func testSpeakingOpacityIsClamped() {
-        let store = MeetingCopilotConfigStore()
-        store.setSpeakingOpacity(0.0)
-        XCTAssertEqual(store.speakingOpacity, 0.05, accuracy: 1e-9)
-        store.setSpeakingOpacity(2.0)
-        XCTAssertEqual(store.speakingOpacity, 1.0, accuracy: 1e-9)
     }
 
     func testMaxCuesShownIsClamped() {

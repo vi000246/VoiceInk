@@ -347,6 +347,9 @@ class RecordingShortcutManager: ObservableObject {
         case .peekMeetingCopilotOverlay:
             // press-and-hold 的放開端(keyDown 端在 refreshShortcutMonitor 的顯式 branch)。
             CopilotOverlayWindowManager.shared.peekKeyUp()
+        case .togglePresenterScript:
+            // 讀稿面板 —— 獨立於 live pipeline,keyUp-only,樣式比照 .toggleMeetingCopilotOverlay。
+            PresenterScriptWindowManager.shared.toggle()
         default:
             break
         }

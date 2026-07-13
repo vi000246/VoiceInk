@@ -26,6 +26,9 @@ final class MeetingCopilotLiveController {
     // 由 VoiceInk.swift 在啟動時注入(mainContext 跨全部 store)。
     private var aiService: AIService?
     private var modelContext: ModelContext?
+    /// 與聽寫路徑共用的 FluidAudio 模型快取(registry 的同一實例)。
+    /// 本機 parakeet 模型的串流 provider 必需 —— 缺了會 fatalError(見 LiveMeetingTranscriptStream.init)。
+    private var fluidAudioService: FluidAudioTranscriptionService?
 
     // 本次會議的 live 元件(stop 時釋放)。
     private var transcriber: MeetingLiveTranscriber?
@@ -36,10 +39,16 @@ final class MeetingCopilotLiveController {
 
     private init() {}
 
+    /// 目前 live session 的 id(attach 時同步建立;無 live pipeline 時為 nil)。
+    /// 供 `MeetingCaptureController` 在匯入錄音檔時回填 `importFingerprint`。
+    var currentSessionId: UUID? { controller?.session?.id }
+
     /// 啟動時注入依賴(比照 RecorderImportService.shared.configure,VoiceInk.swift:135)。
-    func configure(aiService: AIService, modelContext: ModelContext) {
+    func configure(aiService: AIService, modelContext: ModelContext,
+                   fluidAudioService: FluidAudioTranscriptionService? = nil) {
         self.aiService = aiService
         self.modelContext = modelContext
+        self.fluidAudioService = fluidAudioService
     }
 
     /// 會議擷取啟動、且 `copilotEnabled` 時呼叫。ring / tapChannelCount 來自 `MeetingCaptureService`。
@@ -59,18 +68,33 @@ final class MeetingCopilotLiveController {
             return
         }
 
-        // 2. 音源 + 雙路轉錄。
+        // 2. 音源 + 雙路轉錄。FluidAudio 模型必須帶 service(共用模型快取),否則 fatalError。
+        let fluid: FluidAudioTranscriptionService? =
+            asrModel.provider == .fluidAudio ? fluidAudioService : nil
+        if asrModel.provider == .fluidAudio && fluid == nil {
+            logger.error("🎧 copilot live start: FluidAudio 模型 \(asrModel.displayName, privacy: .public) 需要 fluidAudioService,但 configure 未注入 —— 中止啟動(避免 createProvider fatalError)")
+            return
+        }
         let source = LiveMeetingAudioSource(ring: ring, tapChannelCount: tapChannelCount)
-        let remoteStream = LiveMeetingTranscriptStream(modelContext: modelContext, model: asrModel, label: "remote")
+        let remoteStream = LiveMeetingTranscriptStream(
+            modelContext: modelContext, model: asrModel, label: "remote", fluidAudioService: fluid,
+            language: config.asrLanguage)
         let localStream: MeetingTranscriptStream? = config.transcribeLocalMic
-            ? LiveMeetingTranscriptStream(modelContext: modelContext, model: asrModel, label: "local")
+            ? LiveMeetingTranscriptStream(
+                modelContext: modelContext, model: asrModel, label: "local", fluidAudioService: fluid,
+                language: config.asrLanguage)
             : nil
         let transcriber = MeetingLiveTranscriber(source: source, remoteStream: remoteStream, localStream: localStream)
 
-        // 3. cue 偵測 controller。
+        // 3. cue 偵測 controller。fast label 同時代表 cue 抽取模型
+        //    (makeFastCompleter 以同一組設定解析,結果必然相同)。
+        let fast = makeStreamingCompleter(provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
+        let deep = makeStreamingCompleter(provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
         let extractor = ResponseCueExtractor(
             chat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config))
-        let controller = MeetingCopilotController(extractor: extractor, config: config, modelContext: modelContext)
+        let controller = MeetingCopilotController(
+            extractor: extractor, config: config, modelContext: modelContext,
+            extractionModelLabel: fast.label)
 
         // 4. 三層回應 coordinator。
         let grounding = MeetingGroundingProvider(
@@ -78,20 +102,32 @@ final class MeetingCopilotLiveController {
             screen: ScreenCaptureService(),
             modelContext: modelContext)
         let coordinator = AnswerCoordinator(
-            fast: makeStreamingCompleter(provider: config.fastProviderName, model: config.fastModelName, aiService: aiService),
-            deep: makeStreamingCompleter(provider: config.deepProviderName, model: config.deepModelName, aiService: aiService),
+            fast: fast.completer,
+            deep: deep.completer,
             grounding: grounding,
-            config: config)
+            config: config,
+            fastLabel: fast.label,
+            deepLabel: deep.label)
         controller.answerCoordinator = coordinator
 
-        // 5. overlay 接線 —— **必須在 transcriber.start() 之前**(onLocalLevel 於 pump 啟動時定格)。
+        // 5. overlay 接線。
         CopilotOverlayWindowManager.shared.configure(
             controller: controller,
-            transcriber: transcriber,
-            onCueTapped: { cue in Task { await coordinator.requestDeep(cue) } })
+            onCueTapped: { [weak controller] cue in
+                Task {
+                    // 進度旗標:Tier 2 全程(等 Tier 1 → 接地 → deep 串流)可能十餘秒,
+                    // 沒有可見狀態時點擊看起來像沒反應。
+                    controller?.deepInFlightCueId = cue.id
+                    await coordinator.requestDeep(cue)
+                    controller?.deepInFlightCueId = nil
+                }
+            })
 
-        // 6. 掛 cue pipeline(內含 beginSession)+ 啟動轉錄。
-        controller.attach(to: transcriber, appName: appName)
+        // 6. 掛 cue pipeline(內含 beginSession,帶執行設定快照)+ 啟動轉錄。
+        let snapshot = MeetingCopilotRunConfig.capture(
+            config: config, asrModelDisplayName: asrModel.displayName,
+            fastModelLabel: fast.label, deepModelLabel: deep.label)
+        controller.attach(to: transcriber, appName: appName, configSnapshot: snapshot.encodedJSON())
         Task {
             do {
                 try await transcriber.start()
@@ -110,10 +146,15 @@ final class MeetingCopilotLiveController {
     /// 會議停止時呼叫。停轉錄、收 session、釋放元件。
     func stop() {
         guard let transcriber else { return }
+        // overlay 一併收掉:釘住狀態歸零,避免會議結束後視窗還掛在螢幕上。
+        CopilotOverlayWindowManager.shared.hideAndUnpin()
         let controller = self.controller
         Task {
             await transcriber.stop()
-            controller?.endSession()
+            // stop() 之後才讀:finish() 會 flush 最後一段 committed 進累積逐字稿。
+            controller?.endSession(
+                remoteTranscript: transcriber.remoteTranscript,
+                localTranscript: transcriber.localTranscript)
         }
         self.transcriber = nil
         self.controller = nil
@@ -125,12 +166,16 @@ final class MeetingCopilotLiveController {
 
     private func makeStreamingCompleter(
         provider: String?, model: String?, aiService: AIService
-    ) -> LiveStreamingChatCompleter {
+    ) -> (completer: LiveStreamingChatCompleter, label: String) {
         let resolved = MeetingCopilotModels.resolve(
             storedProvider: provider, storedModel: model,
             defaultProvider: aiService.selectedProvider.rawValue,
             available: aiService.connectedProviders.map(\.rawValue))
         let aiProvider = AIProvider(rawValue: resolved.provider) ?? aiService.selectedProvider
-        return LiveStreamingChatCompleter(aiService: aiService, provider: aiProvider, modelName: resolved.model)
+        // 觀測 label:resolved.model nil = 跟隨該 provider 目前選定的 model——記解析後的實名,
+        // 覆盤時才知道「當時真正打到哪顆模型」。
+        let modelName = resolved.model ?? aiService.selectedModel(for: aiProvider)
+        return (LiveStreamingChatCompleter(aiService: aiService, provider: aiProvider, modelName: resolved.model),
+                "\(resolved.provider)/\(modelName)")
     }
 }

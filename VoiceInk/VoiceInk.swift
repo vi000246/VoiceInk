@@ -58,7 +58,8 @@ struct VoiceInkApp: App {
             AskAIMessage.self,
             AskAITemplate.self,
             MeetingLiveSession.self,
-            MeetingLiveCue.self
+            MeetingLiveCue.self,
+            MeetingLiveSegment.self
         ])
         let resolvedContainer: ModelContainer
 
@@ -141,7 +142,11 @@ struct VoiceInkApp: App {
         // Ask AI: index new/deleted transcriptions (mainContext spans the index store too).
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
         // meeting-copilot 即時輔助:注入依賴,會議錄製啟停時建立/釋放 live pipeline。
-        MeetingCopilotLiveController.shared.configure(aiService: aiService, modelContext: resolvedContainer.mainContext)
+        // fluidAudioService 與聽寫共用 registry 的實例(共用模型快取;本機 parakeet 串流必需)。
+        MeetingCopilotLiveController.shared.configure(
+            aiService: aiService,
+            modelContext: resolvedContainer.mainContext,
+            fluidAudioService: engine.serviceRegistry.fluidAudioTranscriptionService)
         // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
         TemplateStore.shared.migrateIfNeeded()
         // 一次性補救：把先前操作漏掉/被覆蓋的舊範本從 legacy key 補回（只新增、不動既有）。
@@ -298,7 +303,7 @@ struct VoiceInkApp: App {
         // meeting-copilot 即時輔助:獨立 store(衍生資料——逐字稿/cue/答案,可整顆刪除重建,
         // 不影響核心遷移)。鏡射 index.store。
         let meetingStoreURL = appSupportURL.appendingPathComponent("meeting.store")
-        let meetingSchema = Schema([MeetingLiveSession.self, MeetingLiveCue.self])
+        let meetingSchema = Schema([MeetingLiveSession.self, MeetingLiveCue.self, MeetingLiveSegment.self])
         let meetingConfig = ModelConfiguration(
             "meeting",
             schema: meetingSchema,
@@ -327,7 +332,7 @@ struct VoiceInkApp: App {
         let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self, AskAITemplate.self])
         let indexConfig = ModelConfiguration("index", schema: indexSchema, isStoredInMemoryOnly: true)
 
-        let meetingSchema = Schema([MeetingLiveSession.self, MeetingLiveCue.self])
+        let meetingSchema = Schema([MeetingLiveSession.self, MeetingLiveCue.self, MeetingLiveSegment.self])
         let meetingConfig = ModelConfiguration("meeting", schema: meetingSchema, isStoredInMemoryOnly: true)
 
         do {

@@ -14,6 +14,9 @@ struct MenuBarView: View {
     @ObservedObject private var modeManager = ModeManager.shared
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
     @ObservedObject private var meetingController = MeetingCaptureController.shared
+    @ObservedObject private var copilotConfig = MeetingCopilotConfigStore.shared
+    @ObservedObject private var overlayManager = CopilotOverlayWindowManager.shared
+    @ObservedObject private var presenterManager = PresenterScriptWindowManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
     @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
     
@@ -43,7 +46,13 @@ struct MenuBarView: View {
 
     private var completedOnboardingMenu: some View {
         Group {
-            Button("Toggle Recorder") {
+            Button({
+                switch engine.recordingState {
+                case .recording, .starting: return "停止錄音"
+                case .transcribing, .enhancing, .busy: return "錄音處理中…"
+                case .idle: return "開始錄音"
+                }
+            }()) {
                 recorderUIManager.requestTogglePanel()
             }
 
@@ -52,6 +61,22 @@ struct MenuBarView: View {
                    : "開始會議錄製") {
                 Task { await MeetingCaptureController.shared.toggle() }
             }
+
+            // 會議中也能隨時補開/關閉 —— 立即啟停 live pipeline,同時寫回持久設定。
+            Toggle("會議即時輔助", isOn: Binding(
+                get: { copilotConfig.copilotEnabled },
+                set: { MeetingCaptureController.shared.setCopilotEnabled($0) }))
+
+            // 即時輔助視窗(overlay)—— 熱鍵之外的按鈕入口;pipeline 沒在跑時停用。
+            Toggle("即時輔助視窗", isOn: Binding(
+                get: { overlayManager.isPinned },
+                set: { _ in overlayManager.toggle() }))
+                .disabled(!meetingController.copilotActive)
+
+            // 讀稿面板(預設講稿)—— 獨立功能,與會議錄製/即時輔助無關,永遠可開。
+            Toggle("讀稿面板", isOn: Binding(
+                get: { presenterManager.isPinned },
+                set: { _ in presenterManager.toggle() }))
 
             #if DEBUG
             Button("Replay 會議音檔…（DEBUG）") {

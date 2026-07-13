@@ -40,6 +40,8 @@ struct MeetingGrounding: Equatable {
     var brief: String
     var ragExcerpts: [String]   // 已編號的檢索片段([1] … [n])
     var screenText: String?
+    /// RAG 靜默降級的原因(覆盤用;nil = 未失敗)。**不進 prompt**,只回寫 cue 的 groundingNote。
+    var ragError: String? = nil
 
     static let empty = MeetingGrounding(brief: "", ragExcerpts: [], screenText: nil)
 
