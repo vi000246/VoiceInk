@@ -60,6 +60,16 @@ final class MeetingCaptureController: ObservableObject {
         startTimer()
         if indicator == nil { indicator = MeetingIndicatorWindowManager(controller: self) }
         indicator?.show()
+
+        // meeting-copilot 即時輔助:copilotEnabled 時把 realtime seam 接成 live pipeline
+        // (cue 偵測 → 三層回應 → overlay)。ring buffer 只在 copilotEnabled 時由 service 建立。
+        if MeetingCopilotConfigStore.shared.copilotEnabled, let ring = service.copilotRingBuffer {
+            MeetingCopilotLiveController.shared.start(
+                ring: ring,
+                tapChannelCount: service.copilotTapChannelCount,
+                appName: sourceLabel)
+        }
+
         logger.notice("Meeting recording started — \(self.sourceLabel, privacy: .public)")
     }
 
@@ -68,6 +78,9 @@ final class MeetingCaptureController: ObservableObject {
         timer?.invalidate(); timer = nil
         indicator?.hide()
         isRecording = false
+
+        // 先停 copilot live pipeline(轉錄消費者)再收音訊檔。
+        MeetingCopilotLiveController.shared.stop()
         guard let url = await service.stop() else {
             // service 已對「零音訊」情境發出帶引導的通知,這裡不重複彈。
             logger.notice("Meeting stop returned no file (empty recording or no session)")

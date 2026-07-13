@@ -140,6 +140,8 @@ struct VoiceInkApp: App {
         ICloudSourceWatcher.shared.start()
         // Ask AI: index new/deleted transcriptions (mainContext spans the index store too).
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
+        // meeting-copilot 即時輔助:注入依賴,會議錄製啟停時建立/釋放 live pipeline。
+        MeetingCopilotLiveController.shared.configure(aiService: aiService, modelContext: resolvedContainer.mainContext)
         // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
         TemplateStore.shared.migrateIfNeeded()
         // 一次性補救：把先前操作漏掉/被覆蓋的舊範本從 legacy key 補回（只新增、不動既有）。
