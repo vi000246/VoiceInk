@@ -30,8 +30,13 @@ final class AskAIEnhancementTests: XCTestCase {
 
     // MARK: - Task 2: 來源二分映射
 
+    /// 契約已變更（Obsidian 筆記 RAG）：`.all` 從 `nil`（= 檢索層完全不過濾 sourceKind）改為
+    /// **明確的三種逐字稿 kind**。舊的 nil 正是把 obsidian 筆記塊漏進 Ask AI 預設查詢的漏洞，
+    /// 這條斷言當時把那個 bug 當成契約鎖住了。深層回歸鎖見
+    /// `AskAIScopeTests.testAllSourceFilterIsExplicitTranscriptKinds`。
     func testSourceFilterRecorderIncludesMeeting() {
-        XCTAssertNil(AskAISourceFilter.all.sources)
+        XCTAssertEqual(AskAISourceFilter.all.sources, ["dictation", "recorder", "meeting"],
+                       "「全部來源」= 全部逐字稿來源，不含筆記")
         XCTAssertEqual(AskAISourceFilter.voice.sources, ["dictation"])
         XCTAssertEqual(AskAISourceFilter.recorder.sources, ["recorder", "meeting"])
     }

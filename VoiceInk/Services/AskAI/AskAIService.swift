@@ -160,17 +160,46 @@ final class AskAIService: ObservableObject {
     /// 全庫檢索為空時，判斷原因並回一句可行動的說明（而非一律「找不到」）。
     private func diagnoseEmptyRetrieval(scope: AskAIScope, model: EmbeddingModel, context: ModelContext) -> String {
         let modelTag = model.tag
+        let noteKind = ObsidianNoteIndexService.sourceKind
         let totalAll = (try? context.fetchCount(FetchDescriptor<EmbeddingChunk>())) ?? 0
         let forModel = (try? context.fetchCount(FetchDescriptor<EmbeddingChunk>(
             predicate: #Predicate { $0.embeddingModel == modelTag }))) ?? 0
+        // 現行向量空間裡的筆記塊數：分得出「筆記沒索引」與「筆記有索引但沒命中」。
+        let obsidianCount = (try? context.fetchCount(FetchDescriptor<EmbeddingChunk>(
+            predicate: #Predicate { $0.sourceKind == noteKind && $0.embeddingModel == modelTag }))) ?? 0
+        return Self.emptyRetrievalMessage(
+            scopeSources: scope.sources, totalAll: totalAll, forModel: forModel,
+            obsidianCount: obsidianCount,
+            hasCategoryOrDateFilter: scope.categoryName != nil || scope.categoryId != nil
+                || scope.dateRange != nil)
+    }
+
+    /// 索引統計 + scope → 一句可行動的說明。純函式（不碰 store）以便測試。
+    ///
+    /// GOTCHA：判斷「篩選太窄」**不能**只看 `scopeSources != nil`。雙 chip 上線後 `sources`
+    /// 恆為非 nil（`.all` 也回明確的三種 kind），拿 nil 當「沒篩選」會讓每一次空檢索都叫使用者
+    /// 「把篩選改回全部」——即使他根本沒篩。窄不窄要看它**有沒有涵蓋全部 kind**。
+    static func emptyRetrievalMessage(scopeSources: Set<String>?, totalAll: Int, forModel: Int,
+                                      obsidianCount: Int, hasCategoryOrDateFilter: Bool) -> String {
         if totalAll == 0 {
             return "索引是空的，請按右上『重建索引』後再問。"
         }
         if forModel == 0 {
             return "目前的 embedding 模型和既有索引不一致（索引是用別的模型建立的）。請按右上齒輪選回原本的模型，或按『重建索引』以目前模型重新嵌入。"
         }
-        if scope.categoryName != nil || scope.sources != nil || scope.dateRange != nil {
-            return "在目前的篩選範圍（來源／分類／時間）內找不到相關內容。試著把上方篩選改回『全部』再問一次。"
+
+        let noteKind = ObsidianNoteIndexService.sourceKind
+        // 只問筆記、而筆記索引是空的 → 指向筆記設定。頁首那顆「重建索引」只回填逐字稿，
+        // 對筆記毫無幫助——照舊回「找不到」等於叫使用者去按一顆不會有效果的按鈕。
+        // 混合 scope 不走這條：轉錄塊可能只是沒命中，說成「筆記沒索引」是誤導。
+        if let s = scopeSources, s == [noteKind], obsidianCount == 0 {
+            return "筆記還沒有建立索引。到右上齒輪「筆記來源設定」選好 vault，再按『重建筆記索引』。"
+        }
+
+        let allKinds: Set<String> = ["dictation", "recorder", "meeting", noteKind]
+        let sourcesNarrow = scopeSources.map { !allKinds.isSubset(of: $0) } ?? false
+        if hasCategoryOrDateFilter || sourcesNarrow {
+            return "在目前的篩選範圍（來源／分類／時間）內找不到相關內容。試著把上方篩選放寬再問一次。"
         }
         return "資料庫中找不到相關內容。"
     }
