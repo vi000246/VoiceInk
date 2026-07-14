@@ -111,15 +111,19 @@ final class TranscriptIndexService: ObservableObject {
     }
 
     /// `.transcriptionDeleted` 是批次 nil 訊號(不帶 id)→ 掃索引中已無對應 Transcription 的孤兒塊。
+    /// 注意:obsidian 筆記塊的 transcriptionId 是筆記路徑衍生的合成 id,本來就沒有對應的
+    /// Transcription,永遠會被判成「孤兒」——不先排除的話,任一次轉錄刪除就會把整個筆記索引清空。
     func reconcileOrphans() {
         guard let ctx = modelContext else { return }
         let allChunks = (try? ctx.fetch(FetchDescriptor<EmbeddingChunk>())) ?? []
-        let indexedIds = Set(allChunks.map(\.transcriptionId))
+        // 候選集合只含轉錄類塊(dictation/recorder/meeting);obsidian 走自己的 reindex 生命週期。
+        let candidates = allChunks.filter { $0.sourceKind != ObsidianNoteIndexService.sourceKind }
+        let indexedIds = Set(candidates.map(\.transcriptionId))
         guard !indexedIds.isEmpty else { return }
         let liveIds = Set((try? ctx.fetch(FetchDescriptor<Transcription>()))?.map(\.id) ?? [])
         let orphanIds = indexedIds.subtracting(liveIds)
         guard !orphanIds.isEmpty else { return }
-        for chunk in allChunks where orphanIds.contains(chunk.transcriptionId) { ctx.delete(chunk) }
+        for chunk in candidates where orphanIds.contains(chunk.transcriptionId) { ctx.delete(chunk) }
         try? ctx.save()
         logger.notice("Reconciled \(orphanIds.count, privacy: .public) orphaned transcription(s) from index")
     }
