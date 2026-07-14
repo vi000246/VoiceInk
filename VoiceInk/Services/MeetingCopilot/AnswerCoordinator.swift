@@ -173,6 +173,18 @@ final class AnswerCoordinator: ObservableObject {
         }
     }
 
+    /// 離線覆盤用:直接跑 Tier 1 並**等它完成**。
+    ///
+    /// **不掛 auto-deep、不動 prefetchTask** —— 兩者都是即時語意,replay 兩個都不要:
+    /// - `prefetchTask` 是「只保最新一則」(新 cue 取消舊預跑)。replay 是序列全量處理,
+    ///   每一則 cue 都要有回應;走 `onNewCue` 會讓前後兩則互相取消,大半的 cue 沒有 Tier 1。
+    /// - auto-deep 會把整場會議的每一則 cue 都丟給 deep model(一場一小時的會議可能上百則)。
+    ///   覆盤是離線的背景工作,沒有「馬上要答」的壓力,不值得為它燒 deep 的錢——要深度分析,
+    ///   使用者在覆盤頁點那一則就好(走 `requestDeep`)。
+    func runTier1ForReplay(_ cue: MeetingLiveCue) async {
+        await runTier1(cue, autoDeep: false)
+    }
+
     // MARK: - Tier 2(auto 或點擊;帶入 Tier 1 草稿)
 
     /// Tier 1 完成後的自動深答(FR-53)。不 await 起出來的 task:deep 動輒十餘秒,
