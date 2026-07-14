@@ -92,4 +92,24 @@ final class AskAIIndexTests: XCTestCase {
         XCTAssertEqual(refs.first?.sourceTitle, "專案A")
         XCTAssertEqual(refs.first?.sourcePath, "工作/專案A.md")
     }
+
+    /// FR-12:只問筆記、但筆記索引是空的 → 訊息要指到「筆記來源設定」，
+    /// 而不是那句對筆記毫無幫助的「重建索引」（那顆按鈕只重建逐字稿）。
+    @MainActor
+    func testDiagnoseNotesOnlyEmptyIndexPointsToNotesSettings() {
+        let msg = AskAIService.emptyRetrievalMessage(
+            scopeSources: ["obsidian"], totalAll: 50, forModel: 50, obsidianCount: 0,
+            hasCategoryOrDateFilter: false)
+        XCTAssertTrue(msg.contains("筆記"), msg)
+        XCTAssertTrue(msg.contains("筆記來源設定") || msg.contains("重建"), msg)
+    }
+
+    /// 混合 scope（轉錄＋筆記）且筆記空:不能誤導成「筆記沒索引」——轉錄塊可能只是沒命中。
+    @MainActor
+    func testDiagnoseMixedScopeEmptyNotesFallsBackToFilterMessage() {
+        let msg = AskAIService.emptyRetrievalMessage(
+            scopeSources: ["dictation", "obsidian"], totalAll: 50, forModel: 50, obsidianCount: 0,
+            hasCategoryOrDateFilter: false)
+        XCTAssertFalse(msg.contains("筆記來源設定"), msg)
+    }
 }
