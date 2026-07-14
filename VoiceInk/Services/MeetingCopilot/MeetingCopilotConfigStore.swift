@@ -36,12 +36,13 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let overlayClickThroughKey = "meetingCopilotOverlayClickThroughV1"
     private let maxCuesShownKey = "meetingCopilotMaxCuesShownV1"
 
-    // Keys(M8 新增：個人筆記 RAG)
+    // Keys(M8 新增：個人筆記 RAG + auto-deep)
     private let useNotesRAGKey = "meetingCopilotUseNotesRAGV1"
     private let notesInTechnicalRAGKey = "meetingCopilotNotesInTechnicalRAGV1"
     private let aboutMeBriefKey = "meetingCopilotAboutMeBriefV1"
     private let notesIncludeOnlyKey = "meetingCopilotNotesIncludeOnlyV1"
     private let notesExcludedKey = "meetingCopilotNotesExcludedV1"
+    private let autoDeepEnabledKey = "meetingCopilotAutoDeepV1"
 
     // MARK: - Settings
 
@@ -139,6 +140,12 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 嵌進索引只會稀釋檢索品質又多花 embedding 錢。
     @Published private(set) var notesExcludedFolders: [String] = [".obsidian", ".trash", "Templates"]
 
+    /// M8 FR-53:Tier 1 完成後自動接跑 Tier 2(只對「活到最後的最新一則」cue)。**預設 true**——
+    /// 手點 Tier 2 這件事在會議中根本做不到:要嘛在聽對方講、要嘛在講話,手離不開;
+    /// 等想到要點時分析才開始跑,深答到手已經沒有用了。成本上界是「每則活到最後的 cue 一次 deep」,
+    /// 舊 cue 的在途 deep 會被新 cue 取消(latest-only),不會累積。要省錢的人到設定頁關掉。
+    @Published private(set) var autoDeepEnabled: Bool = true
+
     // MARK: - Init
 
     init() {
@@ -180,6 +187,7 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
         useNotesRAG = (d.object(forKey: useNotesRAGKey) as? Bool) ?? true   // 未設定 → true
         notesInTechnicalRAG = (d.object(forKey: notesInTechnicalRAGKey) as? Bool) ?? false
+        autoDeepEnabled = (d.object(forKey: autoDeepEnabledKey) as? Bool) ?? true   // 未設定 → true
         if let b = d.string(forKey: aboutMeBriefKey), !b.isEmpty { aboutMeBrief = b }   // 照 domainPersona
 
         // GOTCHA:只 `if let`(stringArray 未設定才回 nil),**不可**再加 `!isEmpty` 條件——
@@ -296,5 +304,10 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setNotesExcludedFolders(_ value: [String]) {
         notesExcludedFolders = value
         UserDefaults.standard.set(value, forKey: notesExcludedKey)
+    }
+
+    func setAutoDeepEnabled(_ value: Bool) {
+        autoDeepEnabled = value
+        UserDefaults.standard.set(value, forKey: autoDeepEnabledKey)
     }
 }

@@ -38,6 +38,10 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
     var notesInTechnicalRAG: Bool?
     var aboutMeBrief: String?
 
+    /// M8 FR-53:Tier 1 完成後是否自動接 Tier 2。開關會改變「哪些 cue 有 tier2」與 deep model 的
+    /// 呼叫量,是覆盤時解讀 tier2 覆蓋率的關鍵變因。optional 理由同上(舊快照相容)。
+    var autoDeepEnabled: Bool?
+
     /// 從目前設定組快照。`fastModelLabel`/`deepModelLabel` 由呼叫端解析
     /// (需要 AIService 的 connected providers,config store 本身不知道)。
     @MainActor
@@ -66,7 +70,8 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
             tier2SystemPrompt: TierPrompts.tier2System(persona: config.domainPersona),
             useNotesRAG: config.useNotesRAG,
             notesInTechnicalRAG: config.notesInTechnicalRAG,
-            aboutMeBrief: config.aboutMeBrief)
+            aboutMeBrief: config.aboutMeBrief,
+            autoDeepEnabled: config.autoDeepEnabled)
     }
 
     func encodedJSON() -> String {

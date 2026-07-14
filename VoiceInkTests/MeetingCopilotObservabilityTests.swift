@@ -202,6 +202,8 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         XCTAssertEqual(snapshot.useNotesRAG, config.useNotesRAG)
         XCTAssertEqual(snapshot.notesInTechnicalRAG, config.notesInTechnicalRAG)
         XCTAssertEqual(snapshot.aboutMeBrief, config.aboutMeBrief)
+        // M8 Task 9:auto-deep 開關決定「哪些 cue 會有 tier2」→ 解讀覆蓋率時的關鍵變因。
+        XCTAssertEqual(snapshot.autoDeepEnabled, config.autoDeepEnabled)
 
         let json = snapshot.encodedJSON()
         XCTAssertFalse(json.isEmpty)
@@ -221,10 +223,12 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
             config: MeetingCopilotConfigStore(), asrModelDisplayName: "m",
             fastModelLabel: "groq/x", deepModelLabel: "d")
 
-        // 從現行快照剝掉 M8 三欄 = 模擬 M8 之前的 JSON(其餘欄位齊全)。
+        // 從現行快照剝掉 M8 欄位 = 模擬 M8 之前的 JSON(其餘欄位齊全)。
         var dict = try XCTUnwrap(try JSONSerialization.jsonObject(
             with: Data(snapshot.encodedJSON().utf8)) as? [String: Any])
-        for key in ["useNotesRAG", "notesInTechnicalRAG", "aboutMeBrief"] { dict.removeValue(forKey: key) }
+        for key in ["useNotesRAG", "notesInTechnicalRAG", "aboutMeBrief", "autoDeepEnabled"] {
+            dict.removeValue(forKey: key)
+        }
         let legacy = try XCTUnwrap(String(
             data: try JSONSerialization.data(withJSONObject: dict), encoding: .utf8))
 
@@ -232,6 +236,7 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         XCTAssertEqual(decoded.fastModel, "groq/x", "舊欄位照常還原")
         XCTAssertNil(decoded.useNotesRAG, "舊 session 當時沒有這個設定 → nil,不是硬編一個 false 出來")
         XCTAssertNil(decoded.aboutMeBrief)
+        XCTAssertNil(decoded.autoDeepEnabled, "M8 之前沒有 auto-deep → nil(不是「當時關著」)")
     }
 
     /// 診斷匯出:一場 session 的時間軸/偵測/三層觀測資料組成一份可解析的 JSON。

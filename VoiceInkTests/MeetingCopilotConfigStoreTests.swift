@@ -13,6 +13,7 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         "meetingCopilotNotesInTechnicalRAGV1",
         "meetingCopilotNotesIncludeOnlyV1",
         "meetingCopilotNotesExcludedV1",
+        "meetingCopilotAutoDeepV1",
     ]
     private var saved: [String: Any?] = [:]
 
@@ -83,6 +84,17 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.aboutMeBrief, "後端工程師")
         XCTAssertEqual(reloaded.notesIncludeOnlyFolders, ["工作"])
         XCTAssertEqual(reloaded.notesExcludedFolders, [".obsidian"])
+    }
+
+    /// M8 Task 9:auto-deep 開關 round-trip。未設定 → **true**(會議中手點 Tier 2 根本做不到)。
+    func testAutoDeepEnabledRoundTrip() {
+        XCTAssertTrue(MeetingCopilotConfigStore().autoDeepEnabled, "未設定 → 預設開")
+
+        MeetingCopilotConfigStore().setAutoDeepEnabled(false)
+        XCTAssertFalse(MeetingCopilotConfigStore().autoDeepEnabled, "關掉要留得住(false ≠ 沒設定)")
+
+        MeetingCopilotConfigStore().setAutoDeepEnabled(true)
+        XCTAssertTrue(MeetingCopilotConfigStore().autoDeepEnabled)
     }
 
     /// 空排除清單必須能覆寫預設——「使用者清空」與「使用者沒設定過」是**不同**語意。

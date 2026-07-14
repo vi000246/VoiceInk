@@ -39,8 +39,21 @@ final class AnswerCoordinator: ObservableObject {
 
     private var prefetchTask: Task<Void, Never>?
     private var deepTask: Task<Void, Never>?
+    /// 在途 deep 的目標 cue(nil = 沒有在途)。展開保護(FR-54)靠它才知道
+    /// 「正在跑的那條 deep,是不是使用者眼前正在讀的那則」。
+    private var deepTaskCueId: UUID?
+    /// deep 的世代序號:每起一條 deep +1。被取消的舊 deep 會晚一步才醒來,收尾時**不能**把新 deep
+    /// 剛設好的 `deepTaskCueId` 抹掉——同一則 cue 重跑時 cue.id 相同,只有世代分得出「我是不是最新那條」。
+    private var deepGeneration = 0
     /// 已完成的 Tier 1 草稿(cue.id → draft),供 requestDeep 零等待取用。
     private var drafts: [UUID: Tier1Draft] = [:]
+
+    /// 目前展開中(= 使用者正在讀)的 cue id。live 端由 controller 注入閉包。
+    ///
+    /// **用 closure 反轉依賴**:coordinator 是引擎層,不該倒過來依賴 UI 的 controller
+    /// (controller 已經持有 coordinator,直接引用就成環,測試也得整包搬 controller 進來)。
+    /// 預設回 nil = 沒有展開 → 保護不生效,行為與 M8 之前完全一致。
+    var expandedCueIdProvider: () -> UUID? = { nil }
 
     init(
         fast: StreamingChatCompleting,
@@ -94,7 +107,9 @@ final class AnswerCoordinator: ObservableObject {
 
     // MARK: - Tier 1
 
-    private func runTier1(_ cue: MeetingLiveCue) async {
+    /// - Parameter autoDeep: 完成後是否自動接 Tier 2(FR-53)。預跑路徑傳 true;`requestDeep` 的
+    ///   補跑路徑傳 false——呼叫端緊接著就要自己起 deep,這裡再掛一條只是多燒一次 deep token 再被取消。
+    private func runTier1(_ cue: MeetingLiveCue, autoDeep: Bool = true) async {
         let started = Date()
         let plan = groundingPlan(for: cue)
         let g = await grounding.gather(
@@ -138,9 +153,36 @@ final class AnswerCoordinator: ObservableObject {
         cue.tier1Error = ""
         cue.fastModelName = fastLabel.isEmpty ? "fast" : fastLabel
         try? cue.modelContext?.save()
+
+        // FR-53:Tier 1 一寫完就自動接 Tier 2。
+        //
+        // **latest-only 是天然的**:runTier1 跑在 prefetchTask 裡,新 cue 進來會 cancel 舊 prefetch,
+        // 所以能走到這一行的只有「活到最後的最新一則」——不必另外做佇列或節流。
+        // `Task.isCancelled` 要在這裡再擋一次:上面的 guard 之後仍可能被新 cue 取消,
+        // 已作廢的 tier1 不該再把 deep model 拉起來燒 token。
+        if autoDeep, config.autoDeepEnabled, !Task.isCancelled {
+            runAutoDeep(cue)
+        }
     }
 
-    // MARK: - Tier 2(點擊才跑,帶入 Tier 1 草稿)
+    // MARK: - Tier 2(auto 或點擊;帶入 Tier 1 草稿)
+
+    /// Tier 1 完成後的自動深答(FR-53)。不 await 起出來的 task:deep 動輒十餘秒,
+    /// 綁著 prefetchTask 一起等只會讓「新 cue 取消舊 prefetch」的語意糊掉(prefetch 該只代表 Tier 1)。
+    private func runAutoDeep(_ cue: MeetingLiveCue) {
+        // 無草稿 = tier1 沒成功寫回 → 不進 deep(降級語意同 requestDeep)。
+        guard let draft = drafts[cue.id] else { return }
+
+        // FR-54 閱讀保護:在途 deep 的目標正是使用者展開中(= 正在讀)的那則 → 這次 auto-deep 放棄。
+        // 「跳過」而不是「排隊」是刻意的:auto-deep 是加值功能,不值得為它把使用者眼前的分析取消掉;
+        // 而排隊等它跑完再補跑,輪到時這則 cue 早就不是最新的了(latest-only 反而被破壞)。
+        if isDeepProtected() {
+            logger.notice("🫆 auto-deep 跳過（展開保護中）")
+            return
+        }
+        deepTask?.cancel()   // 在途的不是展開中那則 → 取消(deep 的算力只給最新的 cue)
+        startDeep(cue, draft: draft, trigger: "auto")
+    }
 
     func requestDeep(_ cue: MeetingLiveCue) async {
         logger.notice("🫆 tier2 requested: \(cue.text.prefix(40), privacy: .public)")
@@ -148,7 +190,7 @@ final class AnswerCoordinator: ObservableObject {
         await prefetchTask?.value
         if drafts[cue.id] == nil {
             logger.notice("🫆 tier1 draft 缺失 → 先補跑 tier1")
-            await runTier1(cue)
+            await runTier1(cue, autoDeep: false)   // 下面就自己起 deep 了,不必掛 auto
         }
         guard let draft = drafts[cue.id] else {
             // Tier 1 也失敗 → 不跑 Tier 2(保留 Tier 0)。中止原因 persist 供覆盤。
@@ -158,16 +200,44 @@ final class AnswerCoordinator: ObservableObject {
             return
         }
 
-        deepTask?.cancel()
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.runTier2(cue, draft: draft)
-        }
-        deepTask = task
+        // 手動點擊是明確的使用者意圖:可以取消**這則自己**先前的 deep(= 重跑),
+        // 但不能為了跑這則,把使用者正在讀的**另一則** cue 的在途分析取消掉(FR-54)。
+        if !isDeepProtected(excluding: cue.id) { deepTask?.cancel() }
+        let task = startDeep(cue, draft: draft, trigger: "manual")
         await task.value
     }
 
-    private func runTier2(_ cue: MeetingLiveCue, draft: Tier1Draft) async {
+    /// 在途 deep 是否受展開保護(目標 == 使用者展開中的 cue → 不得取消)。
+    /// - Parameter excluding: 「這次要跑的 cue」。重跑同一則不算保護——取消掉的是使用者自己的舊 deep。
+    private func isDeepProtected(excluding cueId: UUID? = nil) -> Bool {
+        guard let inflight = deepTaskCueId, inflight == expandedCueIdProvider() else { return false }
+        return inflight != cueId
+    }
+
+    /// 起一條 deep(auto/manual 共用)。回傳 task 供手動路徑 await。
+    @discardableResult
+    private func startDeep(_ cue: MeetingLiveCue, draft: Tier1Draft, trigger: String) -> Task<Void, Never> {
+        deepGeneration += 1
+        let generation = deepGeneration
+        // **在途標記在這裡就設**,不能等 runTier2 進到 task body 才設:Task 是排程後才跑,
+        // 這中間若另一則 cue 的 tier1 剛好完成,它的保護檢查會看到 nil,誤把這條剛掛出的 deep 取消。
+        deepTaskCueId = cue.id
+        // 觀測(M8):覆盤要分得出這則是自動深答還是使用者點的——兩者的品質期待與成本歸因都不同。
+        cue.tier2TriggerRaw = trigger
+        try? cue.modelContext?.save()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runTier2(cue, draft: draft, generation: generation)
+        }
+        deepTask = task
+        return task
+    }
+
+    private func runTier2(_ cue: MeetingLiveCue, draft: Tier1Draft, generation: Int) async {
+        // 收尾清在途標記:只有「我還是最新那條 deep」才清。被取消的舊 deep 可能晚一步才醒來,
+        // 那時 deepTaskCueId 已經是新 deep 的目標,抹掉它會讓展開保護漏掉一則。
+        defer { if deepGeneration == generation { deepTaskCueId = nil } }
+
         let groundingStart = Date()
         let plan = groundingPlan(for: cue)
         let g = await grounding.gather(
@@ -224,10 +294,26 @@ final class AnswerCoordinator: ObservableObject {
     func cancelDeep() {
         deepTask?.cancel()
         deepTask = nil
+        // 在途標記跟著清:留著會讓展開保護一直卡在一條已經取消的 deep 上,
+        // 之後所有 auto-deep 都被誤判成「保護中」而跳過。
+        deepTaskCueId = nil
     }
 
     // MARK: - 測試 hook
 
     /// 測試用:等待預跑的 Tier 1 完成(免 sleep 輪詢;正式碼不呼叫)。
     func drainPrefetchForTest() async { await prefetchTask?.value }
+
+    /// 測試用:等整條鏈靜止——prefetch 的 Tier 1 **跑完之後**才掛出 auto-deep,
+    /// 所以單押 `deepTask` 會撲空(呼叫當下它還是 nil)。作法:等一輪 → 看兩個 task 有沒有換人
+    /// → 沒換就是靜止了(鏡射 `MeetingCopilotController.drainInflight` 的排乾語意)。
+    func awaitQuiescentForTest() async {
+        for _ in 0..<8 {   // 上限純防呆:鏈最長就 tier1 → deep 兩段,兩輪內必靜止
+            let p = prefetchTask
+            let d = deepTask
+            await p?.value
+            await d?.value
+            if prefetchTask == p, deepTask == d { return }
+        }
+    }
 }
