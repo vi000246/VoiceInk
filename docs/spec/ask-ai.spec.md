@@ -250,7 +250,7 @@ Inert until an embedding key is configured + backfill run. Kill switch: none nee
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Vector-space lock-in (model deprecation/switch ⇒ full re-embed) | M | M | Space tag + explicit re-embed flow; index is derived data by design |
-| 🔴 **`switchModel` 清索引後，obsidian 筆記塊不會被重嵌**（M8 起，2026-07-14 code-sync 發現） | **H**（換一次模型必中） | **H** — 筆記 RAG 靜默失效 | **目前無防護。** `switchModel` 刪光所有 `EmbeddingChunk`（含 obsidian），但 `ObsidianNoteIndexService` 的 sidecar 只記「路徑 → 內容 hash」、**不記 embedding model tag** → 下次 `reindex` hash 全部命中 → 全部跳過。轉錄塊有 `backfill()` 可救，筆記塊沒有等價路徑。修法：sidecar 加 top-level `embeddingModel`，tag 不符即全量重嵌。**須補測試**（現有 AC-30 只涵蓋 `reconcileOrphans`） |
+| ~~`switchModel` 清索引後 obsidian 筆記塊不會被重嵌~~ **✅ 2026-07-14 已修**（commit `1a38f53`） | — | — | 曾經：`switchModel` 刪光所有 `EmbeddingChunk`（含 obsidian），但筆記索引的 sidecar 只記「路徑 → 內容 hash」、不記 model tag → 下次 `reindex` hash 全部命中、全部跳過 → 筆記 RAG 靜默失效（轉錄塊有 `backfill()` 可救，筆記塊沒有等價路徑）。**修法在 `ObsidianNoteIndexService` 側**（本模組的 `switchModel` 未改）：sidecar 改存 `IndexState { embeddingModel, files }`，tag 不符即全量重嵌，並先清掉舊向量空間的殘留筆記塊 → `reindex` 自我修復，不依賴 `switchModel` 是否跑過。回歸鎖：`ObsidianNoteIndexTests.testEmbeddingModelSwitchForcesFullReembed` |
 | CJK chunk/retrieval quality below expectation | M | M | Speaker-turn-aware chunking; eval sheet gate (AC-1); provider switchable |
 | Fabricated citations / hallucinated answers | M | H | Strict system prompt + citation-set validation + control questions in eval |
 | Index store growth (audio-heavy users) | L | L | 768-dim Float32 ≈ 3 KB/chunk; Float16 option queued |

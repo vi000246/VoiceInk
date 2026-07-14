@@ -427,8 +427,8 @@ Tier 1 / Tier 2 的輸出**必須是結構化欄位，不是散文**——overla
 | 預跑 + 三層 + RAG 的 token 成本 | M | M | 預跑只用 fast model 且只跑最新一則；Tier 2 點擊才跑；`prefetchEnabled` 可關 |
 | **模型自信地講錯**（比答不出來傷害更大） | M | **H** | system prompt 明確禁止捏造數字／論文／公司名；不確定項須進 `uncertainties[]` 並在 overlay 明顯呈現 |
 | 自持 SSE client 的維護負擔 | M | M | 只實作兩種 frame 格式；沿用 `ElevenLabsDiarizingClient` 先例 |
-| 🔴 **換 embedding 模型後筆記索引不會重建**（M8 已知缺口，**FR-44 後半未落地**） | **H**（只要換一次模型必中） | **H** — 筆記 RAG **靜默失效** | **目前無防護。** `TranscriptIndexService.switchModel` 刪光**所有** `EmbeddingChunk`（含 obsidian 塊）但**不碰 sidecar state 檔**；`ObsidianNoteIndexService.reindex` 只比對**檔案內容 hash**、不看 `embeddingModel` tag → 下次掃描 hash 全部命中 → **全部跳過** → 筆記塊永遠回不來。更糟的是設定頁的「重建筆記索引」按鈕也是走 `reindex`，會回報「0 檔」看起來一切正常。修法（5 行）：sidecar 存一個 top-level `embeddingModel` 欄位，`loadState()` 發現與現行 `model.tag` 不符 → 整份 state 視為空（= 全量重嵌），語意正好對上「換模型＝向量空間不相容＝全量重嵌」。**須補 AC 與測試**（AC-30 只涵蓋 `reconcileOrphans`） |
-| 🟠 **`userBlock()` 的措辭與 aboutMe 的鐵律互相拆台**（M8） | M | M | `MeetingGrounding.userBlock()` 對 RAG 片段寫死標題「我過去的相關逐字稿/筆記（**僅供參考，可能過時**）」，而 aboutMe 的 system prompt 說筆記是「**唯一事實來源**、沒記載就說筆記沒記」——同一個 user message 裡兩種語氣。system 較強，實測未必出事；但若 aboutMe 出現「模型不敢引用筆記／動不動說筆記沒記」的症狀，**這行標題是第一嫌疑**。修法：給 `userBlock()` 一個 aboutMe 變體標題（「我的筆記（我自己寫的，可信）」） |
+| ~~換 embedding 模型後筆記索引不會重建~~ **✅ 2026-07-14 已修**（commit `1a38f53`） | — | — | 曾是 FR-44 後半的缺口：`switchModel` 刪光所有 `EmbeddingChunk`（含筆記塊），但 sidecar 只記「路徑 → 內容 hash」→ 下次掃描全部命中、全部跳過 → 筆記塊永遠回不來，且「重建筆記索引」回報 0 檔看起來一切正常（**靜默失效**）。**修法**：sidecar 改存 `IndexState { embeddingModel, files }`，`loadState(currentModelTag:)` 發現 tag 不符（或舊格式）→ 回空 = 全量重嵌；重嵌前 `discardStaleNoteChunks` 清掉舊向量空間的殘留塊，讓 `reindex` **自我修復**、不依賴 `switchModel` 是否跑過。回歸鎖：`ObsidianNoteIndexTests.testEmbeddingModelSwitchForcesFullReembed` |
+| ~~`userBlock()` 的措辭與 aboutMe 的鐵律互相拆台~~ **✅ 2026-07-14 已修**（同上 commit） | — | — | 曾經：aboutMe 的 system prompt 說筆記是「唯一事實來源、沒記載就說筆記沒記」，但 user block 的片段標題還寫「僅供參考，**可能過時**」——同一則訊息兩種語氣，模型會傾向不敢引用筆記。**修法**：`MeetingExcerptLabel`（`.history` / `.personalNotes`）；aboutMe 傳 `.personalNotes`（標題改為「我的筆記（我自己寫的，是回答這題的**唯一事實來源**；這裡沒寫到的，就是我沒記）」），技術 cue 的歷史逐字稿仍是 `.history`（那句「可能過時」對它是對的）。回歸鎖：`TierPromptsTests.testAboutMeLabelsNotesAsAuthoritativeNotStale` |
 | 覆盤成本（長錄音的 replay） | M | M | 只用 fast model（抽取＋Tier 1＋sweep），**不進 deep**（`runTier1ForReplay` 的契約）；序列執行、有進度、可取消 |
 | auto-deep 的 deep model 成本 | M | M | latest-only（掛在 tier1 之後 → prefetch 的「新 cue 取消舊 prefetch」天然保證只有最新一則走到 deep）；`autoDeepEnabled` 可關；`tier2TriggerRaw`（auto/manual）供事後成本歸因 |
 
@@ -487,8 +487,8 @@ Tier 1 / Tier 2 的輸出**必須是結構化欄位，不是散文**——overla
 
 ### M8 收尾待辦（2026-07-14 code-sync 發現）
 
-- [ ] 🔴 **修 `switchModel` 後筆記索引不重建**（見 Risks 第一列）——sidecar state 加 `embeddingModel` 欄位，tag 不符即全量重嵌；補 AC + 測試。**這是 FR-44 明文要求但未落地的一半，且失效是靜默的。**
-- [ ] 🟠 **`userBlock()` 的 aboutMe 變體標題**（見 Risks 第二列）——現行措辭與「筆記是唯一事實來源」互相拆台。
+- [x] ~~🔴 修 `switchModel` 後筆記索引不重建~~ → **已修**（commit `1a38f53`，TDD：先紅後綠，回歸鎖 `testEmbeddingModelSwitchForcesFullReembed`）
+- [x] ~~🟠 `userBlock()` 的 aboutMe 變體標題~~ → **已修**（同上 commit，回歸鎖 `testAboutMeLabelsNotesAsAuthoritativeNotStale`）
 - [ ] 熱鍵設定 UI 的一致性：`toggleCopilotCueExpansion` 是**唯一**同時出現在 `SettingsView` 與 `MeetingCopilotSettingsView` 的會議熱鍵。要嘛把其餘 4 個也補進 `SettingsView`，要嘛把這一列從 `SettingsView` 拿掉。（不影響功能，純 IA。）
 - [ ] `EmbeddingChunk.sourceKind` 的 doc comment 仍寫「dictation | recorder | meeting」，漏了 M8 的 **obsidian**（`AskAIModels.swift:22`）。
 - [ ] aboutMe 的 `searchHint` 改寫品質是否需按細類（貢獻／成就／經驗）調校 → 先收覆盤資料再定。
