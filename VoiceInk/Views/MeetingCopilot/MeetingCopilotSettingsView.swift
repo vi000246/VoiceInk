@@ -15,6 +15,15 @@ struct MeetingCopilotSettingsView: View {
     /// 講稿編輯 sheet 的暫存(nil = 未開啟)。
     @State private var scriptDraft: ScriptDraft?
 
+    /// 分頁(M8 Task 19)。設定項一路長到八個 Section,把「即時翻譯」再堆上去只會讓整頁
+    /// 更難掃;翻譯是**獨立的一條管線**(自己的模型、自己的語言、自己的成本),分頁比 Section 誠實。
+    private enum SettingsTab: String, CaseIterable {
+        case general = "一般"
+        case translation = "即時翻譯"
+    }
+
+    @State private var tab: SettingsTab = .general
+
     /// 資料夾清單的**編輯中原字串**。不直接 bind 陣列:逐鍵解析會把使用者剛打的逗號吃掉
     /// (["a"] → get 回 "a" → 逗號當場消失)。原字串留在 @State,解析結果同步寫進 store。
     @State private var includeOnlyText: String = ""
@@ -30,31 +39,52 @@ struct MeetingCopilotSettingsView: View {
                 infoURL: nil
             ) { EmptyView() }
 
-            Form {
-                enableSection
-                asrSection
-                modelSection
-                groundingSection
-                notesRAGSection
-                presetScriptsSection
-                overlaySection
-                hotkeySection
+            HStack(spacing: 10) {
+                Picker("分頁", selection: $tab) {
+                    ForEach(SettingsTab.allCases, id: \.self) { t in Text(t.rawValue).tag(t) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 380)
+                Spacer()
             }
-            .formStyle(.grouped)
-            .onAppear {
-                includeOnlyText = store.notesIncludeOnlyFolders.joined(separator: ", ")
-                excludedText = store.notesExcludedFolders.joined(separator: ", ")
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+
+            switch tab {
+            case .general: generalForm
+            case .translation: translationForm
             }
-            .sheet(item: $scriptDraft) { draft in
-                ScriptEditorSheet(
-                    draft: draft,
-                    onSave: { title, body in
-                        if draft.isNew { scriptStore.add(title: title, body: body) }
-                        else { scriptStore.update(id: draft.id, title: title, body: body) }
-                        scriptDraft = nil
-                    },
-                    onCancel: { scriptDraft = nil })
-            }
+        }
+    }
+
+    // MARK: - 一般分頁(M8 Task 19 純搬移:Section 內容與 binding 一字未改)
+
+    private var generalForm: some View {
+        Form {
+            enableSection
+            asrSection
+            modelSection
+            groundingSection
+            notesRAGSection
+            presetScriptsSection
+            overlaySection
+            hotkeySection
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            includeOnlyText = store.notesIncludeOnlyFolders.joined(separator: ", ")
+            excludedText = store.notesExcludedFolders.joined(separator: ", ")
+        }
+        .sheet(item: $scriptDraft) { draft in
+            ScriptEditorSheet(
+                draft: draft,
+                onSave: { title, body in
+                    if draft.isNew { scriptStore.add(title: title, body: body) }
+                    else { scriptStore.update(id: draft.id, title: title, body: body) }
+                    scriptDraft = nil
+                },
+                onCancel: { scriptDraft = nil })
         }
     }
 
@@ -320,6 +350,54 @@ struct MeetingCopilotSettingsView: View {
         }
     }
 
+    // MARK: - 即時翻譯分頁(M8 FR-62 / AC-46/47)
+
+    private var translationForm: some View {
+        Form {
+            Section {
+                Toggle("即時翻譯對方的話", isOn: bind(\.liveTranslationEnabled, store.setLiveTranslationEnabled))
+                Text("對方每講完一段就翻成目標語言,顯示在浮動視窗的**上區**(與「問題與回應」分開,不會混淆)。這是**每段一次**的額外 LLM 呼叫(與問題偵測平行,不是取代它)——關閉時零呼叫、零成本,單語會議不必開。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("翻譯模型") {
+                Picker("翻譯模型", selection: translationModelBinding) {
+                    Text("自動(跟隨預設,建議選 Groq 低延遲)").tag(RecorderModelChoice?.none)
+                    ForEach(recorderModelChoices(aiService), id: \.self) { c in
+                        Text(c.label).tag(RecorderModelChoice?.some(c))
+                    }
+                }
+                Text("與快/深模型**各自獨立**:翻譯要的是便宜、快、量大(每段都打),不需要深模型的推理力。字幕跟不上時,先來這裡換更小更快的模型。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("語言") {
+                Picker("來源語言", selection: translationSourceBinding) {
+                    ForEach(translationSourceOptions, id: \.key) { o in Text(o.value).tag(o.key) }
+                }
+                Picker("目標語言", selection: translationTargetBinding) {
+                    ForEach(translationTargetOptions, id: \.key) { o in Text(o.value).tag(o.key) }
+                }
+                Text("⚠️ 混語會議請在「一般」分頁選支援多語的即時轉錄模型(Nemotron Multilingual 或雲端)——Parakeet 的 auto 對中文會輸出亂碼。**翻譯再準也救不了轉錯的原文**。")
+                    .font(.caption).foregroundStyle(.orange)
+                Text("回應(開口稿與深度分析)一律以目標語言輸出——要照著唸的稿子,語言得跟我要開口說的一致。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 來源語言。auto 置頂:混語(中英夾雜)會議的唯一正解——見 `MeetingTranslationPrompt` 檔頭,
+    /// 任何語言偵測器都會在夾雜句上判錯,而判錯的提示會直接害模型硬翻。
+    private var translationSourceOptions: [(key: String, value: String)] {
+        [("auto", "自動判斷(混語會議建議)"), ("zh-TW", "繁體中文"), ("en", "English"), ("ja", "日本語")]
+    }
+
+    /// 目標語言(無 auto——「翻成自動」沒有意義)。
+    private var translationTargetOptions: [(key: String, value: String)] {
+        [("zh-TW", "繁體中文"), ("en", "English"), ("ja", "日本語")]
+    }
+
     // MARK: - Binding helpers（config @Published 為 private(set)）
 
     private func bind<T>(_ keyPath: KeyPath<MeetingCopilotConfigStore, T>, _ setter: @escaping (T) -> Void) -> Binding<T> {
@@ -342,6 +420,32 @@ struct MeetingCopilotSettingsView: View {
                 return RecorderModelChoice(provider: p, model: m)
             },
             set: { store.setDeepModel(provider: $0?.provider, model: $0?.model) })
+    }
+
+    /// 翻譯模型(M8)。形式完全鏡射 `fastBinding`:nil = 跟隨預設 provider。
+    private var translationModelBinding: Binding<RecorderModelChoice?> {
+        Binding(
+            get: {
+                guard let p = store.translationProviderName,
+                      let m = store.translationModelName else { return nil }
+                return RecorderModelChoice(provider: p, model: m)
+            },
+            set: { store.setTranslationModel(provider: $0?.provider, model: $0?.model) })
+    }
+
+    /// 來源/目標語言共用 store 的**雙欄 setter**(`setTranslationLanguages(source:target:)`),
+    /// 所以每個 Binding 的 set 都必須把另一半的**現值**一起送回去——只送自己那一半,
+    /// 另一半就會被覆寫掉(選了目標語言,來源語言當場被清空)。
+    private var translationSourceBinding: Binding<String> {
+        Binding(
+            get: { store.translationSourceLanguage },
+            set: { store.setTranslationLanguages(source: $0, target: store.translationTargetLanguage) })
+    }
+
+    private var translationTargetBinding: Binding<String> {
+        Binding(
+            get: { store.translationTargetLanguage },
+            set: { store.setTranslationLanguages(source: store.translationSourceLanguage, target: $0) })
     }
 }
 

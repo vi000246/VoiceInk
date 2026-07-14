@@ -30,6 +30,27 @@ final class TierPromptsTests: XCTestCase {
         XCTAssertTrue(u.contains("你做過什麼?"), "cue 行一定在")
     }
 
+    /// M8 AC-46:四個 tier system prompt 都要指定輸出語言。
+    ///
+    /// 英文會議時,cue 原句與接地片段全是英文——模型會很自然地跟著用英文回答,
+    /// 於是 overlay 上的「開口稿」變成一句我唸不順的英文。開口稿的用途是**直接照著唸**,
+    /// 語言錯了整個功能就報廢,所以這是 prompt 層的硬約束,不是「通常會對」的期待。
+    func testAllTierSystemPromptsCarryOutputLanguage() {
+        for s in [TierPrompts.tier1System(persona: "p", outputLanguage: "繁體中文"),
+                  TierPrompts.tier2System(persona: "p", outputLanguage: "繁體中文"),
+                  TierPrompts.tier1SystemAboutMe(persona: "p", outputLanguage: "繁體中文"),
+                  TierPrompts.tier2SystemAboutMe(persona: "p", outputLanguage: "繁體中文")] {
+            XCTAssertTrue(s.contains("以繁體中文回答"))
+        }
+    }
+
+    /// 目標語言換成英文 → prompt 跟著換(不是硬編繁中)。
+    func testOutputLanguageFollowsTarget() {
+        let s = TierPrompts.tier1System(persona: "p", outputLanguage: "English")
+        XCTAssertTrue(s.contains("以English回答"))
+        XCTAssertFalse(s.contains("以繁體中文回答"))
+    }
+
     /// tier2 user 變體照既有 tier2User 契約帶入 Tier 1 草稿(AC-8),外加自介行。
     func testAboutMeTier2UserCarriesDraftAndBrief() {
         let draft = Tier1Draft(opener: "我主導過訂單分庫", bullets: ["訂單分庫", "P99 800→120ms", ""])

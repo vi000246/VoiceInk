@@ -3,11 +3,21 @@ import Foundation
 /// Tier 1 / Tier 2 的 system + user prompt 建構(純函式,FR-12)。
 ///
 /// FR-27:Tier 2 system prompt **明確禁止捏造** benchmark 數字/論文/公司名,不確定寫進 uncertainties。
+///
+/// M8 AC-46:四個 system 都帶 `outputLanguage`。英文會議時 cue 原句與接地片段全是英文,
+/// 模型會很自然地跟著用英文回答——但開口稿的用途是**直接照著唸**,語言錯了整個功能就報廢。
+/// 語言跟著「翻譯目標語言」走(呼叫端傳 `MeetingTranslationPrompt.displayName(for:)`):
+/// 我要看的字幕語言,就是我要開口說的語言,不該是兩個各自為政的設定。
 enum TierPrompts {
+
+    /// 預設輸出語言 = config 預設目標語言 `zh-TW` 的人話。
+    /// 正式呼叫端(`AnswerCoordinator` / `MeetingCopilotRunConfig.capture`)一律**顯式傳入**;
+    /// 這個預設只服務 prompt 契約測試那種「不在乎語言」的呼叫。
+    static let defaultOutputLanguage = "繁體中文"
 
     // MARK: - Tier 1(開口稿)
 
-    static func tier1System(persona: String) -> String {
+    static func tier1System(persona: String, outputLanguage: String = defaultOutputLanguage) -> String {
         """
         \(persona)
         你正在協助我(聽者)在會議中即時回應對方的問題或質疑。
@@ -19,6 +29,7 @@ enum TierPrompts {
         - <要點一>
         - <要點二>
         - <要點三>
+        一律以\(outputLanguage)回答——不論對方用什麼語言發問(開口稿與要點都是)。
         """
     }
 
@@ -46,7 +57,8 @@ enum TierPrompts {
     /// 技術題掰錯只是丟臉;**編造自己的經歷會當場被拆穿**(問的人可能就是當事人,或下一句就追問細節)。
     /// 所以這裡不是「不確定就列進 uncertainties」,而是「筆記沒記就直接說筆記沒記」——寧可空手,
     /// 絕不捏造。筆記與自介是唯一事實來源。
-    static func tier1SystemAboutMe(persona: String) -> String {
+    static func tier1SystemAboutMe(persona: String,
+                                   outputLanguage: String = defaultOutputLanguage) -> String {
         """
         \(persona)
         你是我的個人記憶助手。對方問到**我本人的經歷／專案／貢獻**。
@@ -62,6 +74,7 @@ enum TierPrompts {
         - <記憶錨點一>
         - <記憶錨點二>
         - <記憶錨點三>
+        一律以\(outputLanguage)回答——不論對方用什麼語言發問(開口稿與記憶錨點都是)。
         """
     }
 
@@ -78,7 +91,7 @@ enum TierPrompts {
 
     // MARK: - Tier 2(深度分析 + follow-up 預判)
 
-    static func tier2System(persona: String) -> String {
+    static func tier2System(persona: String, outputLanguage: String = defaultOutputLanguage) -> String {
         """
         \(persona)
         以下是我在會議中被問到的問題,以及我剛才的初步開口稿。請補強成足以應付追問的深度回答。
@@ -91,6 +104,7 @@ enum TierPrompts {
           "uncertainties": ["<我不確定、需要實測或查證的點>"]
         }
         followUps 給 2-3 個最可能的追問。
+        一律以\(outputLanguage)回答——不論對方用什麼語言發問(JSON 內的文字也是;key 名維持英文)。
         """
     }
 
@@ -116,7 +130,8 @@ enum TierPrompts {
     /// 這個差別對現場很關鍵:它不是「待辦查證清單」,而是**當場的警示燈**——列在這裡的東西
     /// 模型不知道,我只能靠腦袋補;overlay 上看到它,我就知道那幾句必須自己接、不能照著唸。
     /// 禁止捏造的鐵律照舊保留(而且更硬:寧可列進 uncertainties 也不准填空)。
-    static func tier2SystemAboutMe(persona: String) -> String {
+    static func tier2SystemAboutMe(persona: String,
+                                   outputLanguage: String = defaultOutputLanguage) -> String {
         """
         \(persona)
         以下是對方問到**我本人的經歷／專案／貢獻**,以及我剛才的初步開口稿。
@@ -130,6 +145,7 @@ enum TierPrompts {
           "uncertainties": ["<筆記沒覆蓋、需要我靠現場記憶補充的部分>"]
         }
         followUps 給 2-3 個最可能的追問。
+        一律以\(outputLanguage)回答——不論對方用什麼語言發問(JSON 內的文字也是;key 名維持英文)。
         """
     }
 

@@ -204,6 +204,16 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         XCTAssertEqual(snapshot.aboutMeBrief, config.aboutMeBrief)
         // M8 Task 9:auto-deep 開關決定「哪些 cue 會有 tier2」→ 解讀覆蓋率時的關鍵變因。
         XCTAssertEqual(snapshot.autoDeepEnabled, config.autoDeepEnabled)
+        // M8 Task 18/19:翻譯開關(成本變因)+ 目標語言。目標語言同時是**回應語言**(AC-46),
+        // 所以它必須進快照——否則覆盤時看到英文開口稿,分不出是設定如此還是模型不聽話。
+        XCTAssertEqual(snapshot.liveTranslationEnabled, config.liveTranslationEnabled)
+        XCTAssertEqual(snapshot.translationTargetLanguage, config.translationTargetLanguage)
+        // 期待值由 config 推出(而非硬編「繁體中文」):斷言的是「prompt 的語言**跟著設定走**」,
+        // 而不是某個當下的預設值——後者會被其他測試留在 UserDefaults 的目標語言弄成偽失敗。
+        let expectedLanguage = MeetingTranslationPrompt.displayName(for: config.translationTargetLanguage)
+        XCTAssertTrue(snapshot.tier1SystemPrompt.contains("以\(expectedLanguage)回答"),
+                      "AC-46:快照存的 prompt 全文必須含當時的輸出語言指示")
+        XCTAssertTrue(snapshot.tier2SystemPrompt.contains("以\(expectedLanguage)回答"))
 
         let json = snapshot.encodedJSON()
         XCTAssertFalse(json.isEmpty)
@@ -226,7 +236,8 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         // 從現行快照剝掉 M8 欄位 = 模擬 M8 之前的 JSON(其餘欄位齊全)。
         var dict = try XCTUnwrap(try JSONSerialization.jsonObject(
             with: Data(snapshot.encodedJSON().utf8)) as? [String: Any])
-        for key in ["useNotesRAG", "notesInTechnicalRAG", "aboutMeBrief", "autoDeepEnabled"] {
+        for key in ["useNotesRAG", "notesInTechnicalRAG", "aboutMeBrief", "autoDeepEnabled",
+                    "liveTranslationEnabled", "translationTargetLanguage"] {
             dict.removeValue(forKey: key)
         }
         let legacy = try XCTUnwrap(String(
@@ -237,6 +248,8 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         XCTAssertNil(decoded.useNotesRAG, "舊 session 當時沒有這個設定 → nil,不是硬編一個 false 出來")
         XCTAssertNil(decoded.aboutMeBrief)
         XCTAssertNil(decoded.autoDeepEnabled, "M8 之前沒有 auto-deep → nil(不是「當時關著」)")
+        XCTAssertNil(decoded.liveTranslationEnabled, "M8 之前沒有即時翻譯 → nil")
+        XCTAssertNil(decoded.translationTargetLanguage)
     }
 
     /// 診斷匯出:一場 session 的時間軸/偵測/三層觀測資料組成一份可解析的 JSON。

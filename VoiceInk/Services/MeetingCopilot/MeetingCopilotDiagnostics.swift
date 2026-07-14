@@ -42,6 +42,12 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
     /// 呼叫量,是覆盤時解讀 tier2 覆蓋率的關鍵變因。optional 理由同上(舊快照相容)。
     var autoDeepEnabled: Bool?
 
+    /// M8 D 組(即時翻譯)。**目標語言不只決定字幕**——AC-46 讓三層回應也跟著它輸出,
+    /// 所以覆盤時看到一則英文開口稿,要分得出是「當時目標語言設成 English」還是模型不聽話。
+    /// 翻譯開關則是成本變因(每段 committed 一次額外 LLM 呼叫)。optional 理由同上(舊快照相容)。
+    var liveTranslationEnabled: Bool?
+    var translationTargetLanguage: String?
+
     /// 從目前設定組快照。`fastModelLabel`/`deepModelLabel` 由呼叫端解析
     /// (需要 AIService 的 connected providers,config store 本身不知道)。
     @MainActor
@@ -51,7 +57,10 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
         fastModelLabel: String,
         deepModelLabel: String
     ) -> MeetingCopilotRunConfig {
-        MeetingCopilotRunConfig(
+        // AC-46:tier prompt 的輸出語言跟著翻譯目標語言走 → 快照存的 prompt 全文必須是
+        // 模型當時**真的看到**的那一份(含語言指示),否則快照就不再自足。
+        let outputLanguage = MeetingTranslationPrompt.displayName(for: config.translationTargetLanguage)
+        return MeetingCopilotRunConfig(
             appBuild: (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "",
             asrModel: asrModelDisplayName,
             asrLanguage: config.asrLanguage,
@@ -66,12 +75,16 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
             dedupThreshold: MeetingCueDeduplicator.defaultThreshold,
             dedupWindowSeconds: MeetingCueDeduplicator.defaultWindow,
             cueSystemPrompt: ResponseCueExtractor.systemPrompt,
-            tier1SystemPrompt: TierPrompts.tier1System(persona: config.domainPersona),
-            tier2SystemPrompt: TierPrompts.tier2System(persona: config.domainPersona),
+            tier1SystemPrompt: TierPrompts.tier1System(persona: config.domainPersona,
+                                                       outputLanguage: outputLanguage),
+            tier2SystemPrompt: TierPrompts.tier2System(persona: config.domainPersona,
+                                                       outputLanguage: outputLanguage),
             useNotesRAG: config.useNotesRAG,
             notesInTechnicalRAG: config.notesInTechnicalRAG,
             aboutMeBrief: config.aboutMeBrief,
-            autoDeepEnabled: config.autoDeepEnabled)
+            autoDeepEnabled: config.autoDeepEnabled,
+            liveTranslationEnabled: config.liveTranslationEnabled,
+            translationTargetLanguage: config.translationTargetLanguage)
     }
 
     func encodedJSON() -> String {

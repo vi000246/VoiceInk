@@ -97,6 +97,17 @@ final class AnswerCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - 回應語言(M8 AC-46)
+
+    /// 三層回應的輸出語言 = **翻譯目標語言**(不是另開一個設定)。
+    ///
+    /// 開口稿的用途是直接照著唸,所以「我想聽/看什麼語言」與「我要開口說什麼語言」在會議現場
+    /// 是同一件事——拆成兩個設定,只會讓人設出「字幕繁中、開口稿英文」這種沒人想要的組合。
+    /// 翻譯關著時這個值仍有意義:目標語言的預設(zh-TW)就是回應語言,與 M8 之前的行為一致。
+    private var outputLanguage: String {
+        MeetingTranslationPrompt.displayName(for: config.translationTargetLanguage)
+    }
+
     // MARK: - 檢索路由(M8 FR-47)
 
     /// 按 cue 種類決定接地參數。aboutMe 走個人筆記:query 用 searchHint 改寫詞(口語原句直接
@@ -127,8 +138,10 @@ final class AnswerCoordinator: ObservableObject {
         // M8 FR-48:aboutMe 走「個人記憶助手」變體——鎖死筆記與自介為唯一事實來源、bullets 出
         // 記憶錨點而非論述句。既有函式簽章不動,純 if/else 分支(技術 cue 行為零改變)。
         let system = cue.kind == .aboutMe
-            ? TierPrompts.tier1SystemAboutMe(persona: config.domainPersona)
-            : TierPrompts.tier1System(persona: config.domainPersona)
+            ? TierPrompts.tier1SystemAboutMe(persona: config.domainPersona,
+                                             outputLanguage: outputLanguage)
+            : TierPrompts.tier1System(persona: config.domainPersona,
+                                      outputLanguage: outputLanguage)
         let user = cue.kind == .aboutMe
             ? TierPrompts.tier1UserAboutMe(cue: cue.text, grounding: g, aboutMeBrief: config.aboutMeBrief)
             : TierPrompts.tier1User(cue: cue.text, grounding: g)
@@ -269,8 +282,10 @@ final class AnswerCoordinator: ObservableObject {
         // M8 FR-48:aboutMe 變體。JSON 契約與既有 tier2System 相同(parser/overlay 不分支),
         // 只是 uncertainties 語意換成「筆記沒覆蓋、要我靠現場記憶補的部分」= 現場警示燈。
         let system = cue.kind == .aboutMe
-            ? TierPrompts.tier2SystemAboutMe(persona: config.domainPersona)
-            : TierPrompts.tier2System(persona: config.domainPersona)
+            ? TierPrompts.tier2SystemAboutMe(persona: config.domainPersona,
+                                             outputLanguage: outputLanguage)
+            : TierPrompts.tier2System(persona: config.domainPersona,
+                                      outputLanguage: outputLanguage)
         let user = cue.kind == .aboutMe
             ? TierPrompts.tier2UserAboutMe(cue: cue.text, draft: draft, grounding: g,
                                            aboutMeBrief: config.aboutMeBrief)

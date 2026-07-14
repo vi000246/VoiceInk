@@ -165,7 +165,13 @@ final class CopilotOverlayWindowManager: ObservableObject {
             clickThrough: MeetingCopilotConfigStore.shared.overlayClickThrough
         )
         let hosting = NSHostingController(
-            rootView: CopilotOverlayView(controller: controller, onCueTapped: onCueTapped)
+            rootView: CopilotOverlayView(
+                controller: controller,
+                // 翻譯字幕源(M8 FR-62)。live controller 在 `configure` **之前**就把 translator
+                // 掛上 controller(且翻譯關閉時照樣建),所以這裡取到的恆非 nil;
+                // 沒有 live pipeline 的路徑取到 nil → overlay 的翻譯區整段不渲染。
+                translator: controller.translator,
+                onCueTapped: onCueTapped)
         )
         newPanel.contentView = hosting.view
         newPanel.setFrame(metrics, display: true)

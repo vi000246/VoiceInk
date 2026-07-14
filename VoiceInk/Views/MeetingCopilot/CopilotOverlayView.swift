@@ -6,6 +6,12 @@ import SwiftUI
 ///   Tier 0 關鍵字(tier0Keywords) → Tier 1 opener + 3 bullets → Tier 2 analysis + followUps + uncertainties。
 struct CopilotOverlayView: View {
     @ObservedObject var controller: MeetingCopilotController
+    /// 即時翻譯字幕源(M8 FR-62)。由 `CopilotOverlayWindowManager` 從 controller 取出後注入。
+    ///
+    /// optional 而非 `@ObservedObject`:live pipeline 之外(預覽/未接翻譯器)沒有 translator,
+    /// 而 `@ObservedObject` 不吃 optional。真正的觀察包在 `TranslationFeedLines` 子視圖裡——
+    /// 只有「有 translator」時才建立那個子視圖,feed 更新照樣即時重繪。
+    var translator: MeetingLiveTranslator?
     @ObservedObject private var config = MeetingCopilotConfigStore.shared
     /// 點「深度分析」→ 觸發 Tier 2(接 M3 AnswerCoordinator;click-through 開啟時自然不會觸發)。
     var onCueTapped: ((MeetingLiveCue) -> Void)?
@@ -37,6 +43,18 @@ struct CopilotOverlayView: View {
         VStack(alignment: .leading, spacing: 10) {
             gripBar
             shareWarningBanner
+            // M8 FR-62:翻譯開啟時,上區是對方原話的譯文、下區才是「我要開口說的話」。
+            // **區隔本身就是需求**:兩種內容混在一起時,現場那一秒根本分不出哪一句是要我唸的
+            // (譯文是別人的話,照唸就答非所問)。所以這裡不只是多幾行字,而是加一條分界線
+            // 與兩個小標,把 overlay 明確切成「聽到什麼」與「怎麼回」。
+            //
+            // 翻譯關閉(預設)→ 整段不渲染:沒有小標、沒有分隔線,佈局與 M8 之前**完全相同**。
+            if config.liveTranslationEnabled, let translator {
+                sectionHeader("即時翻譯")
+                TranslationFeedLines(translator: translator)
+                Divider().padding(.vertical, 2)
+                sectionHeader("問題與回應")
+            }
             // cue 列表可捲動:文字全面換行後,長分析可能超出卡片高度上限。
             // 把手與警告條留在捲動區外,拖曳手勢才不會和捲動打架。
             ScrollView(.vertical, showsIndicators: true) {
@@ -85,6 +103,16 @@ struct CopilotOverlayView: View {
             Spacer()
         }
         .foregroundStyle(.secondary)
+    }
+
+    // MARK: - 區塊小標(M8 FR-62)
+
+    /// 小標。字級/字重/色彩沿用 overlay 既有的次要標題語言(gripBar 的「會議輔助」、
+    /// focusCard 的「可能追問」)——新的區塊分隔不該長得像另一個 app。
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
     }
 
     // MARK: - 常駐螢幕分享警告(誠實邊界,不得省略)
@@ -200,6 +228,32 @@ struct CopilotOverlayView: View {
         }
         .padding(10)
         .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// 翻譯字幕的最近幾句(M8 FR-62)。
+///
+/// 獨立成子視圖的唯一理由:`@ObservedObject` 不接受 optional,而 translator 只有 live 路徑才有。
+/// 把觀察關進「有 translator 才會被建立」的子視圖,父層就能維持 optional 注入,
+/// 又不失去 `feed` 變動時的即時重繪。
+private struct TranslationFeedLines: View {
+    @ObservedObject var translator: MeetingLiveTranslator
+
+    var body: some View {
+        // 自帶 VStack(而不是把 ForEach 攤進父層):父層 spacing 是 10pt,那是**區塊之間**的節奏;
+        // 字幕的行與行是同一段連續的話,要 4pt 的緊密行距才讀得像一段字幕,不是四個獨立段落。
+        VStack(alignment: .leading, spacing: 4) {
+            // 只留最近 4 句:overlay 回答的是「對方**現在**在講什麼」,不是逐字稿捲軸
+            // (往前翻的需求由覆盤頁承接——那裡才有完整的 segment 時間軸)。
+            // 譯文優先於原文:看得懂的那一份才有用;翻譯失敗時 `translated` 本來就等於原文。
+            ForEach(translator.feed.suffix(4)) { line in
+                Text(line.translated)
+                    .font(.system(size: 12))
+                    .lineLimit(2)   // 長句截尾,不讓字幕把下面的開口稿擠出畫面
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
