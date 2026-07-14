@@ -193,8 +193,18 @@ private struct MeetingSessionRow: View {
             .buttonStyle(.plain).frame(width: 15)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(MeetingRowDisplay.title(startedAt: session.startedAt))
-                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(MeetingRowDisplay.title(startedAt: session.startedAt))
+                        .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    // 離線覆盤(從既有錄音重演)與 live 資料同構 —— 唯一分得出來的地方就是這個標記。
+                    // 沒有它,調校時會把一場 replay 的 cue 當成當時 live 真的抓到的東西。
+                    if session.sourceRaw == "replay" {
+                        Text("離線覆盤").font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.purple.opacity(0.15)))
+                            .foregroundStyle(.purple)
+                    }
+                }
                 if !session.appName.isEmpty {
                     Text(session.appName).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
@@ -224,9 +234,23 @@ private struct MeetingSessionDetailSheet: View {
     let session: MeetingLiveSession
     let onClose: () -> Void
 
-    private var sortedCues: [MeetingLiveCue] {
-        (session.cues ?? []).sorted { $0.askedAt < $1.askedAt }
+    @EnvironmentObject private var aiService: AIService
+    /// 補跑漏抓掃描的狀態(live session 專用;replay 在 generateReview 尾端就掃過了)。
+    @State private var sweeping = false
+    @State private var sweepMessage: String?
+
+    /// 三層排序(AC-41):有回應 / 未回應。判準與排序由純函式 `MeetingReviewOrdering` 決定。
+    private var cueGroups: (responded: [MeetingLiveCue], unresponded: [MeetingLiveCue]) {
+        MeetingReviewOrdering.tiers(cues: session.cues ?? [])
     }
+
+    /// 漏抓掃描結果(未被即時辨識的題目)。空字串 raw = **尚未掃描**,與「掃過了、零漏抓」("[]")
+    /// 是兩件事 —— UI 必須分開呈現,否則使用者永遠不會發現掃描其實沒跑成功。
+    private var sweepItems: [SweepItem] {
+        MeetingReviewSweep.decode(session.reviewSweepRaw)
+    }
+
+    private var isLiveSession: Bool { session.sourceRaw != "replay" }
 
     private var sortedSegments: [MeetingLiveSegment] {
         (session.segments ?? []).sorted { $0.committedAt < $1.committedAt }
@@ -241,13 +265,23 @@ private struct MeetingSessionDetailSheet: View {
                     if !session.brief.isEmpty {
                         section("會前 brief") { Text(session.brief).font(.system(size: 12)) }
                     }
-                    section("偵測到的問題與回應（\(sortedCues.count)）") {
-                        if sortedCues.isEmpty {
-                            Text("這場會議沒有偵測到需要回應的問題。").font(.system(size: 12)).foregroundStyle(.secondary)
+                    // 三層排序(AC-41):有回應 / 未回應 / 漏抓 —— 覆盤是調校用的,
+                    // 「管線交出了什麼、漏了什麼」要一眼看得出來,不必逐則展開診斷去比對。
+                    section("✅ 有回應的問題（\(cueGroups.responded.count)）") {
+                        if cueGroups.responded.isEmpty {
+                            Text("沒有任何問題產出回應。").font(.system(size: 12)).foregroundStyle(.secondary)
                         } else {
-                            ForEach(sortedCues) { cue in cueBlock(cue) }
+                            ForEach(cueGroups.responded) { cue in cueBlock(cue) }
                         }
                     }
+                    section("◽️ 未回應／資訊（\(cueGroups.unresponded.count)）") {
+                        if cueGroups.unresponded.isEmpty {
+                            Text("每一則偵測到的問題都有回應。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(cueGroups.unresponded) { cue in cueBlock(cue) }
+                        }
+                    }
+                    sweepSection
                     if !session.remoteTranscriptRaw.isEmpty {
                         section("對方逐字稿") {
                             Text(session.remoteTranscriptRaw).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -292,6 +326,80 @@ private struct MeetingSessionDetailSheet: View {
                 }
                 .padding(20)
             }
+        }
+    }
+
+    // MARK: - 漏抓掃描(FR-57)
+
+    /// 第三區:通用掃描找到、但即時偵測沒抓到的題目 —— 分類 prompt 的調校訊號。
+    @ViewBuilder
+    private var sweepSection: some View {
+        section("⚠️ 漏抓掃描（未被即時辨識）") {
+            Text("這些是通用掃描找到、但即時偵測沒抓到的——調校 cue 分類的線索。")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            if !sweepItems.isEmpty {
+                // SweepItem 無 id(純值物件)→ 用位置當身分。清單一次寫入後不再變動,位置穩定。
+                ForEach(Array(sweepItems.enumerated()), id: \.offset) { _, item in
+                    sweepBlock(item)
+                }
+            } else if session.reviewSweepRaw.isEmpty {
+                // 尚未掃描。live session 才給補跑按鈕:replay 在 `generateReview` 尾端就掃過了,
+                // 要重掃請重跑整場覆盤(那才是它的 A/B 單位)。
+                if isLiveSession {
+                    HStack(spacing: 8) {
+                        Button("執行漏抓掃描") { runSweep() }
+                            .controlSize(.small)
+                            .disabled(sweeping || session.remoteTranscriptRaw.isEmpty)
+                        if sweeping { ProgressView().controlSize(.small) }
+                        if let sweepMessage {
+                            Text(sweepMessage).font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(session.remoteTranscriptRaw.isEmpty
+                         ? "這場會議沒有留下對方逐字稿,無法掃描。"
+                         : "用一個無主題過濾的通用 prompt 重掃整份逐字稿,再與已偵測的問題比對差集(一次 fast model 呼叫)。")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                } else {
+                    Text("尚未掃描(這場覆盤的掃描沒有跑成功——重跑一次覆盤即可)。")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("掃描完成:沒有漏抓的題目。").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sweepBlock(_ item: SweepItem) -> some View {
+        HStack(spacing: 6) {
+            if !item.suggestedKind.isEmpty {
+                Text(MeetingCueKind.sweepLabelZH(item.suggestedKind))
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.orange.opacity(0.15)))
+                    .foregroundStyle(.orange)
+            }
+            Text(item.text).font(.system(size: 12)).textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// 補跑掃描。失敗**靜默**是 `MeetingReviewSweep.run` 的契約(它不 throw)——所以這裡靠
+    /// 「raw 還是空的」反推失敗並照實說,否則使用者會把「掃描失敗」誤讀成「沒有漏抓」。
+    private func runSweep() {
+        sweeping = true
+        sweepMessage = nil
+        let chat = MeetingCopilotController.makeFastCompleter(
+            aiService: aiService, config: MeetingCopilotConfigStore.shared)
+        Task {
+            await MeetingReviewSweep.run(
+                session: session, transcript: session.remoteTranscriptRaw, chat: chat)
+            if session.reviewSweepRaw.isEmpty {
+                sweepMessage = "掃描失敗或解析不出項目(詳見 Console log)"
+            }
+            sweeping = false
         }
     }
 
@@ -470,5 +578,12 @@ private extension MeetingCueKind {
         case .aboutMe: return "個人"
         case .informational: return "資訊"
         }
+    }
+
+    /// 掃描器的**建議**分類(裸 String,見 `SweepItem.suggestedKind`)→ 繁中小標。
+    /// 對不上五分類的值**原樣顯示**,不壓成「未知」:掃描器沒有主題過濾,它的分類與正式抽取
+    /// 不必然一致,而「掃描器覺得這是 X、正式抽取卻連抓都沒抓到」正是要留著看的調校線索。
+    static func sweepLabelZH(_ raw: String) -> String {
+        MeetingCueKind(rawValue: raw)?.displayLabelZH ?? raw
     }
 }

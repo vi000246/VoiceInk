@@ -38,6 +38,15 @@ private struct ReplayNoopGrounding: MeetingGroundingProviding {
     }
 }
 
+/// 排序用的素 struct(不碰 SwiftData)。`MeetingReviewOrdering.tiers` generic over protocol,
+/// 所以純函式測試不必開 in-memory container —— 鏡射 `CopilotOverlayArrangerTests` 的素 struct 測法。
+private struct ReviewCueStub: MeetingReviewOrderable {
+    let text: String
+    let askedAt: Date
+    var tier1Opener: String = ""
+    var tier2Analysis: String = ""
+}
+
 /// 離線覆盤(M8 C 組):AC-39 的分段純函式 + AC-38/AC-42 的 replay 管線。
 final class MeetingReplayReviewTests: XCTestCase {
 
@@ -280,6 +289,28 @@ final class MeetingReplayReviewTests: XCTestCase {
         XCTAssertEqual((session.segments ?? []).count, 3)
         XCTAssertTrue(session.reviewSweepRaw.isEmpty,
                       "解析不出東西 ≠ 零漏抓 —— 寧可留空(UI 顯示補跑按鈕),不要謊報「沒有漏抓」")
+    }
+
+    // MARK: - AC-41 覆盤三層排序
+
+    /// 覆盤詳情分兩層:**有回應**(tier1 開口稿 或 tier2 分析,任一有內容)/ **未回應**(informational、
+    /// tier1 失敗)。層內依 `askedAt` 升冪 —— 覆盤是回顧,照會議時間讀,不是 overlay 的「最新優先」。
+    ///
+    /// 判準寫死在純函式內(不是呼叫端傳的 closure):這條判準**就是**本測試要鎖的東西,
+    /// 交給呼叫端傳就變成「測試在驗自己寫的 closure」,view 大可用另一套判準而測試照樣綠。
+    func testReviewOrderingThreeTiers() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let answered = ReviewCueStub(text: "有回應", askedAt: t0, tier1Opener: "OPENER")
+        let info = ReviewCueStub(text: "資訊", askedAt: t0.addingTimeInterval(-10))
+        let failed = ReviewCueStub(text: "tier1失敗", askedAt: t0.addingTimeInterval(5))
+        // tier1 失敗但 deep 成功(Tier 2 直出)→ 仍算「有回應」:判準是 `||`,不是只看 tier1。
+        let deepOnly = ReviewCueStub(text: "只有深度分析", askedAt: t0.addingTimeInterval(20),
+                                     tier2Analysis: "分析內容")
+
+        let groups = MeetingReviewOrdering.tiers(cues: [failed, deepOnly, info, answered])
+
+        XCTAssertEqual(groups.responded.map(\.text), ["有回應", "只有深度分析"], "層內依 askedAt 升冪")
+        XCTAssertEqual(groups.unresponded.map(\.text), ["資訊", "tier1失敗"], "層內依 askedAt 升冪")
     }
 
     // MARK: - helpers

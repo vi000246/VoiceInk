@@ -105,6 +105,50 @@ enum ReplaySegmentation {
     }
 }
 
+// MARK: - 覆盤排序(AC-41)
+
+/// 覆盤排序需要的最小 cue 介面。
+///
+/// generic over **protocol**(而非 `CopilotOverlayArranger` 那樣 generic over closure)是刻意的:
+/// 「什麼叫有回應」是覆盤的**語意核心**,必須留在純函式內才會被測試鎖住 —— 讓呼叫端傳
+/// `isResponded` closure 的話,測試驗的是測試自己寫的那個 closure,view 大可用另一套判準而
+/// 測試照樣綠。(arranger 的 `isAnswered` 是 view 專屬的**視覺**規則,本來就該由呼叫端給,
+/// 兩者的歸屬不同。)素 struct 一樣能 conform → 純函式測試不必開 SwiftData container。
+protocol MeetingReviewOrderable {
+    var askedAt: Date { get }
+    var tier1Opener: String { get }
+    var tier2Analysis: String { get }
+}
+
+extension MeetingLiveCue: MeetingReviewOrderable {}
+
+/// 覆盤詳情的 cue 分層(FR-58/AC-41)。純函式 namespace,房子風格鏡射 `CopilotOverlayArranger`。
+///
+/// # 為什麼分層而不是照時間一路排下來
+///
+/// 覆盤的用途是**調校**:要一眼看出「哪些題目管線交出了東西、哪些沒有」。全部混在一條時間軸上,
+/// 一則 Tier 1 失敗的 cue 與一則 informational 長得一模一樣(都沒內容),得逐則展開診斷才分得出來
+/// —— 而那正是覆盤該替你做完的事。
+enum MeetingReviewOrdering {
+
+    /// cue 清單 → (有回應, 未回應)。
+    ///
+    /// - Returns: `responded` = 至少一層有產出(Tier 1 開口稿 **或** Tier 2 分析);其餘落 `unresponded`
+    ///   (informational 本來就不跑三層;Tier 1 失敗的也在這裡 —— 對覆盤而言兩者都是「沒交出東西」,
+    ///   要分辨是「不該跑」還是「跑了但失敗」看 cue 診斷區的 `tier1Error`)。
+    ///   各層依 `askedAt` **升冪** —— 覆盤是回顧,照會議發生的順序讀;overlay 的「最新優先」是
+    ///   即時場景的需求,搬到這裡只會讓人倒著讀一場會議。
+    static func tiers<C: MeetingReviewOrderable>(cues: [C]) -> (responded: [C], unresponded: [C]) {
+        let byTime = cues.sorted { $0.askedAt < $1.askedAt }
+        return (byTime.filter { isResponded($0) }, byTime.filter { !isResponded($0) })
+    }
+
+    /// 判準:任一層有內容 = 有回應。
+    private static func isResponded(_ cue: some MeetingReviewOrderable) -> Bool {
+        !cue.tier1Opener.isEmpty || !cue.tier2Analysis.isEmpty
+    }
+}
+
 // MARK: - 覆盤管線(AC-38、AC-42)
 
 /// 一份既有逐字稿 → 一場 replay `MeetingLiveSession`(逐段抽取 cue + 非 informational 跑 Tier 1)。

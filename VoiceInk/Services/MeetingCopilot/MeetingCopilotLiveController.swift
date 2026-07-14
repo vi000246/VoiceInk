@@ -88,8 +88,8 @@ final class MeetingCopilotLiveController {
 
         // 3. cue 偵測 controller。fast label 同時代表 cue 抽取模型
         //    (makeFastCompleter 以同一組設定解析,結果必然相同)。
-        let fast = makeStreamingCompleter(provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
-        let deep = makeStreamingCompleter(provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
+        let fast = Self.makeStreamingCompleter(provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
+        let deep = Self.makeStreamingCompleter(provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
         let extractor = ResponseCueExtractor(
             chat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config))
         let controller = MeetingCopilotController(
@@ -213,7 +213,13 @@ final class MeetingCopilotLiveController {
 
     // MARK: - Helpers
 
-    private func makeStreamingCompleter(
+    /// fast/deep 串流 completer + 觀測 label。
+    ///
+    /// **static + internal**:離線覆盤(錄音管理的「產生會議copilot覆盤」)要用與 live **同一套**
+    /// 解析規則組 `AnswerCoordinator` —— 兩邊各寫一份,遲早會在「storedModel 為 nil = 跟隨該
+    /// provider 目前選定的 model」這種邊角上分岔,覆盤結果就不再與 live 可比,而「可比」正是
+    /// 覆盤存在的理由(見 `ReplaySegmentation` 檔頭)。
+    static func makeStreamingCompleter(
         provider: String?, model: String?, aiService: AIService
     ) -> (completer: LiveStreamingChatCompleter, label: String) {
         let resolved = MeetingCopilotModels.resolve(

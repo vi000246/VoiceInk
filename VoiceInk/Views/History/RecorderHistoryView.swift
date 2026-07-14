@@ -938,8 +938,12 @@ private struct RecorderDetailSheet: View {
     let onClose: () -> Void
 
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var aiService: AIService
     /// 這筆錄音對應的 copilot session(依 importFingerprint 反查;nil = 非會議或當時沒開輔助)。
     @State private var meetingSessionId: UUID?
+    /// 非 nil = 離線覆盤跑動中(同時是進度來源:service 的 `@Published progress`)。
+    @State private var reviewService: MeetingReplayReviewService?
+    @State private var reviewError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -952,26 +956,16 @@ private struct RecorderDetailSheet: View {
                     Label("Ask AI 針對這筆提問", systemImage: "bubble.left.and.text.bubble.right.fill")
                 }
                 .controlSize(.small)
-                if let meetingSessionId {
-                    Button {
-                        onClose()
-                        AppNavigator.shared.openMeetingReview(sessionId: meetingSessionId)
-                    } label: {
-                        Label("會議copilot覆盤", systemImage: "person.2.wave.2.fill")
-                    }
-                    .controlSize(.small)
-                    .help("查看這場會議偵測到的問題與回應建議")
-                }
+                copilotReviewButtons
                 Spacer()
             }
             .padding(.horizontal, 16).padding(.top, 12)
-            .onAppear {
-                guard let fp = transcription.importFingerprint, !fp.isEmpty else { return }
-                var d = FetchDescriptor<MeetingLiveSession>(
-                    predicate: #Predicate { $0.importFingerprint == fp },
-                    sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
-                d.fetchLimit = 1
-                meetingSessionId = (try? modelContext.fetch(d))?.first?.id
+            .onAppear(perform: lookupMeetingSession)
+            if let reviewError {
+                Text(reviewError)
+                    .font(.system(size: 11)).foregroundStyle(AppTheme.Status.error)
+                    .padding(.horizontal, 16).padding(.top, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             RecordingCard(
                 transcription: transcription,
@@ -986,5 +980,109 @@ private struct RecorderDetailSheet: View {
             .padding(16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - 會議 copilot 覆盤(M8 AC-41:任一錄音都能離線產生覆盤)
+
+    @ViewBuilder
+    private var copilotReviewButtons: some View {
+        if let reviewService {
+            // 跑動中:段數進度(一小時的會議可以切出上百段,沒有分母看起來像當掉)。
+            ReplayReviewProgressLabel(service: reviewService)
+        } else if let meetingSessionId {
+            Button {
+                onClose()
+                AppNavigator.shared.openMeetingReview(sessionId: meetingSessionId)
+            } label: {
+                Label("會議copilot覆盤", systemImage: "person.2.wave.2.fill")
+            }
+            .controlSize(.small)
+            .help("查看這場會議偵測到的問題與回應建議")
+            Button {
+                generateReview()
+            } label: {
+                Label("重新產生", systemImage: "arrow.clockwise")
+            }
+            .controlSize(.small)
+            .help("用目前的模型與 prompt 設定重跑一次覆盤。舊的覆盤不會被覆蓋——同一份逐字稿的多次覆盤並存,正是 prompt 調校的 A/B 對照")
+        } else {
+            Button {
+                generateReview()
+            } label: {
+                Label("產生會議copilot覆盤", systemImage: "person.2.wave.2")
+            }
+            .controlSize(.small)
+            .help("用既有逐字稿重演一次即時輔助:逐段偵測問題、產生開口稿,並掃出即時偵測漏抓的題目(不重跑轉錄)")
+        }
+    }
+
+    private func lookupMeetingSession() {
+        guard let fp = transcription.importFingerprint, !fp.isEmpty else { return }
+        var d = FetchDescriptor<MeetingLiveSession>(
+            predicate: #Predicate { $0.importFingerprint == fp },
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
+        d.fetchLimit = 1
+        meetingSessionId = (try? modelContext.fetch(d))?.first?.id
+    }
+
+    /// 離線覆盤:既有逐字稿 → 一場 replay session,完成後直接開覆盤詳情。
+    ///
+    /// coordinator 的 fast/deep 一律走 `MeetingCopilotLiveController.makeStreamingCompleter`
+    /// —— 與 live **同一套**模型解析規則,兩邊各寫一份遲早分岔,覆盤結果就不再與 live 可比。
+    /// deep 在 replay 不會被呼叫(`AnswerCoordinator.runTier1ForReplay` 的成本紅線),但建構子
+    /// 要求它:給真的那顆,而不是一個從頭到尾不會被打到的假 stub。
+    private func generateReview() {
+        guard reviewService == nil else { return }
+        let config = MeetingCopilotConfigStore.shared
+        let fast = MeetingCopilotLiveController.makeStreamingCompleter(
+            provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
+        let deep = MeetingCopilotLiveController.makeStreamingCompleter(
+            provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
+        let coordinator = AnswerCoordinator(
+            fast: fast.completer,
+            deep: deep.completer,
+            grounding: MeetingGroundingProvider(screen: ScreenCaptureService(), modelContext: modelContext),
+            config: config,
+            fastLabel: fast.label,
+            deepLabel: deep.label)
+        let service = MeetingReplayReviewService(
+            extractorChat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config),
+            coordinator: coordinator,
+            modelContext: modelContext,
+            extractionModelLabel: fast.label,
+            config: config)
+
+        reviewError = nil
+        reviewService = service
+        Task {
+            do {
+                let session = try await service.generateReview(for: transcription)
+                reviewService = nil
+                onClose()
+                AppNavigator.shared.openMeetingReview(sessionId: session.id)
+            } catch {
+                // 失敗 = 整場 session 已被 service 刪掉(不留半套)→ 這裡只要照實顯示原因。
+                reviewService = nil
+                reviewError = "覆盤失敗:\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+/// 覆盤進度。**必須是獨立的 `@ObservedObject` 子 view**:父層用 `@State` 只存住 service 實例,
+/// 不會因它內部的 `@Published progress` 變動而重繪 —— 進度條會一直停在起點。
+private struct ReplayReviewProgressLabel: View {
+    @ObservedObject var service: MeetingReplayReviewService
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+
+    private var text: String {
+        guard let p = service.progress, p.total > 0 else { return "覆盤中…" }
+        return "覆盤中… \(p.done)/\(p.total)"
     }
 }
