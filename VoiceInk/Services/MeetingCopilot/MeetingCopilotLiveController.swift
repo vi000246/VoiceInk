@@ -137,6 +137,9 @@ final class MeetingCopilotLiveController {
             }
         }
 
+        // 7. 筆記索引跟上這場會議前的最新編輯(fire-and-forget,不擋 attach)。
+        scheduleNotesReindex(config: config)
+
         self.transcriber = transcriber
         self.controller = controller
         self.coordinator = coordinator
@@ -160,6 +163,45 @@ final class MeetingCopilotLiveController {
         self.controller = nil
         self.coordinator = nil
         self.grounding = nil
+    }
+
+    // MARK: - 筆記增量索引(M8)
+
+    /// 筆記索引的 sidecar 狀態檔。設定頁的「重建筆記索引」與這裡的背景掃描**必須共用同一份**——
+    /// 各記各的 hash 表會讓兩邊互相看起來都是「全新 vault」,每次都全量重嵌(純燒 embedding 錢)。
+    static func notesIndexStateURL() throws -> URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("obsidian-index-state.json")
+    }
+
+    /// attach 後排一次筆記增量掃描。**不阻塞 attach**:會議已經在錄,索引晚幾秒到位沒關係;
+    /// 失敗只記 log 就算了——檢索不到就是沒接地,跟「沒設 vault」走同一條退路
+    /// (與 `MeetingGroundingProvider` 的靜默紀律一致)。
+    private func scheduleNotesReindex(config: MeetingCopilotConfigStore) {
+        // 兩個開關都關 = 沒人會用到筆記塊 → 連掃都不掃(不平白打 embedding API)。
+        guard config.useNotesRAG || config.notesInTechnicalRAG else { return }
+        guard let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
+              let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) else { return }
+        let includeOnly = config.notesIncludeOnlyFolders
+        let excluded = config.notesExcludedFolders
+        Task.detached(priority: .background) { [weak self] in
+            await self?.runNotesReindex(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+        }
+    }
+
+    private func runNotesReindex(vaultRoot: URL, includeOnly: [String], excluded: [String]) async {
+        guard let modelContext else { return }
+        do {
+            let index = ObsidianNoteIndexService(
+                modelContext: modelContext, stateURL: try Self.notesIndexStateURL())
+            let count = try await index.reindex(
+                vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+            logger.notice("🗂️ 筆記增量索引完成(重嵌 \(count, privacy: .public) 檔)")
+        } catch {
+            logger.notice("🗂️ 筆記增量索引失敗: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Helpers

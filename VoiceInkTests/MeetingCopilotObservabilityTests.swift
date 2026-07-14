@@ -198,12 +198,40 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         XCTAssertTrue(snapshot.cueSystemPrompt.contains("directQuestion"), "cue 偵測 prompt 全文入快照")
         XCTAssertTrue(snapshot.tier1SystemPrompt.contains("你是資深 iOS 工程師。"), "persona 已渲染進 tier prompt")
 
+        // M8:筆記 RAG 三件套也是變因(改了會影響 aboutMe cue 的接地與 prompt)→ 必須進快照。
+        XCTAssertEqual(snapshot.useNotesRAG, config.useNotesRAG)
+        XCTAssertEqual(snapshot.notesInTechnicalRAG, config.notesInTechnicalRAG)
+        XCTAssertEqual(snapshot.aboutMeBrief, config.aboutMeBrief)
+
         let json = snapshot.encodedJSON()
         XCTAssertFalse(json.isEmpty)
         let decoded = MeetingCopilotRunConfig.decode(json)
         XCTAssertNotNil(decoded)
         XCTAssertEqual(decoded?.fastModel, snapshot.fastModel)
         XCTAssertEqual(decoded?.cueSystemPrompt, snapshot.cueSystemPrompt)
+        XCTAssertEqual(decoded?.useNotesRAG, snapshot.useNotesRAG)
+        XCTAssertEqual(decoded?.aboutMeBrief, snapshot.aboutMeBrief)
+    }
+
+    /// 快照加了 M8 欄位後,**M8 之前寫下的舊快照必須仍解得開**。
+    /// Swift 合成的 Decodable 不會套用屬性預設值——非 optional 新欄位會讓整份 decode 失敗,
+    /// 覆盤頁就從結構化設定退回 configRaw 純文字,舊 session 的變因全變不可讀。
+    func testRunConfigDecodesLegacySnapshotMissingM8Fields() throws {
+        let snapshot = MeetingCopilotRunConfig.capture(
+            config: MeetingCopilotConfigStore(), asrModelDisplayName: "m",
+            fastModelLabel: "groq/x", deepModelLabel: "d")
+
+        // 從現行快照剝掉 M8 三欄 = 模擬 M8 之前的 JSON(其餘欄位齊全)。
+        var dict = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(snapshot.encodedJSON().utf8)) as? [String: Any])
+        for key in ["useNotesRAG", "notesInTechnicalRAG", "aboutMeBrief"] { dict.removeValue(forKey: key) }
+        let legacy = try XCTUnwrap(String(
+            data: try JSONSerialization.data(withJSONObject: dict), encoding: .utf8))
+
+        let decoded = try XCTUnwrap(MeetingCopilotRunConfig.decode(legacy), "舊快照必須仍可解碼")
+        XCTAssertEqual(decoded.fastModel, "groq/x", "舊欄位照常還原")
+        XCTAssertNil(decoded.useNotesRAG, "舊 session 當時沒有這個設定 → nil,不是硬編一個 false 出來")
+        XCTAssertNil(decoded.aboutMeBrief)
     }
 
     /// 診斷匯出:一場 session 的時間軸/偵測/三層觀測資料組成一份可解析的 JSON。

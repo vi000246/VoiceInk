@@ -9,6 +9,10 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         "meetingCopilotFastModelV1",
         "meetingCopilotShowInformationalCuesV1",
         "meetingCopilotAboutMeBriefV1",
+        "meetingCopilotUseNotesRAGV1",
+        "meetingCopilotNotesInTechnicalRAGV1",
+        "meetingCopilotNotesIncludeOnlyV1",
+        "meetingCopilotNotesExcludedV1",
     ]
     private var saved: [String: Any?] = [:]
 
@@ -56,5 +60,36 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
 
         store.setAboutMeBrief("後端工程師,主力專案A")
         XCTAssertEqual(MeetingCopilotConfigStore().aboutMeBrief, "後端工程師,主力專案A")
+    }
+
+    /// M8 Task 7:筆記 RAG 的設定(兩個開關＋自介＋include/exclude 資料夾清單)round-trip。
+    func testNotesRAGSettingsRoundTrip() {
+        let store = MeetingCopilotConfigStore()
+        XCTAssertTrue(store.useNotesRAG, "預設開:被問到自己的經歷時,筆記是唯一有答案的來源")
+        XCTAssertFalse(store.notesInTechnicalRAG, "預設關:技術答案不被個人筆記污染")
+        XCTAssertEqual(store.notesIncludeOnlyFolders, [], "空 = 不限資料夾")
+        XCTAssertEqual(store.notesExcludedFolders, [".obsidian", ".trash", "Templates"],
+                       "預設擋掉 obsidian 設定檔/垃圾桶/範本(純雜訊,嵌了只會稀釋檢索品質)")
+
+        store.setUseNotesRAG(false)
+        store.setNotesInTechnicalRAG(true)
+        store.setAboutMeBrief("後端工程師")
+        store.setNotesIncludeOnlyFolders(["工作"])
+        store.setNotesExcludedFolders([".obsidian"])
+
+        let reloaded = MeetingCopilotConfigStore()
+        XCTAssertFalse(reloaded.useNotesRAG)
+        XCTAssertTrue(reloaded.notesInTechnicalRAG)
+        XCTAssertEqual(reloaded.aboutMeBrief, "後端工程師")
+        XCTAssertEqual(reloaded.notesIncludeOnlyFolders, ["工作"])
+        XCTAssertEqual(reloaded.notesExcludedFolders, [".obsidian"])
+    }
+
+    /// 空排除清單必須能覆寫預設——「使用者清空」與「使用者沒設定過」是**不同**語意。
+    /// load() 若拿 `!isEmpty` 當「有設定」的判準,清空後會被預設三個資料夾蓋回去,永遠清不掉。
+    func testEmptyExcludedFoldersOverridesDefault() {
+        MeetingCopilotConfigStore().setNotesExcludedFolders([])
+        XCTAssertEqual(MeetingCopilotConfigStore().notesExcludedFolders, [],
+                       "空陣列是合法設定,不可被預設值蓋回")
     }
 }

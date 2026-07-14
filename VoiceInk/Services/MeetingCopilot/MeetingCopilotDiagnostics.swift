@@ -28,6 +28,16 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
     var tier1SystemPrompt: String = ""
     var tier2SystemPrompt: String = ""
 
+    // M8:個人筆記 RAG 的三個變因(改了會影響 aboutMe cue 的接地來源與 prompt)。
+    //
+    // **optional 是刻意的**:Swift 合成的 Decodable **不會**套用屬性預設值——非 optional 的新欄位
+    // 會讓所有 M8 之前寫下的舊快照 decode 整份失敗(`MeetingSessionDiagnostics.build` 就退回
+    // `configRaw` 純文字,舊 session 的變因全變不可讀)。nil = 那場會議錄製時還沒有這個設定,
+    // 這比硬編一個 false 誠實。
+    var useNotesRAG: Bool?
+    var notesInTechnicalRAG: Bool?
+    var aboutMeBrief: String?
+
     /// 從目前設定組快照。`fastModelLabel`/`deepModelLabel` 由呼叫端解析
     /// (需要 AIService 的 connected providers,config store 本身不知道)。
     @MainActor
@@ -53,7 +63,10 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
             dedupWindowSeconds: MeetingCueDeduplicator.defaultWindow,
             cueSystemPrompt: ResponseCueExtractor.systemPrompt,
             tier1SystemPrompt: TierPrompts.tier1System(persona: config.domainPersona),
-            tier2SystemPrompt: TierPrompts.tier2System(persona: config.domainPersona))
+            tier2SystemPrompt: TierPrompts.tier2System(persona: config.domainPersona),
+            useNotesRAG: config.useNotesRAG,
+            notesInTechnicalRAG: config.notesInTechnicalRAG,
+            aboutMeBrief: config.aboutMeBrief)
     }
 
     func encodedJSON() -> String {

@@ -40,6 +40,8 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let useNotesRAGKey = "meetingCopilotUseNotesRAGV1"
     private let notesInTechnicalRAGKey = "meetingCopilotNotesInTechnicalRAGV1"
     private let aboutMeBriefKey = "meetingCopilotAboutMeBriefV1"
+    private let notesIncludeOnlyKey = "meetingCopilotNotesIncludeOnlyV1"
+    private let notesExcludedKey = "meetingCopilotNotesExcludedV1"
 
     // MARK: - Settings
 
@@ -129,6 +131,14 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 預設空字串 → prompt 直接略過該行(不留空欄位誤導模型「我沒有自介」)。
     @Published private(set) var aboutMeBrief: String = ""
 
+    /// 只索引 vault 這些**第一層資料夾**(`ObsidianNoteIndexService.scanMarkdownFiles` 的過濾粒度)。
+    /// 空 = 不限資料夾(全 vault)。
+    @Published private(set) var notesIncludeOnlyFolders: [String] = []
+
+    /// 排除的第一層資料夾。預設擋掉 obsidian 自身的設定檔、垃圾桶與範本——這些是純雜訊,
+    /// 嵌進索引只會稀釋檢索品質又多花 embedding 錢。
+    @Published private(set) var notesExcludedFolders: [String] = [".obsidian", ".trash", "Templates"]
+
     // MARK: - Init
 
     init() {
@@ -171,6 +181,12 @@ final class MeetingCopilotConfigStore: ObservableObject {
         useNotesRAG = (d.object(forKey: useNotesRAGKey) as? Bool) ?? true   // 未設定 → true
         notesInTechnicalRAG = (d.object(forKey: notesInTechnicalRAGKey) as? Bool) ?? false
         if let b = d.string(forKey: aboutMeBriefKey), !b.isEmpty { aboutMeBrief = b }   // 照 domainPersona
+
+        // GOTCHA:只 `if let`(stringArray 未設定才回 nil),**不可**再加 `!isEmpty` 條件——
+        // 「使用者清空排除清單」與「使用者沒設定過」是不同語意;把空陣列當成沒設定,
+        // 就會被上面的預設值蓋回去,使用者永遠清不掉預設排除。
+        if let a = d.stringArray(forKey: notesIncludeOnlyKey) { notesIncludeOnlyFolders = a }
+        if let a = d.stringArray(forKey: notesExcludedKey) { notesExcludedFolders = a }
     }
 
     // MARK: - Mutators
@@ -270,5 +286,15 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setAboutMeBrief(_ value: String) {
         aboutMeBrief = value
         UserDefaults.standard.set(value, forKey: aboutMeBriefKey)
+    }
+
+    func setNotesIncludeOnlyFolders(_ value: [String]) {
+        notesIncludeOnlyFolders = value
+        UserDefaults.standard.set(value, forKey: notesIncludeOnlyKey)
+    }
+
+    func setNotesExcludedFolders(_ value: [String]) {
+        notesExcludedFolders = value
+        UserDefaults.standard.set(value, forKey: notesExcludedKey)
     }
 }

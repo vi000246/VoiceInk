@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// 「會議即時輔助」設定(FR-30)。clone `RecorderModeSettingsView` 的 Form + Binding 模式。
 /// 繁中字面;config 的 @Published 是 private(set),每個控制項用 `Binding(get:set:)` 包。
@@ -6,10 +7,20 @@ import SwiftUI
 struct MeetingCopilotSettingsView: View {
     @StateObject private var store = MeetingCopilotConfigStore.shared
     @StateObject private var scriptStore = PresenterScriptStore.shared
+    /// vault 根目錄是全域錄音設定(「錄音裝置」頁選的),筆記 RAG 直接沿用同一個。
+    @StateObject private var recorderStore = RecorderConfigStore.shared
     @EnvironmentObject private var aiService: AIService
+    @Environment(\.modelContext) private var modelContext
 
     /// 講稿編輯 sheet 的暫存(nil = 未開啟)。
     @State private var scriptDraft: ScriptDraft?
+
+    /// 資料夾清單的**編輯中原字串**。不直接 bind 陣列:逐鍵解析會把使用者剛打的逗號吃掉
+    /// (["a"] → get 回 "a" → 逗號當場消失)。原字串留在 @State,解析結果同步寫進 store。
+    @State private var includeOnlyText: String = ""
+    @State private var excludedText: String = ""
+    @State private var indexing = false
+    @State private var indexMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,11 +35,16 @@ struct MeetingCopilotSettingsView: View {
                 asrSection
                 modelSection
                 groundingSection
+                notesRAGSection
                 presetScriptsSection
                 overlaySection
                 hotkeySection
             }
             .formStyle(.grouped)
+            .onAppear {
+                includeOnlyText = store.notesIncludeOnlyFolders.joined(separator: ", ")
+                excludedText = store.notesExcludedFolders.joined(separator: ", ")
+            }
             .sheet(item: $scriptDraft) { draft in
                 ScriptEditorSheet(
                     draft: draft,
@@ -146,6 +162,94 @@ struct MeetingCopilotSettingsView: View {
             }
             Text("讓答案針對你的專案,而非教科書。brief 在各場會議的詳情頁填。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - 個人筆記 RAG（M8）
+
+    private var notesRAGSection: some View {
+        Section("個人筆記 RAG") {
+            LabeledContent("Obsidian Vault") {
+                if let path = vaultRoot?.path {
+                    Text(path).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text("尚未設定——到「錄音裝置」設定 Obsidian Vault")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+            Toggle("被問到我的經歷/專案時檢索筆記", isOn: bind(\.useNotesRAG, store.setUseNotesRAG))
+            Toggle("技術問題也參考筆記", isOn: bind(\.notesInTechnicalRAG, store.setNotesInTechnicalRAG))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("我的自介(常駐注入,檢索失敗時的保底事實)")
+                TextField("例:後端工程師,主力專案 X(訂單系統重構)",
+                          text: bind(\.aboutMeBrief, store.setAboutMeBrief), axis: .vertical)
+                    .lineLimit(2...4)
+            }
+
+            TextField("只索引這些資料夾(逗號分隔,空=全部)", text: $includeOnlyText)
+                .onChange(of: includeOnlyText) { _, new in
+                    store.setNotesIncludeOnlyFolders(Self.parseFolders(new))
+                }
+            TextField("排除資料夾(逗號分隔)", text: $excludedText)
+                .onChange(of: excludedText) { _, new in
+                    store.setNotesExcludedFolders(Self.parseFolders(new))
+                }
+
+            HStack(spacing: 8) {
+                Button("重建筆記索引") { reindexNotes() }
+                    .disabled(indexing)
+                if indexing { ProgressView().controlSize(.small) }
+                if let indexMessage {
+                    Text(indexMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Text("被問到「你做過什麼」時,從 Obsidian 筆記撈出事實錨點餵給模型,而不是讓它編。開會時會自動增量掃描(只重嵌改過的檔);這個按鈕是要立刻補索引時用的。需要 embedding 金鑰(到「Ask AI」設定)。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// vault 根目錄(未設定 → nil)。與 `RecordersSettingsView.VaultRootCard` 同一條解析路徑。
+    private var vaultRoot: URL? {
+        guard let bookmark = recorderStore.vaultRootBookmark else { return nil }
+        return VaultExportService.shared.resolveVaultRoot(bookmark)
+    }
+
+    /// "工作, 專案 ,," → ["工作", "專案"]。空項與前後空白一律丟掉。
+    private static func parseFolders(_ raw: String) -> [String] {
+        raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func reindexNotes() {
+        guard let vaultRoot else {
+            indexMessage = "尚未設定 Obsidian Vault"
+            return
+        }
+        indexing = true
+        indexMessage = nil
+        Task {
+            do {
+                // stateURL 與 live 端的背景掃描共用(見 MeetingCopilotLiveController.notesIndexStateURL)。
+                let index = ObsidianNoteIndexService(
+                    modelContext: modelContext,
+                    stateURL: try MeetingCopilotLiveController.notesIndexStateURL())
+                let count = try await index.reindex(
+                    vaultRoot: vaultRoot,
+                    includeOnly: store.notesIncludeOnlyFolders,
+                    excluded: store.notesExcludedFolders)
+                indexMessage = count == 0
+                    ? "已是最新(沒有檔案變動)"
+                    : "已索引 \(count) 檔"
+            } catch EmbeddingError.missingAPIKey {
+                indexMessage = "需要 Gemini/OpenAI embedding 金鑰(Ask AI 設定)"
+            } catch {
+                indexMessage = "索引失敗:\(error.localizedDescription)"
+            }
+            indexing = false
         }
     }
 
