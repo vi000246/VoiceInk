@@ -129,48 +129,10 @@ enum TierPrompts {
         return lines.joined(separator: "\n")
     }
 
-    // MARK: - Tier 2(aboutMe 變體,M8 FR-48 / AC-33)
-
-    /// aboutMe cue 的 Tier 2 system。JSON 契約(analysis/followUps/uncertainties)與 `tier2System`
-    /// **完全相同**——`TierParsers.parseTier2` 共用,overlay 也不必分支。
-    ///
-    /// # `uncertainties` 的語意在這裡被重新定義
-    /// 技術題的 uncertainties = 「我不確定、需要實測或查證的技術點」;
-    /// aboutMe 的 uncertainties = 「**筆記沒覆蓋**、需要我靠現場記憶補充的部分」。
-    /// 這個差別對現場很關鍵:它不是「待辦查證清單」,而是**當場的警示燈**——列在這裡的東西
-    /// 模型不知道,我只能靠腦袋補;overlay 上看到它,我就知道那幾句必須自己接、不能照著唸。
-    /// 禁止捏造的鐵律照舊保留(而且更硬:寧可列進 uncertainties 也不准填空)。
-    static func tier2SystemAboutMe(persona: String,
-                                   outputLanguage: String = defaultOutputLanguage) -> String {
-        """
-        \(persona)
-        以下是對方問到**我本人的經歷／專案／貢獻**,以及我剛才的初步開口稿。
-        「我的筆記」與「我的自介」是**唯一事實來源**——只能使用它們補強成足以應付追問的回答。
-        **鐵律:不要捏造/編造任何專案、職稱、時間、數字或我沒做過的事。**
-        筆記沒記載的,不要硬掰也不要合理推測——列進 uncertainties。
-        只輸出 JSON(不要 markdown code fence、不要其他文字),格式:
-        {
-          "analysis": "<以筆記為據的完整回答,可分段;用第一人稱、講具體的事與數字>",
-          "followUps": [{"question":"<對方很可能接著追問的問題>","oneLineAnswer":"<一句話答案,同樣只用筆記>"}],
-          "uncertainties": ["<筆記沒覆蓋、需要我靠現場記憶補充的部分>"]
-        }
-        followUps 給 2-3 個最可能的追問。
-        一律以\(outputLanguage)回答——不論對方用什麼語言發問(JSON 內的文字也是;key 名維持英文)。
-        """
-    }
-
-    /// aboutMe 的 Tier 2 user。= 既有 `tier2User`(接地 + cue + Tier 1 草稿,AC-8)+ 自介行(空則略)。
-    static func tier2UserAboutMe(cue: String, draft: Tier1Draft, grounding: MeetingGrounding,
-                                 aboutMeBrief: String) -> String {
-        var lines: [String] = []
-        // 同 tier1UserAboutMe:筆記標題與 system 的「唯一事實來源」同一口徑。
-        let g = grounding.userBlock(excerptLabel: .personalNotes)
-        if !g.isEmpty { lines.append(g) }
-        if !aboutMeBrief.isEmpty { lines.append("我的自介:\(aboutMeBrief)") }
-        lines.append("對方問/說:\(cue)")
-        lines.append("")
-        lines.append("我的初步開口稿:")
-        lines.append(draft.draftText)
-        return lines.joined(separator: "\n")
-    }
+    // MARK: - Tier 2 的 aboutMe 變體:M9 FR-67 已移除
+    //
+    // aboutMe cue 一律不進 Tier 2(`AnswerCoordinator.runAutoDeep` / `requestDeep` 兩處守門),
+    // 這兩個 prompt 變體因此成了死碼,隨 FR-67 一起刪除。
+    // 理由:記憶錨點看一眼就夠——深度分析對「回憶自己的經歷」沒有增量,只是多一段對話中讀不完的
+    // 文字 + 一次 deep token。要復活這條路,先撤掉那兩道守門,別只把 prompt 函式加回來。
 }

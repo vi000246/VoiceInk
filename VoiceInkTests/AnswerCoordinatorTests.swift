@@ -24,6 +24,19 @@ private final class SpyGrounding: MeetingGroundingProviding {
     }
 }
 
+/// 恰好回一則 RAG 片段的接地 fake。
+///
+/// 為什麼需要它:aboutMe 的**零接地短路**(FR-65)會在 `NoopGrounding` 下攔在 LLM 之前——用它測
+/// 「aboutMe 不進 deep」等於什麼都沒測(deep 沒被呼叫的原因是 tier1 根本沒跑完)。要驗的是**有筆記、
+/// tier1 正常走完 LLM 路徑之後**,deep 仍然不被拉起來,所以接地必須非空。
+private struct GroundingWithOneExcerpt: MeetingGroundingProviding {
+    func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
+                sources: Set<String>?) async -> MeetingGrounding {
+        MeetingGrounding(brief: brief, ragExcerpts: ["《訂單分庫》我主導了快取重構，P99 800→120ms"],
+                         screenText: nil)
+    }
+}
+
 /// 可掛起的串流 fake:`stream` 開著但**不吐字**,直到測試呼叫 `releaseAll()` 才吐完 reply 並結束。
 ///
 /// 為什麼需要它:展開保護（FR-54）只在「某則 cue 的 Tier 2 還在途」的那段時間窗內有意義,
@@ -409,5 +422,36 @@ final class AnswerCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(fast.callCount, 0)
         XCTAssertEqual(cue.tier1Bullets, ["後端工程師，主力訂單系統重構"])
+    }
+
+    // MARK: - M9 FR-67:aboutMe 不進 Tier 2
+
+    /// 🔴 AC-51:aboutMe 一律不進 deep——**auto 與手動兩條路都是 no-op**。
+    ///
+    /// 這裡刻意用 `GroundingWithOneExcerpt`(而非 NoopGrounding):有筆記片段 → tier1 走完整的 LLM
+    /// 路徑、寫回草稿,零接地短路(FR-65)不會先幫忙擋住。所以 deep 沒被呼叫,只可能是 kind 守門本身。
+    /// 深度分析對「回憶自己的經歷」沒有增量(錨點看一眼就夠),多的只是一段對話中讀不完的文字
+    /// 與一次 deep token。
+    func testAboutMeNeverEntersDeep() async {
+        let fast = FakeStreamingChatCompleting(script: ["OPENER: 我主導過訂單分庫\n- 訂單分庫 · 主導"])
+        let deep = FakeStreamingChatCompleting(script: [
+            #"{"analysis":"x","followUps":[],"uncertainties":[]}"#
+        ])
+        let coord = AnswerCoordinator(fast: fast, deep: deep, grounding: GroundingWithOneExcerpt(),
+                                      config: makeConfig(autoDeep: true))
+        let cue = makeCue(text: "你最有成就的專案？", kind: .aboutMe)
+
+        await coord.onNewCue(cue)
+        await coord.awaitQuiescentForTest()
+
+        XCTAssertEqual(fast.callCount, 1, "有筆記片段 → tier1 照常走 LLM(短路沒接手,守門才是唯一原因)")
+        XCTAssertEqual(cue.tier1Opener, "我主導過訂單分庫", "Tier 1 完整寫回")
+        XCTAssertEqual(deep.callCount, 0, "auto-deep 必須跳過 aboutMe")
+
+        await coord.requestDeep(cue)
+
+        XCTAssertEqual(deep.callCount, 0, "手動 requestDeep 對 aboutMe 也是 no-op")
+        XCTAssertTrue(cue.tier2Analysis.isEmpty)
+        XCTAssertTrue(cue.tier2TriggerRaw.isEmpty, "沒跑 → 觸發來源為空")
     }
 }

@@ -20,9 +20,9 @@ final class TierPromptsTests: XCTestCase {
         XCTAssertTrue(u.contains("主力專案A"))
     }
 
-    func testAboutMeTier2UncertaintiesSemantics() {
-        XCTAssertTrue(TierPrompts.tier2SystemAboutMe(persona: "p").contains("筆記沒覆蓋"))
-    }
+    // M9 FR-67:aboutMe 不進 Tier 2 → Tier 2 的兩個 aboutMe prompt 變體已刪除,原本鎖它們的
+    // `testAboutMeTier2UncertaintiesSemantics` 與 `testAboutMeTier2UserCarriesDraftAndBrief` 一併移除
+    //(守門的回歸鎖改由 `AnswerCoordinatorTests.testAboutMeNeverEntersDeep` 負責)。
 
     /// 自介留空(預設值)→ 不留下一行空的「我的自介:」誤導模型「我沒有自介」。
     func testEmptyAboutMeBriefSkipsLine() {
@@ -32,7 +32,7 @@ final class TierPromptsTests: XCTestCase {
         XCTAssertTrue(u.contains("你做過什麼?"), "cue 行一定在")
     }
 
-    /// M8 AC-46:四個 tier system prompt 都要指定輸出語言。
+    /// M8 AC-46:每個 tier system prompt 都要指定輸出語言(M9 FR-67 刪掉 tier2 aboutMe 變體後剩三個)。
     ///
     /// 英文會議時,cue 原句與接地片段全是英文——模型會很自然地跟著用英文回答,
     /// 於是 overlay 上的「開口稿」變成一句我唸不順的英文。開口稿的用途是**直接照著唸**,
@@ -40,8 +40,7 @@ final class TierPromptsTests: XCTestCase {
     func testAllTierSystemPromptsCarryOutputLanguage() {
         for s in [TierPrompts.tier1System(persona: "p", outputLanguage: "繁體中文"),
                   TierPrompts.tier2System(persona: "p", outputLanguage: "繁體中文"),
-                  TierPrompts.tier1SystemAboutMe(persona: "p", outputLanguage: "繁體中文"),
-                  TierPrompts.tier2SystemAboutMe(persona: "p", outputLanguage: "繁體中文")] {
+                  TierPrompts.tier1SystemAboutMe(persona: "p", outputLanguage: "繁體中文")] {
             XCTAssertTrue(s.contains("以繁體中文回答"))
         }
     }
@@ -51,18 +50,6 @@ final class TierPromptsTests: XCTestCase {
         let s = TierPrompts.tier1System(persona: "p", outputLanguage: "English")
         XCTAssertTrue(s.contains("以English回答"))
         XCTAssertFalse(s.contains("以繁體中文回答"))
-    }
-
-    /// tier2 user 變體照既有 tier2User 契約帶入 Tier 1 草稿(AC-8),外加自介行。
-    func testAboutMeTier2UserCarriesDraftAndBrief() {
-        let draft = Tier1Draft(opener: "我主導過訂單分庫", bullets: ["訂單分庫", "P99 800→120ms", ""])
-        let u = TierPrompts.tier2UserAboutMe(
-            cue: "你的貢獻?", draft: draft,
-            grounding: MeetingGrounding(brief: "", ragExcerpts: ["《訂單分庫》筆記"], screenText: nil),
-            aboutMeBrief: "後端工程師")
-        XCTAssertTrue(u.contains("我主導過訂單分庫"), "Tier1 草稿帶入")
-        XCTAssertTrue(u.contains("《訂單分庫》筆記"), "接地帶入")
-        XCTAssertTrue(u.contains("後端工程師"), "自介帶入")
     }
 
     /// 🟠 回歸鎖（2026-07-14）：aboutMe 的**片段標題不得自打嘴巴**。
@@ -75,14 +62,11 @@ final class TierPromptsTests: XCTestCase {
         let g = MeetingGrounding(brief: "", ragExcerpts: ["《專案A》我主導了快取重構，P99 800→120ms"],
                                  screenText: nil)
 
-        for u in [TierPrompts.tier1UserAboutMe(cue: "你有什麼貢獻?", grounding: g, aboutMeBrief: ""),
-                  TierPrompts.tier2UserAboutMe(cue: "你有什麼貢獻?",
-                                               draft: Tier1Draft(opener: "o", bullets: []),
-                                               grounding: g, aboutMeBrief: "")] {
-            XCTAssertTrue(u.contains("唯一事實來源"), "aboutMe 的筆記是唯一事實來源，標題要這樣說")
-            XCTAssertFalse(u.contains("可能過時"), "不能同時說「唯一事實來源」又說「可能過時」")
-            XCTAssertTrue(u.contains("我主導了快取重構"), "片段本身照樣帶入")
-        }
+        // M9 FR-67 之後 aboutMe 只剩 tier1 這一個 user 變體(tier2 變體已刪)。
+        let u = TierPrompts.tier1UserAboutMe(cue: "你有什麼貢獻?", grounding: g, aboutMeBrief: "")
+        XCTAssertTrue(u.contains("唯一事實來源"), "aboutMe 的筆記是唯一事實來源，標題要這樣說")
+        XCTAssertFalse(u.contains("可能過時"), "不能同時說「唯一事實來源」又說「可能過時」")
+        XCTAssertTrue(u.contains("我主導了快取重構"), "片段本身照樣帶入")
 
         // 技術 cue 的歷史逐字稿**確實**可能過時 —— 那句話留著，不是回歸。
         let technical = TierPrompts.tier1User(cue: "怎麼設計快取?", grounding: g)

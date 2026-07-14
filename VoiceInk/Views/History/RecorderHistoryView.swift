@@ -939,8 +939,9 @@ private struct RecorderDetailSheet: View {
 
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var aiService: AIService
-    /// 這筆錄音對應的 copilot session(依 importFingerprint 反查;nil = 非會議或當時沒開輔助)。
-    @State private var meetingSessionId: UUID?
+    /// 這筆錄音的覆盤按鈕三態(依 importFingerprint 反查全部 session 後判定;M9 FR-70)。
+    /// `.generate` = 非會議、當時沒開輔助、或 live 場已被刪掉。
+    @State private var reviewButtonState: CopilotReviewButtons.State = .generate
     /// 非 nil = 離線覆盤跑動中(同時是進度來源:service 的 `@Published progress`)。
     @State private var reviewService: MeetingReplayReviewService?
     @State private var reviewError: String?
@@ -989,40 +990,57 @@ private struct RecorderDetailSheet: View {
         if let reviewService {
             // 跑動中:段數進度(一小時的會議可以切出上百段,沒有分母看起來像當掉)。
             ReplayReviewProgressLabel(service: reviewService)
-        } else if let meetingSessionId {
-            Button {
-                onClose()
-                AppNavigator.shared.openMeetingReview(sessionId: meetingSessionId)
-            } label: {
-                Label("會議copilot覆盤", systemImage: "person.2.wave.2.fill")
-            }
-            .controlSize(.small)
-            .help("查看這場會議偵測到的問題與回應建議")
-            Button {
-                generateReview()
-            } label: {
-                Label("重新產生", systemImage: "arrow.clockwise")
-            }
-            .controlSize(.small)
-            .help("用目前的模型與 prompt 設定重跑一次覆盤。舊的覆盤不會被覆蓋——同一份逐字稿的多次覆盤並存,正是 prompt 調校的 A/B 對照")
         } else {
-            Button {
-                generateReview()
-            } label: {
-                Label("產生會議copilot覆盤", systemImage: "person.2.wave.2")
+            // M9 FR-70:有 live 場就不給補做——只有「查看」;live 被刪掉後「產生」自然回來。
+            switch reviewButtonState {
+            case .viewOnly(let latest):
+                openReviewButton(sessionId: latest)
+            case .viewAndRegenerate(let latest):
+                openReviewButton(sessionId: latest)
+                Button {
+                    generateReview()
+                } label: {
+                    Label("重新產生", systemImage: "arrow.clockwise")
+                }
+                .controlSize(.small)
+                .help("用目前的模型與 prompt 設定重跑一次覆盤。舊的覆盤不會被覆蓋——同一份逐字稿的多次覆盤並存,正是 prompt 調校的 A/B 對照")
+            case .generate:
+                Button {
+                    generateReview()
+                } label: {
+                    Label("產生會議copilot覆盤", systemImage: "person.2.wave.2")
+                }
+                .controlSize(.small)
+                .help("用既有逐字稿重演一次即時輔助:逐段偵測問題、產生開口稿,並掃出即時偵測漏抓的題目(不重跑轉錄)")
             }
-            .controlSize(.small)
-            .help("用既有逐字稿重演一次即時輔助:逐段偵測問題、產生開口稿,並掃出即時偵測漏抓的題目(不重跑轉錄)")
         }
     }
 
+    /// 「查看」永遠開最新那場(live 或 replay 皆然)。
+    private func openReviewButton(sessionId: UUID) -> some View {
+        Button {
+            onClose()
+            AppNavigator.shared.openMeetingReview(sessionId: sessionId)
+        } label: {
+            Label("會議copilot覆盤", systemImage: "person.2.wave.2.fill")
+        }
+        .controlSize(.small)
+        .help("查看這場會議偵測到的問題與回應建議")
+    }
+
+    /// 抓**全部**同指紋的 session(不是最新那一筆)——三態判斷要看「有沒有 live」,
+    /// 只抓一筆會在「live 之後又補了 replay」時把 live 藏起來,錯給出「重新產生」。
     private func lookupMeetingSession() {
-        guard let fp = transcription.importFingerprint, !fp.isEmpty else { return }
-        var d = FetchDescriptor<MeetingLiveSession>(
+        guard let fp = transcription.importFingerprint, !fp.isEmpty else {
+            reviewButtonState = .generate
+            return
+        }
+        let d = FetchDescriptor<MeetingLiveSession>(
             predicate: #Predicate { $0.importFingerprint == fp },
             sortBy: [SortDescriptor(\.startedAt, order: .reverse)])
-        d.fetchLimit = 1
-        meetingSessionId = (try? modelContext.fetch(d))?.first?.id
+        let sessions = (try? modelContext.fetch(d)) ?? []
+        reviewButtonState = CopilotReviewButtons.state(
+            sessions: sessions.map { (id: $0.id, sourceRaw: $0.sourceRaw, startedAt: $0.startedAt) })
     }
 
     /// 離線覆盤:既有逐字稿 → 一場 replay session,完成後直接開覆盤詳情。

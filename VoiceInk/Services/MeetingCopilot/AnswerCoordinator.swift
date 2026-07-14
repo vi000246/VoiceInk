@@ -223,6 +223,10 @@ final class AnswerCoordinator: ObservableObject {
     /// Tier 1 完成後的自動深答(FR-53)。不 await 起出來的 task:deep 動輒十餘秒,
     /// 綁著 prefetchTask 一起等只會讓「新 cue 取消舊 prefetch」的語意糊掉(prefetch 該只代表 Tier 1)。
     private func runAutoDeep(_ cue: MeetingLiveCue) {
+        // M9 FR-67:aboutMe 不進 deep——記憶錨點看一眼就夠,深度分析對「回憶自己的經歷」沒有增量,
+        // 只是多一段對話中讀不完的文字 + 一次 deep token。
+        guard cue.kind != .aboutMe else { return }
+
         // 無草稿 = tier1 沒成功寫回 → 不進 deep(降級語意同 requestDeep)。
         guard let draft = drafts[cue.id] else { return }
 
@@ -238,6 +242,12 @@ final class AnswerCoordinator: ObservableObject {
     }
 
     func requestDeep(_ cue: MeetingLiveCue) async {
+        // M9 FR-67:守門 auto 那條還不夠——覆盤頁與 overlay 都有「深答」按鈕,手點一樣會走到這裡。
+        // aboutMe 在兩條路上都是 no-op(理由同 runAutoDeep)。
+        guard cue.kind != .aboutMe else {
+            logger.notice("🫆 tier2 skipped: aboutMe 不進 deep（M9 FR-67）")
+            return
+        }
         logger.notice("🫆 tier2 requested: \(cue.text.prefix(40), privacy: .public)")
         // 先確保 Tier 1 完成(等待預跑,或補跑)。
         await prefetchTask?.value
@@ -299,17 +309,12 @@ final class AnswerCoordinator: ObservableObject {
             sources: plan.sources)
         let groundingElapsed = Date().timeIntervalSince(groundingStart)
         logger.notice("🫆 tier2 接地完成 elapsed=\(groundingElapsed, format: .fixed(precision: 1), privacy: .public)s → deep model 串流開始")
-        // M8 FR-48:aboutMe 變體。JSON 契約與既有 tier2System 相同(parser/overlay 不分支),
-        // 只是 uncertainties 語意換成「筆記沒覆蓋、要我靠現場記憶補的部分」= 現場警示燈。
-        let system = cue.kind == .aboutMe
-            ? TierPrompts.tier2SystemAboutMe(persona: config.domainPersona,
+        // M9 FR-67 之後這裡不再分支:aboutMe 在 runAutoDeep / requestDeep 兩處就被擋下,走不到 Tier 2,
+        // 對應的 aboutMe prompt 變體也一併從 TierPrompts 刪掉——留著死路只會讓下一個人以為
+        // aboutMe 還有 deep 這條路。
+        let system = TierPrompts.tier2System(persona: config.domainPersona,
                                              outputLanguage: outputLanguage)
-            : TierPrompts.tier2System(persona: config.domainPersona,
-                                      outputLanguage: outputLanguage)
-        let user = cue.kind == .aboutMe
-            ? TierPrompts.tier2UserAboutMe(cue: cue.text, draft: draft, grounding: g,
-                                           aboutMeBrief: config.aboutMeBrief)
-            : TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
+        let user = TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
         // 觀測資料:Tier2 的完整 user prompt(Tier1 草稿 + 接地 + 螢幕 OCR 全在裡面)。
         cue.tier2PromptUser = user
         cue.tier2GroundingElapsedMs = Int(groundingElapsed * 1000)

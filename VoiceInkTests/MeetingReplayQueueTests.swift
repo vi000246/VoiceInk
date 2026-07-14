@@ -49,4 +49,23 @@ final class MeetingReplayQueueTests: XCTestCase {
         XCTAssertTrue(try ctx.fetch(FetchDescriptor<MeetingLiveCue>()).isEmpty,
                       "cue 由 @Relationship cascade 帶走")
     }
+
+    /// AC-54：有 live → 只能查看；無 live 有 replay → 查看＋重新產生；皆無 → 產生。
+    func testReviewButtonTriState() {
+        let live = (id: UUID(), sourceRaw: "live", startedAt: Date())
+        let replay = (id: UUID(), sourceRaw: "replay", startedAt: Date().addingTimeInterval(60))
+
+        switch CopilotReviewButtons.state(sessions: [(live.id, live.sourceRaw, live.startedAt),
+                                                     (replay.id, replay.sourceRaw, replay.startedAt)]) {
+        case .viewOnly(let id): XCTAssertEqual(id, replay.id, "查看開最新那場")
+        default: XCTFail("有 live → viewOnly")
+        }
+
+        switch CopilotReviewButtons.state(sessions: [(replay.id, replay.sourceRaw, replay.startedAt)]) {
+        case .viewAndRegenerate(let id): XCTAssertEqual(id, replay.id)
+        default: XCTFail("只有 replay → 可重新產生（A/B 保留）")
+        }
+
+        if case .generate = CopilotReviewButtons.state(sessions: []) {} else { XCTFail("皆無 → 產生") }
+    }
 }
