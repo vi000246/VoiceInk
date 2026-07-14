@@ -268,8 +268,13 @@ final class MeetingCopilotReplayTests: XCTestCase {
 
     // MARK: - 設定
 
-    /// copilot 總開關必須**預設關閉** —— 未啟用時對既有 app 零影響(FR-3)。
-    func testConfigStoreDefaultsToDisabled() {
+    /// copilot 總開關**預設開啟**(2026-07-13 依使用者要求翻轉,見 `MeetingCopilotConfigStore`
+    /// 的 `copilotEnabled` 註解:「會議錄製時預設就開啟即時監聽,不必每次手動開」)。
+    ///
+    /// FR-3 的「零影響」保證不靠這個預設值成立,而是靠 **關閉時的路徑**:`copilotEnabled == false`
+    /// 時 `MeetingCaptureService` 不建 ring buffer、`pcmSink` 為 nil,realtime thread 的 seam
+    /// 只剩一次 nil 檢查 —— 零 ASR、零 LLM、零成本。所以預設開不開是產品取捨,不是安全紅線。
+    func testConfigStoreDefaultsToEnabled() {
         let key = "meetingCopilotEnabledV1"
         let original = UserDefaults.standard.object(forKey: key)
         defer {
@@ -283,11 +288,13 @@ final class MeetingCopilotReplayTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: key)
         let store = MeetingCopilotConfigStore()
 
-        XCTAssertFalse(store.copilotEnabled, "預設必須關閉")
+        XCTAssertTrue(store.copilotEnabled, "未設定 → 預設開啟")
         XCTAssertTrue(store.transcribeLocalMic, "預設轉錄我的麥克風")
         XCTAssertFalse(store.asrModelName.isEmpty)
 
-        store.setCopilotEnabled(true)
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: key))
+        // 寫**與預設相反**的值才鎖得住 persist:寫 true 再讀 true,連「根本沒寫進去」都會通過。
+        store.setCopilotEnabled(false)
+        XCTAssertEqual(UserDefaults.standard.object(forKey: key) as? Bool, false,
+                       "關閉必須寫進 UserDefaults(而不是退回預設的 true)")
     }
 }

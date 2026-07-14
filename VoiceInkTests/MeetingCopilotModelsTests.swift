@@ -38,19 +38,24 @@ final class MeetingCopilotModelsTests: XCTestCase {
         let s = MeetingCopilotConfigStore()
         XCTAssertNil(s.deepProviderName, "未設定 → nil = 跟隨預設")
         XCTAssertTrue(s.prefetchEnabled, "FR-15 預跑預設 true")
-        XCTAssertTrue(s.useHistoryRAG)
-        XCTAssertTrue(s.useScreenContext)
+        // 接地開關預設 **false**(2026-07-13 依使用者要求翻轉,見 MeetingCopilotConfigStore
+        // 的 `useHistoryRAG` 註解:「接地讓 Tier 1/2 各多等數秒~十餘秒,先求快;要接地的人
+        // 自行到設定頁開」)。螢幕 OCR 同理 —— 截圖+OCR 最耗時。
+        XCTAssertFalse(s.useHistoryRAG, "FR-19 歷史逐字稿接地預設 false(求首字延遲)")
+        XCTAssertFalse(s.useScreenContext, "FR-20 螢幕 OCR 接地預設 false(同上)")
         XCTAssertFalse(s.domainPersona.isEmpty)
 
         s.setDeepModel(provider: "Anthropic", model: "claude-sonnet-4")
         s.setPrefetchEnabled(false)
-        s.setUseScreenContext(false)
+        // 一律寫**與預設相反**的值:預設已是 false,再寫一次 false 然後斷言 false,
+        // 連「根本沒 persist」都會通過 —— 那樣的斷言什麼也沒鎖住。
+        s.setUseScreenContext(true)
 
         let reloaded = MeetingCopilotConfigStore()
         XCTAssertEqual(reloaded.deepProviderName, "Anthropic")
         XCTAssertEqual(reloaded.deepModelName, "claude-sonnet-4")
         XCTAssertFalse(reloaded.prefetchEnabled)
-        XCTAssertFalse(reloaded.useScreenContext)
-        XCTAssertTrue(reloaded.useHistoryRAG, "未動的開關維持預設 true")
+        XCTAssertTrue(reloaded.useScreenContext, "改過的開關要讀得回來")
+        XCTAssertFalse(reloaded.useHistoryRAG, "未動的開關維持預設 false")
     }
 }
