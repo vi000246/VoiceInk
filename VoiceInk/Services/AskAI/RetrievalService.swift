@@ -17,7 +17,14 @@ struct AskAIScope: Equatable {
     /// 限定單一錄音／逐字稿（管理頁「Ask AI」單檔提問）;nil = 全庫。
     var transcriptionId: UUID?
 
-    static let all = AskAIScope()
+    /// 全部四種來源（**含**筆記）。
+    ///
+    /// 🔴 這裡必須是明確集合，不能是 `AskAIScope()`（= `sources: nil` = 檢索層完全跳過
+    /// sourceKind 過濾）。`AskAISourceFilter.all` 就是因為回 nil 而讓筆記塊漏進 Ask AI 的預設
+    /// 查詢——那個漏洞已修，但如果這裡留一個同名的「不過濾」常數，任何呼叫點採用它就是第二條
+    /// 路重現同一個 bug。nil 仍是型別上合法的值（單檔提問等路徑用得到），但**不再有現成的入口**。
+    static let all = AskAIScope(sources: ["dictation", "recorder", "meeting",
+                                          ObsidianNoteIndexService.sourceKind])
 }
 
 struct ScoredChunk: Equatable {

@@ -18,11 +18,20 @@ final class MeetingSessionReconciler {
     func configure(modelContext: ModelContext) {
         self.modelContext = modelContext
         if let observer { NotificationCenter.default.removeObserver(observer) }
+        // 🔴 捕獲 self,**不能**寫死 `MeetingSessionReconciler.shared`:那樣的話,任何非 shared 實例
+        // 呼叫 configure() 都只是替 shared 註冊了一個通知——自己的 modelContext 永遠不會被用到,
+        // instance 這條路是永久 no-op(測試因此測不到接線,正式碼只是「剛好」只有 shared 被 configure)。
         observer = NotificationCenter.default.addObserver(
             forName: .transcriptionDeleted, object: nil, queue: .main
-        ) { _ in
-            Task { @MainActor in MeetingSessionReconciler.shared.reconcile() }
+        ) { [weak self] _ in
+            Task { @MainActor in self?.reconcile() }
         }
+    }
+
+    /// block-based observer 不會自動註銷:實例(例如測試裡的)消失後,那個 block 仍掛在
+    /// NotificationCenter 上,漏進後續所有測試。weak self 讓它變成 no-op,這裡再把 token 收掉。
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
     /// 掃掉「指紋已無對應 Transcription」的 session。cue/segment 由 @Relationship cascade 帶走。

@@ -3,6 +3,16 @@ import SwiftData
 import Combine
 import os
 
+/// 覆盤佇列自己的錯誤。目前只有一種：正式路徑缺了 AI service／資料庫上下文。
+enum MeetingReplayQueueError: LocalizedError {
+    /// `enqueue` 沒帶 `aiService`／`modelContext`（呼叫端的程式錯誤）。
+    case missingDependencies
+
+    var errorDescription: String? {
+        "覆盤無法啟動：缺少 AI 服務或資料庫上下文（呼叫端未傳入）。"
+    }
+}
+
 /// M9 FR-70：一筆錄音的覆盤按鈕該長什麼樣，由「這筆錄音現有哪些 session」決定。
 ///
 /// 規則：live 場已經存在時，**不提供補做**——live 是當下真的跑過的那一場，事後再補一份
@@ -125,7 +135,12 @@ final class MeetingReplayQueue: ObservableObject {
     /// deep 在 replay 不會被呼叫（`AnswerCoordinator.runTier1ForReplay` 的成本紅線），但建構子
     /// 要求它：給真的那顆，而不是一個從頭到尾不會被打到的假 stub。
     private func runReal(_ transcription: Transcription, aiService: AIService?, modelContext: ModelContext?) async throws {
-        guard let aiService, let modelContext else { return }
+        // 缺依賴 = 呼叫端漏傳（程式錯誤），**不能靜默 return**：使用者按了「產生覆盤」，
+        // badge 亮一下就消失、什麼都沒發生，而 log 裡連一行都沒有 —— 這是最難查的失敗模式。
+        // throw 讓它走上面的 catch → 錯誤 toast + log。
+        guard let aiService, let modelContext else {
+            throw MeetingReplayQueueError.missingDependencies
+        }
         let config = MeetingCopilotConfigStore.shared
         let fast = MeetingCopilotLiveController.makeStreamingCompleter(
             provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)

@@ -7,11 +7,6 @@ import SwiftData
 struct MeetingCopilotSettingsView: View {
     @StateObject private var store = MeetingCopilotConfigStore.shared
     @StateObject private var scriptStore = PresenterScriptStore.shared
-    /// vault 根目錄是全域錄音設定(「錄音裝置」頁選的),筆記 RAG 直接沿用同一個。
-    @StateObject private var recorderStore = RecorderConfigStore.shared
-    /// FR-6:筆記索引**範圍**(include/exclude 資料夾)的所有權在筆記管線這邊,
-    /// 不再是 meeting-copilot 的設定。(這頁的筆記區塊在 Task 11 會整段瘦身掉。)
-    @StateObject private var notesStore = ObsidianRAGConfigStore.shared
     @EnvironmentObject private var aiService: AIService
     @Environment(\.modelContext) private var modelContext
 
@@ -26,13 +21,6 @@ struct MeetingCopilotSettingsView: View {
     }
 
     @State private var tab: SettingsTab = .general
-
-    /// 資料夾清單的**編輯中原字串**。不直接 bind 陣列:逐鍵解析會把使用者剛打的逗號吃掉
-    /// (["a"] → get 回 "a" → 逗號當場消失)。原字串留在 @State,解析結果同步寫進 store。
-    @State private var includeOnlyText: String = ""
-    @State private var excludedText: String = ""
-    @State private var indexing = false
-    @State private var indexMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -75,10 +63,6 @@ struct MeetingCopilotSettingsView: View {
             hotkeySection
         }
         .formStyle(.grouped)
-        .onAppear {
-            includeOnlyText = notesStore.includeOnlyFolders.joined(separator: ", ")
-            excludedText = notesStore.excludedFolders.joined(separator: ", ")
-        }
         .sheet(item: $scriptDraft) { draft in
             ScriptEditorSheet(
                 draft: draft,
@@ -206,17 +190,16 @@ struct MeetingCopilotSettingsView: View {
 
     // MARK: - 個人筆記 RAG（M8）
 
+    /// FR-11:這一區只留**消費開關**——「要不要用筆記」是 copilot 的決定;
+    /// 「筆記從哪來、索引哪些資料夾、什麼時候重建」是**筆記管線**的設定,歸 Ask AI。
+    ///
+    /// 為什麼一定要搬走(不是美觀問題):索引是 Ask AI 與 copilot **共用的資產**。兩頁各有一套
+    /// 入口時,(1) 這頁的 vault 直接解 `RecorderConfigStore.vaultRootBookmark`,看不見 Ask AI 設的
+    /// **筆記 vault override** → 兩頁顯示不同 vault、這頁的「重建索引」建到錯的 vault;
+    /// (2) 兩頁寫同一組 UserDefaults 鍵,這頁的資料夾 TextField 只在 onAppear 種一次 @State,
+    /// 使用者在 Ask AI 勾完資料夾後,只要這頁還掛著、隨便打一個字,就會把剛存的選擇整組覆寫掉。
     private var notesRAGSection: some View {
         Section("個人筆記 RAG") {
-            LabeledContent("Obsidian Vault") {
-                if let path = vaultRoot?.path {
-                    Text(path).font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
-                } else {
-                    Text("尚未設定——到「錄音裝置」設定 Obsidian Vault")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-            }
             Toggle("被問到我的經歷/專案時檢索筆記", isOn: bind(\.useNotesRAG, store.setUseNotesRAG))
             Toggle("技術問題也參考筆記", isOn: bind(\.notesInTechnicalRAG, store.setNotesInTechnicalRAG))
 
@@ -227,69 +210,14 @@ struct MeetingCopilotSettingsView: View {
                     .lineLimit(2...4)
             }
 
-            TextField("只索引這些資料夾(逗號分隔,空=全部)", text: $includeOnlyText)
-                .onChange(of: includeOnlyText) { _, new in
-                    notesStore.setIncludeOnlyFolders(Self.parseFolders(new))
-                }
-            TextField("排除資料夾(逗號分隔)", text: $excludedText)
-                .onChange(of: excludedText) { _, new in
-                    notesStore.setExcludedFolders(Self.parseFolders(new))
-                }
-
-            HStack(spacing: 8) {
-                Button("重建筆記索引") { reindexNotes() }
-                    .disabled(indexing)
-                if indexing { ProgressView().controlSize(.small) }
-                if let indexMessage {
-                    Text(indexMessage).font(.caption).foregroundStyle(.secondary)
-                }
+            Button {
+                AppNavigator.shared.navigate(to: .askAI)
+            } label: {
+                Label("筆記索引設定（Ask AI）", systemImage: "arrow.up.forward.app")
             }
 
-            Text("被問到「你做過什麼」時,從 Obsidian 筆記撈出事實錨點餵給模型,而不是讓它編。開會時會自動增量掃描(只重嵌改過的檔);這個按鈕是要立刻補索引時用的。需要 embedding 金鑰(到「Ask AI」設定)。")
+            Text("被問到「你做過什麼」時,從 Obsidian 筆記撈出事實錨點餵給模型,而不是讓它編。開會時會自動增量掃描(只重嵌改過的檔)。Vault 位置、要索引哪些資料夾、以及手動重建索引,都在 Ask AI 頁的齒輪「筆記來源設定」——索引是兩邊共用的,設定只有一個入口。")
                 .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    /// vault 根目錄(未設定 → nil)。與 `RecordersSettingsView.VaultRootCard` 同一條解析路徑。
-    private var vaultRoot: URL? {
-        guard let bookmark = recorderStore.vaultRootBookmark else { return nil }
-        return VaultExportService.shared.resolveVaultRoot(bookmark)
-    }
-
-    /// "工作, 專案 ,," → ["工作", "專案"]。空項與前後空白一律丟掉。
-    private static func parseFolders(_ raw: String) -> [String] {
-        raw.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private func reindexNotes() {
-        guard let vaultRoot else {
-            indexMessage = "尚未設定 Obsidian Vault"
-            return
-        }
-        indexing = true
-        indexMessage = nil
-        Task {
-            do {
-                // stateURL 與 live 端的背景掃描、Ask AI 的 autoIndex 共用
-                // (見 ObsidianNoteIndexService.defaultStateURL)。
-                let index = ObsidianNoteIndexService(
-                    modelContext: modelContext,
-                    stateURL: try ObsidianNoteIndexService.defaultStateURL())
-                let count = try await index.reindex(
-                    vaultRoot: vaultRoot,
-                    includeOnly: notesStore.includeOnlyFolders,
-                    excluded: notesStore.excludedFolders)
-                indexMessage = count == 0
-                    ? "已是最新(沒有檔案變動)"
-                    : "已索引 \(count) 檔"
-            } catch EmbeddingError.missingAPIKey {
-                indexMessage = "需要 Gemini/OpenAI embedding 金鑰(Ask AI 設定)"
-            } catch {
-                indexMessage = "索引失敗:\(error.localizedDescription)"
-            }
-            indexing = false
         }
     }
 
