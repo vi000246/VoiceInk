@@ -367,4 +367,47 @@ final class AnswerCoordinatorTests: XCTestCase {
         XCTAssertTrue(b.tier2Analysis.isEmpty)
         XCTAssertFalse(b.tier1Opener.isEmpty, "B 的 Tier 1 不受影響(保護只擋 deep)")
     }
+
+    // MARK: - M9 FR-65:aboutMe 零接地短路（結構性防幻覺）
+
+    /// 🔴 AC-48:aboutMe 檢索不到任何筆記片段 → **不呼叫 fast model**,直接給固定回應。
+    ///
+    /// 這是回歸鎖:prompt 紅線只能「降低」幻覺機率,唯一的結構性保證是根本不讓模型有發揮空間——
+    /// 沒有事實可依時,呼叫模型拿回來的每一個字都是編的。callCount == 0 就是這條不變量本身,
+    /// 誰把守門拿掉(或挪到 prompt 組裝之後)這條測試立刻紅。
+    func testAboutMeZeroGroundingShortCircuitsWithoutLLM() async {
+        let fast = FakeStreamingChatCompleting(script: ["OPENER: 不該被呼叫\n- a\n- b\n- c"])
+        let deep = FakeStreamingChatCompleting(script: ["{}"])
+        let coord = AnswerCoordinator(fast: fast, deep: deep, grounding: NoopGrounding(),
+                                      config: makeConfig())
+        let cue = makeCue(text: "你做過什麼專案？", kind: .aboutMe)   // NoopGrounding → ragExcerpts 空
+
+        await coord.onNewCue(cue)
+        await coord.drainPrefetchForTest()
+
+        XCTAssertEqual(fast.callCount, 0, "零接地不得呼叫 LLM")
+        XCTAssertTrue(cue.tier1Opener.contains("筆記沒有記載"), cue.tier1Opener)
+        XCTAssertTrue(cue.tier1GroundingNote.contains("短路"), "觀測要記下短路原因")
+    }
+
+    /// AC-49:自介非空 → 成為**唯一**條列(仍然零 LLM 呼叫)。
+    /// 自介是使用者親手寫的事實錨,可以照抄;其餘的「經歷」沒有筆記背書,一個字都不補。
+    func testAboutMeZeroGroundingUsesBriefAsOnlyBullet() async {
+        let config = makeConfig()
+        // setAboutMeBrief 會寫 UserDefaults(全域副作用)→ 測完還原,不污染其他測試/本機設定。
+        let original = config.aboutMeBrief
+        config.setAboutMeBrief("後端工程師，主力訂單系統重構")
+        addTeardownBlock { @MainActor in config.setAboutMeBrief(original) }
+
+        let fast = FakeStreamingChatCompleting(script: ["OPENER: 不該被呼叫\n- a\n- b\n- c"])
+        let deep = FakeStreamingChatCompleting(script: ["{}"])
+        let coord = AnswerCoordinator(fast: fast, deep: deep, grounding: NoopGrounding(), config: config)
+        let cue = makeCue(text: "介紹一下你自己", kind: .aboutMe)
+
+        await coord.onNewCue(cue)
+        await coord.drainPrefetchForTest()
+
+        XCTAssertEqual(fast.callCount, 0)
+        XCTAssertEqual(cue.tier1Bullets, ["後端工程師，主力訂單系統重構"])
+    }
 }

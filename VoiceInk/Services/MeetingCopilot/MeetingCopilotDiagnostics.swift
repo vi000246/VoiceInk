@@ -48,6 +48,10 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
     var liveTranslationEnabled: Bool?
     var translationTargetLanguage: String?
 
+    /// M9 FR-73:深答的輸出密度(`MeetingDeepStyle.rawValue`)。覆盤時看到一則條列式 tier2,
+    /// 要分得出是「當時設定成 bullets」還是模型自己跑掉的格式。optional 理由同上(舊快照相容)。
+    var deepStyle: String?
+
     /// 從目前設定組快照。`fastModelLabel`/`deepModelLabel` 由呼叫端解析
     /// (需要 AIService 的 connected providers,config store 本身不知道)。
     @MainActor
@@ -84,7 +88,8 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
             aboutMeBrief: config.aboutMeBrief,
             autoDeepEnabled: config.autoDeepEnabled,
             liveTranslationEnabled: config.liveTranslationEnabled,
-            translationTargetLanguage: config.translationTargetLanguage)
+            translationTargetLanguage: config.translationTargetLanguage,
+            deepStyle: config.deepStyle.rawValue)
     }
 
     func encodedJSON() -> String {

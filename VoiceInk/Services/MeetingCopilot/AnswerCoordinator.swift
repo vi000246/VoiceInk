@@ -135,6 +135,26 @@ final class AnswerCoordinator: ObservableObject {
             query: plan.query, brief: cue.session?.brief ?? "",
             includeRAG: plan.includeRAG, includeScreen: false,   // Tier1 不抓螢幕
             sources: plan.sources)
+
+        // M9 FR-65:aboutMe 零接地守門——沒有筆記片段就沒有事實可依,呼叫模型只會拿到編的。
+        // 不呼叫 LLM 是唯一的**結構性**保證(prompt 紅線只能降低機率)。ragError(RAG 降級)與
+        // 檢索零命中在這裡是同一件事:兩者都代表「我手上沒有你的資料」。replay 路徑共用本函式,
+        // 同樣受保護。
+        if cue.kind == .aboutMe, g.ragExcerpts.isEmpty {
+            cue.tier1Opener = "筆記沒有記載這題——照實說，或把話題帶回你記得的部分。"
+            cue.tier1Bullets = config.aboutMeBrief.isEmpty ? [] : [config.aboutMeBrief]
+            cue.tier1GroundingNote = "aboutMe 零接地短路（未呼叫 LLM）"
+                + (g.ragError.map { "；RAG 降級:\($0)" } ?? "")
+            cue.tier1ElapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+            cue.tier1At = Date()
+            cue.tier1Error = ""
+            // fastModelName 不寫:沒打模型就不冒名(覆盤的成本歸因要誠實)。
+            try? cue.modelContext?.save()
+            // drafts[cue.id] 不塞:短路沒有 Tier 1 草稿。塞了反而讓 requestDeep 的
+            // 「無草稿 → 中止」防線失效,aboutMe 就從後門溜進 deep model 自由發揮。
+            return
+        }
+
         // M8 FR-48:aboutMe 走「個人記憶助手」變體——鎖死筆記與自介為唯一事實來源、bullets 出
         // 記憶錨點而非論述句。既有函式簽章不動,純 if/else 分支(技術 cue 行為零改變)。
         let system = cue.kind == .aboutMe

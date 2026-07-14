@@ -17,9 +17,12 @@ enum MeetingRowDisplay {
         return f
     }()
 
-    /// 列標題:會議沒有使用者命名,一律從開始時間組(例:「7月12日 14:30 會議」)。
-    static func title(startedAt: Date) -> String {
-        titleFormatter.string(from: startedAt) + " 會議"
+    /// 列標題(M9 FR-68):關聯錄音的名字優先——顯示時 live lookup、**不存副本**,
+    /// 所以在錄音管理改名(改 `recorderTitle`,fingerprint 不變)重繪就自動反映,零同步機制。
+    /// 查不到(空 fingerprint / 錄音已刪 / 沒命名)退回日期命名(例:「7月12日 14:30 會議」)。
+    static func title(startedAt: Date, recordingTitle: String?) -> String {
+        if let recordingTitle, !recordingTitle.isEmpty { return recordingTitle }
+        return titleFormatter.string(from: startedAt) + " 會議"
     }
 
     /// 時長:「47 分」;不足 1 分「<1 分」;endedAt nil = 進行中。
@@ -67,6 +70,8 @@ struct MeetingCopilotPageView: View {
             if sessions.isEmpty {
                 emptyState
             } else {
+                // 每次重繪算一次(而不是每列各查一次),整份清單共用同一份解析結果。
+                let titles = recordingTitleByFingerprint
                 MeetingTableHeader()
                 Divider()
                 ScrollView {
@@ -74,6 +79,7 @@ struct MeetingCopilotPageView: View {
                         ForEach(sessions) { session in
                             MeetingSessionRow(
                                 session: session,
+                                recordingTitle: titles[session.importFingerprint],
                                 isChecked: selectedIds.contains(session.id),
                                 onToggleCheck: { toggle(session.id) },
                                 onOpen: { detailTarget = session })
@@ -98,13 +104,31 @@ struct MeetingCopilotPageView: View {
             Button("刪除 \(selectedIds.count) 場", role: .destructive) { performBatchDelete() }
         }
         .centeredModal(item: $detailTarget) { session in
-            MeetingSessionDetailSheet(session: session, onClose: { detailTarget = nil })
+            // 標題由父層解析後傳進去 —— sheet 是獨立 struct,不讓它自己再摸一次 modelContext。
+            MeetingSessionDetailSheet(
+                session: session,
+                resolvedTitle: recordingTitleByFingerprint[session.importFingerprint],
+                onClose: { detailTarget = nil })
                 .frame(maxWidth: 900, maxHeight: 820)
                 .background(AppTheme.Surface.window, in: RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
         }
+    }
+
+    // MARK: - 標題解析(M9 FR-68)
+
+    /// fingerprint → 錄音顯示名。**live lookup,不存副本**:錄音改名後這裡重繪就跟著變,
+    /// 不需要任何回填/同步。個人尺度(數十筆)直接 fetch-all 建字典即可。
+    /// 同一個 fingerprint 可能對到多筆(live + replay 共用錄音)——取第一筆,反正名字同一個。
+    private var recordingTitleByFingerprint: [String: String] {
+        let all = (try? modelContext.fetch(FetchDescriptor<Transcription>())) ?? []
+        return Dictionary(all.compactMap { t -> (String, String)? in
+            guard let fp = t.importFingerprint, !fp.isEmpty,
+                  let title = t.recorderTitle, !title.isEmpty else { return nil }
+            return (fp, title)
+        }, uniquingKeysWith: { a, _ in a })
     }
 
     // MARK: - 批次刪除
@@ -179,6 +203,8 @@ private struct MeetingTableHeader: View {
 
 private struct MeetingSessionRow: View {
     let session: MeetingLiveSession
+    /// 父層解析好的錄音名(nil = 沒關聯錄音/未命名 → 退回日期命名)。
+    let recordingTitle: String?
     let isChecked: Bool
     let onToggleCheck: () -> Void
     let onOpen: () -> Void
@@ -194,7 +220,7 @@ private struct MeetingSessionRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(MeetingRowDisplay.title(startedAt: session.startedAt))
+                    Text(MeetingRowDisplay.title(startedAt: session.startedAt, recordingTitle: recordingTitle))
                         .font(.system(size: 13, weight: .medium)).lineLimit(1)
                     // 離線覆盤(從既有錄音重演)與 live 資料同構 —— 唯一分得出來的地方就是這個標記。
                     // 沒有它,調校時會把一場 replay 的 cue 當成當時 live 真的抓到的東西。
@@ -232,6 +258,8 @@ private struct MeetingSessionRow: View {
 
 private struct MeetingSessionDetailSheet: View {
     let session: MeetingLiveSession
+    /// 父層(列表層)解析好的錄音名——sheet 不自己 fetch modelContext。
+    let resolvedTitle: String?
     let onClose: () -> Void
 
     @EnvironmentObject private var aiService: AIService
@@ -258,7 +286,10 @@ private struct MeetingSessionDetailSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AppPanelHeader(title: LocalizedStringKey(MeetingRowDisplay.title(startedAt: session.startedAt)), onClose: onClose)
+            AppPanelHeader(
+                title: LocalizedStringKey(
+                    MeetingRowDisplay.title(startedAt: session.startedAt, recordingTitle: resolvedTitle)),
+                onClose: onClose)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {

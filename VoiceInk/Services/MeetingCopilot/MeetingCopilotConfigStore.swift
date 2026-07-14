@@ -1,6 +1,23 @@
 import Foundation
 import Combine
 
+/// M9 FR-73:深答（Tier 2）的輸出密度。
+///
+/// **條列式是預設**——現行的段落式分析在會議進行中根本讀不完:對方講完話的那幾秒裡,
+/// 眼睛只掃得過三、四個要點,掃不過三段散文。這是刻意的行為變更,不是保守預設。
+/// `detailed` 保留給會後覆盤/非即時場景。
+enum MeetingDeepStyle: String, CaseIterable {
+    case bullets, concise, detailed
+
+    var label: String {
+        switch self {
+        case .bullets: return "條列式（3 秒掃視）"
+        case .concise: return "簡潔（2~3 句結論）"
+        case .detailed: return "詳細（完整分析）"
+        }
+    }
+}
+
 /// meeting-copilot 的設定。
 ///
 /// **M1 只含音訊骨幹需要的三項**;模型選擇（fast/deep）、熱鍵、接地開關（brief / RAG / 螢幕 OCR）、
@@ -50,6 +67,9 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let translationModelKey = "meetingCopilotTranslationModelV1"
     private let translationSourceLanguageKey = "meetingCopilotTranslationSourceV1"
     private let translationTargetLanguageKey = "meetingCopilotTranslationTargetV1"
+
+    // Keys(M9 新增：深答風格)
+    private let deepStyleKey = "meetingCopilotDeepStyleV1"
 
     // MARK: - Settings
 
@@ -173,6 +193,11 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 目標語言碼。預設繁體中文(本 app 的主要使用情境:聽英文會議、看中文字幕)。
     @Published private(set) var translationTargetLanguage: String = "zh-TW"
 
+    // MARK: - Settings(M9 新增：深答風格)
+
+    /// M9 FR-73:Tier 2 的輸出密度。**預設 `.bullets`**——理由見 `MeetingDeepStyle` 檔頭。
+    @Published private(set) var deepStyle: MeetingDeepStyle = .bullets
+
     // MARK: - Init
 
     init() {
@@ -230,6 +255,9 @@ final class MeetingCopilotConfigStore: ObservableObject {
         // 照 domainPersona:空字串視同沒設定(壞設定不該把 prompt 的語言指示清空)。
         if let s = d.string(forKey: translationSourceLanguageKey), !s.isEmpty { translationSourceLanguage = s }
         if let t = d.string(forKey: translationTargetLanguageKey), !t.isEmpty { translationTargetLanguage = t }
+
+        // M9:深答風格。未設定 / 壞 rawValue → 留在預設 .bullets。
+        if let raw = d.string(forKey: deepStyleKey), let v = MeetingDeepStyle(rawValue: raw) { deepStyle = v }
     }
 
     // MARK: - Mutators
@@ -367,5 +395,12 @@ final class MeetingCopilotConfigStore: ObservableObject {
         translationTargetLanguage = target
         UserDefaults.standard.set(source, forKey: translationSourceLanguageKey)
         UserDefaults.standard.set(target, forKey: translationTargetLanguageKey)
+    }
+
+    // MARK: - Mutators(M9 深答風格)
+
+    func setDeepStyle(_ value: MeetingDeepStyle) {
+        deepStyle = value
+        UserDefaults.standard.set(value.rawValue, forKey: deepStyleKey)
     }
 }

@@ -9,7 +9,9 @@ final class TierPromptsTests: XCTestCase {
     func testAboutMeTier1LocksToNotes() {
         let s = TierPrompts.tier1SystemAboutMe(persona: "p")
         XCTAssertTrue(s.contains("只能使用"))       // 鐵律:只用筆記與自介
-        XCTAssertTrue(s.contains("筆記沒記"))       // 沒記載就直說
+        // M9 FR-66:措辭統一成「筆記沒有記載」(= 零接地時 opener 的同一句話),
+        // 鎖的仍是同一條規則:沒記載就直說,不要填空。
+        XCTAssertTrue(s.contains("筆記沒有記載"))   // 沒記載就直說
         XCTAssertTrue(s.contains("OPENER:"))        // 與既有 parser 相容
         let u = TierPrompts.tier1UserAboutMe(cue: "貢獻?",
             grounding: MeetingGrounding(brief: "", ragExcerpts: ["《專案A》內容"], screenText: nil),
@@ -85,5 +87,19 @@ final class TierPromptsTests: XCTestCase {
         // 技術 cue 的歷史逐字稿**確實**可能過時 —— 那句話留著，不是回歸。
         let technical = TierPrompts.tier1User(cue: "怎麼設計快取?", grounding: g)
         XCTAssertTrue(technical.contains("可能過時"), "技術 cue 的歷史逐字稿標題不變")
+    }
+
+    /// M9 AC-50：格式放寬（硬湊正是幻覺來源）＋紅線字句鎖。
+    ///
+    /// 舊 prompt 要「恰好 3 個記憶錨點」。但錨點的來源是筆記片段——片段只撐得起 1 條時，
+    /// 「恰好 3 條」這道命令唯一的滿足方式就是**編兩條**，而編出來的錨點是假記憶：
+    /// 現場我照著錨點講，講的是我沒做過的事，比腦袋空白更糟。所以格式必須放寬成 1~3 條，
+    /// 並把「不足不硬湊」寫死在 prompt 裡。
+    func testTier1AboutMeAllowsOneToThreeBulletsAndForbidsFabrication() {
+        let system = TierPrompts.tier1SystemAboutMe(persona: "p", outputLanguage: "繁體中文")
+        XCTAssertTrue(system.contains("1~3"), "1~3 條、有幾條列幾條")
+        XCTAssertTrue(system.contains("不硬湊") || system.contains("不要硬湊"), system)
+        XCTAssertTrue(system.contains("一個字都不能出現") || system.contains("不得出現"), "紅線字句")
+        XCTAssertFalse(system.contains("恰好 3") || system.contains("恰 3"), "舊的硬性格式必須移除")
     }
 }

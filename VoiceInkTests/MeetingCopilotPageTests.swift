@@ -12,9 +12,19 @@ final class MeetingCopilotPageTests: XCTestCase {
 
     func testTitleFromStartDate() {
         XCTAssertEqual(
-            MeetingRowDisplay.title(startedAt: date(2026, 7, 12, 14, 30)),
+            MeetingRowDisplay.title(startedAt: date(2026, 7, 12, 14, 30), recordingTitle: nil),
             "7月12日 14:30 會議"
         )
+    }
+
+    /// AC-52：標題解析——錄音名優先，查不到退回日期命名。
+    func testSessionTitlePrefersLinkedRecordingName() {
+        let date = Date(timeIntervalSince1970: 1_760_000_000)
+        XCTAssertEqual(MeetingRowDisplay.title(startedAt: date, recordingTitle: "面試A練習"), "面試A練習")
+        XCTAssertEqual(MeetingRowDisplay.title(startedAt: date, recordingTitle: ""),
+                       MeetingRowDisplay.title(startedAt: date, recordingTitle: nil), "空字串同 nil")
+        XCTAssertTrue(MeetingRowDisplay.title(startedAt: date, recordingTitle: nil).hasSuffix(" 會議"),
+                      "fallback 維持現行日期命名")
     }
 
     func testDurationTextForFinishedMeeting() {
