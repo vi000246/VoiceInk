@@ -8,6 +8,7 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         "meetingCopilotFastProviderV1",
         "meetingCopilotFastModelV1",
         "meetingCopilotShowInformationalCuesV1",
+        "meetingCopilotAboutMeBriefV1",
     ]
     private var saved: [String: Any?] = [:]
 
@@ -46,5 +47,14 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         store.setFastModel(provider: nil, model: nil)
         XCTAssertNil(MeetingCopilotConfigStore().fastProviderName)
         XCTAssertNil(UserDefaults.standard.object(forKey: "meetingCopilotFastProviderV1"))
+    }
+
+    /// M8 AC-33:aboutMe tier prompt 注入的自介。未設定 → 空字串(prompt 略過該行)。
+    func testAboutMeBriefRoundTrip() {
+        let store = MeetingCopilotConfigStore()
+        XCTAssertEqual(store.aboutMeBrief, "", "未設定 → 空 = prompt 不插自介行")
+
+        store.setAboutMeBrief("後端工程師,主力專案A")
+        XCTAssertEqual(MeetingCopilotConfigStore().aboutMeBrief, "後端工程師,主力專案A")
     }
 }

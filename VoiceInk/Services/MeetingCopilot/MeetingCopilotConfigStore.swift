@@ -39,6 +39,7 @@ final class MeetingCopilotConfigStore: ObservableObject {
     // Keys(M8 新增：個人筆記 RAG)
     private let useNotesRAGKey = "meetingCopilotUseNotesRAGV1"
     private let notesInTechnicalRAGKey = "meetingCopilotNotesInTechnicalRAGV1"
+    private let aboutMeBriefKey = "meetingCopilotAboutMeBriefV1"
 
     // MARK: - Settings
 
@@ -119,6 +120,15 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 污染(既有行為不變的 NFR);要混用的人到設定頁顯式開啟。
     @Published private(set) var notesInTechnicalRAG: Bool = false
 
+    /// M8 FR-48:一兩句話的自介(職稱／年資／主力專案),注入 aboutMe cue 的 tier prompt。
+    ///
+    /// 為什麼要跟 `domainPersona` 分開:persona 是「用什麼身分回答技術題」(所有 cue 共用);
+    /// 自介是「我是誰、我做過什麼」的事實錨,只有被問到我本人時才有意義,而且它與筆記同屬
+    /// **事實來源**(模型只能引用,不能延伸)。混進 persona 會讓技術題也開始拿我的履歷說嘴。
+    ///
+    /// 預設空字串 → prompt 直接略過該行(不留空欄位誤導模型「我沒有自介」)。
+    @Published private(set) var aboutMeBrief: String = ""
+
     // MARK: - Init
 
     init() {
@@ -160,6 +170,7 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
         useNotesRAG = (d.object(forKey: useNotesRAGKey) as? Bool) ?? true   // 未設定 → true
         notesInTechnicalRAG = (d.object(forKey: notesInTechnicalRAGKey) as? Bool) ?? false
+        if let b = d.string(forKey: aboutMeBriefKey), !b.isEmpty { aboutMeBrief = b }   // 照 domainPersona
     }
 
     // MARK: - Mutators
@@ -254,5 +265,10 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setNotesInTechnicalRAG(_ value: Bool) {
         notesInTechnicalRAG = value
         UserDefaults.standard.set(value, forKey: notesInTechnicalRAGKey)
+    }
+
+    func setAboutMeBrief(_ value: String) {
+        aboutMeBrief = value
+        UserDefaults.standard.set(value, forKey: aboutMeBriefKey)
     }
 }

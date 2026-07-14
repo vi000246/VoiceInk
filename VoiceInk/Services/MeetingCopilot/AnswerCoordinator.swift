@@ -101,8 +101,14 @@ final class AnswerCoordinator: ObservableObject {
             query: plan.query, brief: cue.session?.brief ?? "",
             includeRAG: plan.includeRAG, includeScreen: false,   // Tier1 不抓螢幕
             sources: plan.sources)
-        let system = TierPrompts.tier1System(persona: config.domainPersona)
-        let user = TierPrompts.tier1User(cue: cue.text, grounding: g)
+        // M8 FR-48:aboutMe 走「個人記憶助手」變體——鎖死筆記與自介為唯一事實來源、bullets 出
+        // 記憶錨點而非論述句。既有函式簽章不動,純 if/else 分支(技術 cue 行為零改變)。
+        let system = cue.kind == .aboutMe
+            ? TierPrompts.tier1SystemAboutMe(persona: config.domainPersona)
+            : TierPrompts.tier1System(persona: config.domainPersona)
+        let user = cue.kind == .aboutMe
+            ? TierPrompts.tier1UserAboutMe(cue: cue.text, grounding: g, aboutMeBrief: config.aboutMeBrief)
+            : TierPrompts.tier1User(cue: cue.text, grounding: g)
         // 觀測資料:模型看到的完整 user prompt(接地內容全在裡面);system 在 session 快照。
         cue.tier1PromptUser = user
         cue.tier1GroundingNote = g.ragError.map { "RAG 降級:\($0)" } ?? ""
@@ -170,8 +176,15 @@ final class AnswerCoordinator: ObservableObject {
             sources: plan.sources)
         let groundingElapsed = Date().timeIntervalSince(groundingStart)
         logger.notice("🫆 tier2 接地完成 elapsed=\(groundingElapsed, format: .fixed(precision: 1), privacy: .public)s → deep model 串流開始")
-        let system = TierPrompts.tier2System(persona: config.domainPersona)
-        let user = TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
+        // M8 FR-48:aboutMe 變體。JSON 契約與既有 tier2System 相同(parser/overlay 不分支),
+        // 只是 uncertainties 語意換成「筆記沒覆蓋、要我靠現場記憶補的部分」= 現場警示燈。
+        let system = cue.kind == .aboutMe
+            ? TierPrompts.tier2SystemAboutMe(persona: config.domainPersona)
+            : TierPrompts.tier2System(persona: config.domainPersona)
+        let user = cue.kind == .aboutMe
+            ? TierPrompts.tier2UserAboutMe(cue: cue.text, draft: draft, grounding: g,
+                                           aboutMeBrief: config.aboutMeBrief)
+            : TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
         // 觀測資料:Tier2 的完整 user prompt(Tier1 草稿 + 接地 + 螢幕 OCR 全在裡面)。
         cue.tier2PromptUser = user
         cue.tier2GroundingElapsedMs = Int(groundingElapsed * 1000)
