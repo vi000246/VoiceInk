@@ -209,6 +209,10 @@ private struct MeetingSessionRow: View {
     let onToggleCheck: () -> Void
     let onOpen: () -> Void
 
+    /// 與錄音列同一個真相來源：session 一被 insert（service 回報 currentSessionId）就亮，
+    /// 那場跑完 queue 清掉 activeSessionId，badge 自己消失（FR-72）。
+    @ObservedObject private var replayQueue = MeetingReplayQueue.shared
+
     var body: some View {
         HStack(spacing: 10) {
             Button(action: onToggleCheck) {
@@ -229,6 +233,12 @@ private struct MeetingSessionRow: View {
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Capsule().fill(Color.purple.opacity(0.15)))
                             .foregroundStyle(.purple)
+                    }
+                    if session.id == replayQueue.activeSessionId {
+                        Text("覆盤中").font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(AppTheme.Accent.primary.opacity(0.15)))
+                            .foregroundStyle(AppTheme.Accent.primary)
                     }
                 }
                 if !session.appName.isEmpty {

@@ -300,6 +300,9 @@ private struct RecordingCard: View {
     @EnvironmentObject private var aiService: AIService
     @StateObject private var store = RecorderConfigStore.shared
     @ObservedObject private var postProcessor = RecorderPostProcessor.shared
+    /// 覆盤佇列（app 級單例）：列上的「覆盤中」badge 只讀它，所以關掉 sheet／切頁回來
+    /// badge 都還在，跑完自己消失（FR-72）。
+    @ObservedObject private var replayQueue = MeetingReplayQueue.shared
 
     @State private var selectedCategoryId: UUID?
     @State private var showAnalysis = false
@@ -442,6 +445,10 @@ private struct RecordingCard: View {
                             .background(Capsule().fill(Color.secondary.opacity(0.15)))
                     }
                     if transcription.exportedFilePath != nil { badge("已輸出", "checkmark.circle.fill", AppTheme.Status.success) }
+                    // 排隊中也算「覆盤中」（queue 一 enqueue 就進 inFlight）——按了鈕沒反應，使用者只會再按一次。
+                    if replayQueue.isBusy(transcription.id) {
+                        badge("覆盤中", "arrow.triangle.2.circlepath", AppTheme.Accent.primary)
+                    }
                 }
             }
             Spacer()
