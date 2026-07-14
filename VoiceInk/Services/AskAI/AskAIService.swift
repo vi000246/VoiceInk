@@ -92,7 +92,9 @@ final class AskAIService: ObservableObject {
             let chunk = retrieved[n - 1].chunk
             refs.append(ChunkRef(transcriptionId: chunk.transcriptionId,
                                  chunkIndex: chunk.chunkIndex,
-                                 excerpt: String(chunk.text.prefix(600))))
+                                 excerpt: String(chunk.text.prefix(600)),
+                                 sourceTitle: chunk.sourceTitle,
+                                 sourcePath: chunk.sourcePath))
         }
         return refs
     }

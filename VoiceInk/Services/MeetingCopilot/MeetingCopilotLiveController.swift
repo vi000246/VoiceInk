@@ -186,25 +186,18 @@ final class MeetingCopilotLiveController {
 
     // MARK: - 筆記增量索引(M8)
 
-    /// 筆記索引的 sidecar 狀態檔。設定頁的「重建筆記索引」與這裡的背景掃描**必須共用同一份**——
-    /// 各記各的 hash 表會讓兩邊互相看起來都是「全新 vault」,每次都全量重嵌(純燒 embedding 錢)。
-    static func notesIndexStateURL() throws -> URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("obsidian-index-state.json")
-    }
-
     /// attach 後排一次筆記增量掃描。**不阻塞 attach**:會議已經在錄,索引晚幾秒到位沒關係;
     /// 失敗只記 log 就算了——檢索不到就是沒接地,跟「沒設 vault」走同一條退路
     /// (與 `MeetingGroundingProvider` 的靜默紀律一致)。
     private func scheduleNotesReindex(config: MeetingCopilotConfigStore) {
         // 兩個開關都關 = 沒人會用到筆記塊 → 連掃都不掃(不平白打 embedding API)。
+        // 「要不要檢索筆記」是 meeting-copilot 的消費決定;**索引範圍**(vault／資料夾)
+        // 屬筆記管線,FR-6 起一律問 `ObsidianRAGConfigStore`(Ask AI 與這裡的單一權威)。
         guard config.useNotesRAG || config.notesInTechnicalRAG else { return }
-        guard let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
-              let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) else { return }
-        let includeOnly = config.notesIncludeOnlyFolders
-        let excluded = config.notesExcludedFolders
+        let notesConfig = ObsidianRAGConfigStore.shared
+        guard let vaultRoot = notesConfig.effectiveVaultRoot() else { return }
+        let includeOnly = notesConfig.includeOnlyFolders
+        let excluded = notesConfig.excludedFolders
         Task.detached(priority: .background) { [weak self] in
             await self?.runNotesReindex(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
         }
@@ -213,8 +206,11 @@ final class MeetingCopilotLiveController {
     private func runNotesReindex(vaultRoot: URL, includeOnly: [String], excluded: [String]) async {
         guard let modelContext else { return }
         do {
+            // sidecar 路徑歸位到索引服務(FR-8):設定頁的「重建筆記索引」、Ask AI 的 autoIndex 與
+            // 這裡的背景掃描**必須共用同一份**——各記各的 hash 表會讓每邊都看到「全新 vault」,
+            // 每次全量重嵌(純燒 embedding 錢)。
             let index = ObsidianNoteIndexService(
-                modelContext: modelContext, stateURL: try Self.notesIndexStateURL())
+                modelContext: modelContext, stateURL: try ObsidianNoteIndexService.defaultStateURL())
             let count = try await index.reindex(
                 vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
             logger.notice("🗂️ 筆記增量索引完成(重嵌 \(count, privacy: .public) 檔)")

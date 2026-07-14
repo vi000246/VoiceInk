@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import SwiftData
+import os
 
 /// Obsidian 筆記 → 索引塊的純函式（切塊委給既有 TranscriptChunker）。
 enum ObsidianNoteChunking {
@@ -40,6 +41,12 @@ final class ObsidianNoteIndexService {
     /// 索引塊的來源標記（scope 過濾與 reconcile 豁免都認這個字串）。集中成常數避免魔字串散落。
     static let sourceKind = "obsidian"
 
+    /// sidecar 的格式版本。**改變塊內容或塊欄位語意時必須 +1**——版本一升，`loadState` 就視同
+    /// 沒有狀態 → 全量重嵌，舊塊在起點被清光（見 `discardAllNoteChunks`）。這是筆記索引唯一的
+    /// 自癒機制：檔案內容 hash 沒變，只有「我們產塊的方式」變了，靠版本號才追得回來。
+    /// 2 = 塊帶 `sourceTitle` / `sourcePath` 出處欄位（1 = M8 首版，塊沒有出處）。
+    static let sidecarSchema = 2
+
     private let embedder: EmbeddingProviding
     private let modelContext: ModelContext
     /// sidecar 狀態檔（JSON `[相對路徑: 內容 SHA-256]`）：增量比對的唯一依據。
@@ -61,9 +68,9 @@ final class ObsidianNoteIndexService {
         defer { if accessing { vaultRoot.stopAccessingSecurityScopedResource() } }
 
         let model = TranscriptIndexService.shared.model
-        // 空 = 全量重嵌（首次索引，或**換過 embedding 模型**——見 loadState）。
+        // 空 = 全量重嵌（首次索引、**換過 embedding 模型**，或 sidecar 版本過舊——見 loadState）。
         let oldState = loadState(currentModelTag: model.tag)
-        if oldState.isEmpty { discardStaleNoteChunks(currentModelTag: model.tag) }
+        if oldState.isEmpty { discardAllNoteChunks() }
         let files = scanMarkdownFiles(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
 
         var newState: [String: String] = [:]
@@ -108,7 +115,9 @@ final class ObsidianNoteIndexService {
                     transcriptionId: noteId, chunkIndex: draft.index, text: draft.text,
                     vector: EmbeddingClient.floatsToData(vector), dims: model.dims,
                     embeddingModel: model.tag, sourceKind: Self.sourceKind,
-                    categoryId: nil, timestamp: file.modifiedAt))
+                    categoryId: nil, timestamp: file.modifiedAt,
+                    // 出處反正規化在塊上：筆記沒有 Transcription 可查，引用 UI 只認得塊本身。
+                    sourceTitle: title, sourcePath: file.relativePath))
             }
             // save 用 throw（非 try?）：hash 只准記在「確定已落盤」的檔上，否則增量比對會漏重建。
             try modelContext.save()
@@ -185,9 +194,13 @@ final class ObsidianNoteIndexService {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// sidecar 的內容。`embeddingModel` **不是裝飾欄位**——它是換模型時唯一能救回筆記索引的訊號，
-    /// 見 `loadState`。
+    /// sidecar 的內容。`embeddingModel` 與 `schema` **都不是裝飾欄位**——它們是換模型／改塊格式時
+    /// 唯一能救回筆記索引的訊號，見 `loadState`。
     private struct IndexState: Codable {
+        /// sidecar／塊格式版本（= `sidecarSchema`）。**刻意非 optional**：舊 JSON 缺這個鍵會直接
+        /// decode 失敗 → `loadState` 回空 → 全量重嵌。不符版本的 sidecar 天生就是「不可信」，
+        /// 讓 decoder 幫我們判斷，不用手寫版本比對，也不會有「忘了比對」的漏洞。
+        var schema: Int
         /// 這份 hash 表是在哪個向量空間下建立的（= `EmbeddingModel.tag`）。
         var embeddingModel: String
         /// vault 相對路徑 → 內容 SHA-256。
@@ -205,30 +218,67 @@ final class ObsidianNoteIndexService {
     ///
     /// 舊格式（M8 首版的裸 `[路徑: hash]`，不知道當時用哪顆模型）一律視為不符：保守重嵌一次，
     /// 比賭「它剛好是同一顆模型」安全。
+    ///
+    /// 兩道 guard **各自獨立**：`schema` 管「塊的產法變了」（例如塊開始帶出處欄位——內容 hash
+    /// 一個字沒變，只有版本號看得出來），`embeddingModel` 管「向量空間變了」。任一不符都回空。
     private func loadState(currentModelTag: String) -> [String: String] {
         guard let data = try? Data(contentsOf: stateURL),
               let state = try? JSONDecoder().decode(IndexState.self, from: data),
+              state.schema == Self.sidecarSchema,
               state.embeddingModel == currentModelTag else { return [:] }
         return state.files
     }
 
-    /// 全量重嵌前，先清掉**不屬於現行向量空間**的筆記塊。
+    /// 全量重嵌的起點：清掉**所有**筆記塊（不分 model tag）。
     ///
-    /// 正常路徑上 `switchModel` 已經刪光了，這裡會是 no-op（一次空 fetch）。但「模型變了」是
-    /// reindex 唯一能自己觀察到的可靠訊號——不能假設 `switchModel` 一定跑過（舊格式 sidecar、
-    /// 未來新的觸發點）。清掉才不會在索引裡留下永遠查不到、也永遠不會被回收的死重量
-    /// （`RetrievalService` 的 predicate 會用 model tag 過濾掉它們 → 佔空間但永不命中）。
-    private func discardStaleNoteChunks(currentModelTag: String) {
+    /// 呼叫點只有一個——`oldState.isEmpty`，而空 oldState 的語意就是「這份索引不可信，重建一切」。
+    /// 只清「不同 model tag」的舊塊不夠：sidecar 版本升級時 tag 通常沒變，磁碟上已刪除的筆記留下的
+    /// 塊會活過重嵌（新一輪只會 upsert 掃得到的檔，掃不到的檔沒人去碰它的塊）→ 這些幽靈塊
+    /// tag 相符，`RetrievalService` 檢索得到 → **AI 拿早就刪掉的筆記回答**。所以起點就清光；
+    /// 掃描會把還在磁碟上的檔重新嵌回來，清多了不會少東西，清少了會答錯。
+    private func discardAllNoteChunks() {
         let kind = Self.sourceKind
-        let stale = (try? modelContext.fetch(FetchDescriptor<EmbeddingChunk>(
-            predicate: #Predicate { $0.sourceKind == kind && $0.embeddingModel != currentModelTag }))) ?? []
-        guard !stale.isEmpty else { return }
-        for chunk in stale { modelContext.delete(chunk) }
+        let notes = (try? modelContext.fetch(FetchDescriptor<EmbeddingChunk>(
+            predicate: #Predicate { $0.sourceKind == kind }))) ?? []
+        guard !notes.isEmpty else { return }
+        for chunk in notes { modelContext.delete(chunk) }
         try? modelContext.save()
     }
 
     private func saveState(_ files: [String: String], modelTag: String) throws {
-        let state = IndexState(embeddingModel: modelTag, files: files)
+        let state = IndexState(schema: Self.sidecarSchema, embeddingModel: modelTag, files: files)
         try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
+    }
+
+    // MARK: - 自動增量觸發（Ask AI 頁 onAppear／筆記 chip 開啟；attach 觸發沿用 scheduleNotesReindex）
+
+    /// sidecar 路徑（原本住在 `MeetingCopilotLiveController`，FR-8 搬家不搬檔——路徑一字不差，
+    /// 否則兩邊各記各的 hash，互看都是「全新 vault」，每次全量重嵌純燒錢）。
+    static func defaultStateURL() throws -> URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("obsidian-index-state.json")
+    }
+
+    @MainActor private static var autoIndexInFlight = false
+
+    /// 背景增量掃（single-flight、失敗靜默 log-only——與 scheduleNotesReindex 同紀律）。
+    @MainActor
+    static func autoIndex(vaultRoot: URL, includeOnly: [String], excluded: [String],
+                          stateURL: URL, modelContext: ModelContext,
+                          embedder: EmbeddingProviding = LiveEmbedder()) async {
+        guard !autoIndexInFlight else { return }
+        autoIndexInFlight = true
+        defer { autoIndexInFlight = false }
+        do {
+            let svc = ObsidianNoteIndexService(embedder: embedder, modelContext: modelContext, stateURL: stateURL)
+            let count = try await svc.reindex(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+            Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AskAI")
+                .notice("🗂️ Ask AI 筆記增量索引完成（重嵌 \(count, privacy: .public) 檔）")
+        } catch {
+            Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AskAI")
+                .notice("🗂️ Ask AI 筆記增量索引失敗: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
