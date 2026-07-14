@@ -76,13 +76,16 @@ final class MeetingReplayReviewTests: XCTestCase {
     func testReplayBuildsSessionWithCuesAndTier1() async throws {
         let ctx = try makeContext()
         // 三段講者輪次 → 三次抽取呼叫(序列),依序回:aboutMe / informational / 無 cue。
-        // 後三則供 AC-42 的重跑吃(呼叫序繼續往下走)。
+        // 每輪 generateReview 尾端還會多打一次漏抓掃描(Task 14)→ 一輪吃掉 4 則腳本。
+        // 兩輪份供 AC-42 的重跑吃(呼叫序繼續往下走)。
         let cueReplies = [
             #"{"cues":[{"text":"自我介紹一下","kind":"aboutMe","searchHint":"自介"}]}"#,
             #"{"cues":[{"text":"我們上週上線了 v2","kind":"informational","searchHint":""}]}"#,
             #"{"cues":[]}"#,
         ]
-        let chat = ScriptedChat(replies: cueReplies + cueReplies)
+        let sweepReply = #"{"items":[{"text":"自我介紹一下","suggestedKind":"aboutMe"}]}"#
+        let round = cueReplies + [sweepReply]
+        let chat = ScriptedChat(replies: round + round)
         let fast = FakeStreamingChatCompleting(script: ["OPENER: 嗨\n- a\n- b\n- c"])
         let deep = FakeStreamingChatCompleting(script: [
             #"{"analysis":"不該跑","followUps":[],"uncertainties":[]}"#
@@ -121,11 +124,15 @@ final class MeetingReplayReviewTests: XCTestCase {
         XCTAssertEqual(cues[0].sourceSegmentId, segments[0].id, "cue → segment 的 provenance")
         XCTAssertTrue(cues[0].contextExcerpt.contains("自我介紹"))
         XCTAssertFalse(cues[0].tier1Opener.isEmpty, "非 informational cue 有 Tier 1")
+        XCTAssertFalse(cues[0].tier0Keywords.isEmpty,
+                       "Tier 0 是純函式、零 LLM —— replay 也要補,否則 replay/live 的 cue 欄位不可比")
 
         XCTAssertEqual(cues[1].kind, .informational)
         XCTAssertTrue(cues[1].tier1Opener.isEmpty, "informational cue 不跑 Tier 1")
+        XCTAssertTrue(cues[1].tier0Keywords.isEmpty,
+                      "informational 不進三層 —— 鏡射 live 的 onNewCue 觸發條件(kind != informational)")
 
-        XCTAssertEqual(chat.callCount, 3, "每段一次抽取呼叫(序列)")
+        XCTAssertEqual(chat.callCount, 4, "每段一次抽取呼叫(序列)+ 尾端一次漏抓掃描")
         XCTAssertEqual(fast.callCount, 1, "Tier 1 只跑非 informational 的那一則")
         XCTAssertEqual(deep.callCount, 0, "replay 不得觸發 deep model(成本)——即使 auto-deep 開著")
         XCTAssertNil(svc.progress, "跑完歸零,不留下卡住的進度條")
@@ -173,6 +180,106 @@ final class MeetingReplayReviewTests: XCTestCase {
         XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveCue>()).count, 0)
         XCTAssertEqual(chat.callCount, 1, "取消後不再打第二段的 LLM")
         XCTAssertNil(svc.progress)
+    }
+
+    // MARK: - AC-40 漏抓掃描(miss sweep)
+
+    /// 掃描結果只留「未被即時抽取匹配到」的項目 —— 漏抓清單裡混進已抓到的題目就是雜訊,
+    /// 調校時會照著一個假的漏抓率改 prompt。
+    ///
+    /// 注意匹配用的是**改寫過的問法**(「請自我介紹」vs 已抓到的「自我介紹一下」):sweep 的 item
+    /// 出自另一次 LLM 呼叫,措辭與長度都不會與 live 抽到的原句一致 —— 匹配必須吃得下這種落差。
+    func testSweepKeepsOnlyUnmatched() {
+        let existing = ["你對X專案有什麼貢獻", "怎麼設計快取", "自我介紹一下"]
+        let sweepItems = [
+            SweepItem(text: "你對 X 專案有什麼貢獻?", suggestedKind: "aboutMe"),              // 與 [0] 匹配
+            SweepItem(text: "請自我介紹", suggestedKind: "aboutMe"),                          // 與 [2] 匹配
+            SweepItem(text: "預期的上線時程是什麼時候", suggestedKind: "directQuestion"),      // 漏抓
+            SweepItem(text: "快取要怎麼設計", suggestedKind: "directQuestion"),                // 與 [1] 匹配
+            SweepItem(text: "團隊規模多大", suggestedKind: "informational")]                   // 漏抓
+        let missed = MeetingReviewSweep.unmatched(sweep: sweepItems, existingCueTexts: existing)
+        XCTAssertEqual(missed.map(\.text), ["預期的上線時程是什麼時候", "團隊規模多大"])
+        XCTAssertEqual(missed.map(\.suggestedKind), ["directQuestion", "informational"],
+                       "建議分類要跟著留下 —— 它是「該歸哪類卻沒抓到」的調校線索")
+    }
+
+    /// sweep 的**價值就在於沒有主題過濾**:正式抽取 prompt 會把非技術問題壓成 informational,
+    /// 掃描器若沿用同一套過濾,就只會回報「抽取已經抓到的東西」,永遠掃不出漏抓。
+    func testSweepPromptIsGenericNoTopicFilter() {
+        let p = MeetingReviewSweep.systemPrompt
+        XCTAssertTrue(p.contains("所有"))
+        XCTAssertFalse(p.contains("技術"), "sweep 不帶主題過濾——這正是它與正式抽取的差異")
+    }
+
+    /// 容錯鏡射 `ResponseCueExtractor.parse`:code fence 剝掉照解;壞字串回 [](不 throw、不當機)。
+    func testSweepParseToleratesCodeFenceAndGarbage() {
+        let fenced = """
+        ```json
+        {"items":[{"text":"團隊規模多大","suggestedKind":"informational"}]}
+        ```
+        """
+        XCTAssertEqual(MeetingReviewSweep.parse(fenced),
+                       [SweepItem(text: "團隊規模多大", suggestedKind: "informational")])
+        XCTAssertEqual(MeetingReviewSweep.parse("抱歉,我無法處理"), [])
+        XCTAssertEqual(MeetingReviewSweep.decode("{壞掉的 JSON"), [])
+    }
+
+    /// AC-40 整合:`generateReview` 尾端自動跑 sweep,未匹配項 persist 到 `reviewSweepRaw`。
+    /// 這裡刻意讓即時抽取「只抓到一題」,sweep 卻列出三題 —— 落差正是覆盤要交付的東西。
+    @MainActor
+    func testGenerateReviewRunsSweepAndPersists() async throws {
+        let ctx = try makeContext()
+        // 三段 → 三次抽取:只在第一段抽到一則 cue,後兩段空手(= 即時管線漏了東西)。
+        let cueReplies = [
+            #"{"cues":[{"text":"先自我介紹一下你的經歷","kind":"aboutMe","searchHint":"自介"}]}"#,
+            #"{"cues":[]}"#,
+            #"{"cues":[]}"#,
+        ]
+        // 第四次呼叫 = 漏抓掃描(無主題過濾,寧可多列):三題,其中第一題是已抓到的那題的改寫。
+        let sweepReply = """
+        {"items":[
+          {"text":"請自我介紹","suggestedKind":"aboutMe"},
+          {"text":"預期的上線時程是什麼時候","suggestedKind":"directQuestion"},
+          {"text":"團隊規模多大","suggestedKind":"informational"}
+        ]}
+        """
+        let chat = ScriptedChat(replies: cueReplies + [sweepReply])
+        // coordinator = nil:本測試只驗掃描,不必燒 Tier 1 的 fake(抽取/掃描的呼叫序才不被干擾)。
+        let svc = MeetingReplayReviewService(
+            extractorChat: chat, coordinator: nil, modelContext: ctx, config: makeConfig())
+        let transcription = makeTranscription(in: ctx)
+
+        let session = try await svc.generateReview(for: transcription)
+
+        XCTAssertEqual(chat.callCount, 4, "三段抽取 + 尾端一次全文漏抓掃描(同一顆 fast model)")
+        XCTAssertFalse(session.reviewSweepRaw.isEmpty, "掃描結果要 persist(空字串 = 尚未掃描)")
+
+        let missed = MeetingReviewSweep.decode(session.reviewSweepRaw)
+        XCTAssertEqual(missed.map(\.text), ["預期的上線時程是什麼時候", "團隊規模多大"],
+                       "已被即時抽取到的那題(改寫問法)不算漏抓")
+        XCTAssertEqual(missed.map(\.suggestedKind), ["directQuestion", "informational"])
+        XCTAssertNil(svc.progress, "sweep 也算進分母 —— 跑完歸零,不停在 99%")
+    }
+
+    /// sweep 失敗必須**靜默**:覆盤主體(cue/segment/Tier 1)已經成立,不能因為掃描打不通就整場作廢。
+    @MainActor
+    func testSweepFailureLeavesReviewIntact() async throws {
+        let ctx = try makeContext()
+        let chat = ScriptedChat(replies: [
+            #"{"cues":[{"text":"先自我介紹一下你的經歷","kind":"aboutMe","searchHint":"自介"}]}"#,
+            #"{"cues":[]}"#,
+            #"{"cues":[]}"#,
+            "我不知道怎麼回答",   // 掃描回了無法解析的東西 → 視為失敗
+        ])
+        let svc = MeetingReplayReviewService(
+            extractorChat: chat, coordinator: nil, modelContext: ctx, config: makeConfig())
+
+        let session = try await svc.generateReview(for: makeTranscription(in: ctx))
+
+        XCTAssertEqual((session.cues ?? []).count, 1, "掃描失敗不影響覆盤主體")
+        XCTAssertEqual((session.segments ?? []).count, 3)
+        XCTAssertTrue(session.reviewSweepRaw.isEmpty,
+                      "解析不出東西 ≠ 零漏抓 —— 寧可留空(UI 顯示補跑按鈕),不要謊報「沒有漏抓」")
     }
 
     // MARK: - helpers

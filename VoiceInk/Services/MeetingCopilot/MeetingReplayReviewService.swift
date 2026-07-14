@@ -135,6 +135,8 @@ final class MeetingReplayReviewService: ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MeetingCopilot")
 
     private let extractor: ResponseCueExtractor
+    /// 抽取用的 LLM seam;尾端的漏抓掃描**共用同一顆 fast model**(見 `generateReview`)。
+    private let extractorChat: ChatCompleting
     /// nil = 只抽 cue 不跑回應(對照組:單獨調校抽取 prompt 時不必燒 Tier 1 的錢)。
     private let coordinator: AnswerCoordinator?
     private let modelContext: ModelContext
@@ -149,6 +151,10 @@ final class MeetingReplayReviewService: ObservableObject {
     /// 沒有錄音長度可還原節奏時的段落間隔(見 `segmentInterval`)。
     private static let fallbackSegmentInterval: TimeInterval = 8
 
+    /// 漏抓掃描在進度分母裡佔的步數(一次全文呼叫 = 1 步)。**分母從第二階段起就先預留它**,
+    /// 否則進度會在 Tier 1 跑完時衝到 100%,再卡在那裡等一次十幾秒的掃描 —— 看起來像當掉。
+    private static let sweepSteps = 1
+
     init(
         extractorChat: ChatCompleting,
         coordinator: AnswerCoordinator?,
@@ -157,6 +163,7 @@ final class MeetingReplayReviewService: ObservableObject {
         config: MeetingCopilotConfigStore = .shared
     ) {
         self.extractor = ResponseCueExtractor(chat: extractorChat)
+        self.extractorChat = extractorChat
         self.coordinator = coordinator
         self.modelContext = modelContext
         self.extractionModelLabel = extractionModelLabel
@@ -185,6 +192,17 @@ final class MeetingReplayReviewService: ObservableObject {
             try modelContext.save()
             let pending = try await extractCues(units: units, in: session, duration: transcription.duration)
             try await runTier1(for: pending, afterSegments: units.count)
+
+            // 漏抓掃描(FR-57):抽取與 Tier 1 都跑完才掃 —— 它比對的是「已偵測到的 cue」,
+            // 提早跑會拿一份不完整的 cue 清單去比,把還沒抽到的東西全報成漏抓。
+            // 用**同一顆 fast chat**(掃描與抽取是同性質的一次性 JSON 呼叫,沒有理由多接一顆模型)。
+            // 失敗靜默:`run` 內部吞掉錯誤 —— 覆盤主體已經成立,漏抓區空著即可(不讓一次掃描失敗
+            // 走上面的 catch 把整場 session 刪掉)。
+            await MeetingReviewSweep.run(
+                session: session, transcript: session.remoteTranscriptRaw, chat: extractorChat)
+            let total = units.count + pending.count + Self.sweepSteps
+            progress = (total, total)
+
             try modelContext.save()
             logger.notice("🧠 覆盤完成 — cue \((session.cues ?? []).count, privacy: .public) 則(Tier 1 \(pending.count, privacy: .public) 則)")
             return session
@@ -273,7 +291,15 @@ final class MeetingReplayReviewService: ObservableObject {
                 // 抽取本身的耗時記在 segment.extractionElapsedMs —— 照實記錄,不編一個假的延遲。
                 modelContext.insert(cue)
                 // informational 照樣 persist(FR-11),但不觸發回應。
-                if e.kind != .informational { pending.append(cue) }
+                if e.kind != .informational {
+                    // Tier 0:純函式、零 LLM 成本。live 由 `AnswerCoordinator.onNewCue` 寫入,replay
+                    // 走的是 `runTier1ForReplay`(繞過 onNewCue)→ 這欄會空著,兩條路徑的 cue 就不可比,
+                    // 而「可比」正是覆盤存在的理由。觸發條件也照抄 live:只有非 informational 進三層
+                    // (MeetingCopilotController.ingest:182)—— 連「哪些 cue 有 tier0」都要一致。
+                    let t0 = Tier0Classifier.classify(cueText: cue.text)
+                    cue.tier0Keywords = ([t0.domainLabel] + t0.keywords).joined(separator: " · ")
+                    pending.append(cue)
+                }
             }
             segment.dedupDroppedCount = dedupDropped
             try modelContext.save()
@@ -295,9 +321,11 @@ final class MeetingReplayReviewService: ObservableObject {
     /// 非 informational cue **序列**跑 Tier 1(不進 deep:`runTier1ForReplay` 的契約)。
     /// - Parameter afterSegments: 第一階段已完成的段落數(進度續計的起點)。
     private func runTier1(for cues: [MeetingLiveCue], afterSegments: Int) async throws {
-        guard let coordinator, !cues.isEmpty else { return }
-        let total = afterSegments + cues.count
+        // 分母含尾端的漏抓掃描;done 從 afterSegments 續計,不歸零(不然進度條會倒退)。
+        // 沒有 coordinator/cue 也要先把分母補起來 —— 後面還有一次掃描要跑,不能顯示 100%。
+        let total = afterSegments + cues.count + Self.sweepSteps
         progress = (afterSegments, total)
+        guard let coordinator, !cues.isEmpty else { return }
         for (index, cue) in cues.enumerated() {
             try Task.checkCancellation()
             await coordinator.runTier1ForReplay(cue)
