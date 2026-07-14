@@ -81,8 +81,11 @@ struct MeetingCopilotRunConfig: Codable, Equatable {
             cueSystemPrompt: ResponseCueExtractor.systemPrompt,
             tier1SystemPrompt: TierPrompts.tier1System(persona: config.domainPersona,
                                                        outputLanguage: outputLanguage),
+            // M9 FR-73:風格會改寫 tier2 prompt 的 analysis 格式段 → 快照必須帶 `config.deepStyle`,
+            // 否則「快照存的是模型當時真的看到的那份」這個前提就破了(理由同上一段註解)。
             tier2SystemPrompt: TierPrompts.tier2System(persona: config.domainPersona,
-                                                       outputLanguage: outputLanguage),
+                                                       outputLanguage: outputLanguage,
+                                                       style: config.deepStyle),
             useNotesRAG: config.useNotesRAG,
             notesInTechnicalRAG: config.notesInTechnicalRAG,
             aboutMeBrief: config.aboutMeBrief,

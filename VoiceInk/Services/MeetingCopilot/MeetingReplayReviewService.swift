@@ -192,6 +192,11 @@ final class MeetingReplayReviewService: ObservableObject {
     /// 才知道 —— 段落跑完後補進 total,done 續計(不歸零,不然進度條會倒退)。
     @Published private(set) var progress: (done: Int, total: Int)?
 
+    /// 正在生成的那場 session(nil = 沒在跑)。覆盤頁的「覆盤中」badge 要標在**某一列**上,
+    /// 光有 `progress` 標不出是哪一列 —— session 一 insert 就有 id,badge 因此能在第一段抽取
+    /// 之前就亮起來(M9 FR-71/FR-72)。
+    @Published private(set) var currentSessionId: UUID?
+
     /// 沒有錄音長度可還原節奏時的段落間隔(見 `segmentInterval`)。
     private static let fallbackSegmentInterval: TimeInterval = 8
 
@@ -218,7 +223,8 @@ final class MeetingReplayReviewService: ObservableObject {
 
     /// 逐字稿 → replay session。中途失敗/取消 → 刪掉整場 session 後 rethrow(不留半套)。
     func generateReview(for transcription: Transcription) async throws -> MeetingLiveSession {
-        defer { progress = nil }
+        // 失敗路徑也要清:失敗 = 整場 session 已被刪掉,還留著 id 會讓 badge 標在一列不存在的 session 上。
+        defer { progress = nil; currentSessionId = nil }
 
         // 有人工潤飾過的版本就用它(錯字少 = 抽取判斷更準);native 講者輪次才拿來分段 ——
         // FluidAudio 的 fallback 輪次帶的是本機 Parakeet 的英文文字,與錄音語言可能對不上
@@ -230,6 +236,7 @@ final class MeetingReplayReviewService: ObservableObject {
 
         let session = makeSession(for: transcription, sourceText: sourceText)
         modelContext.insert(session)
+        currentSessionId = session.id
         logger.notice("🧠 覆盤開始 — 段落 \(units.count, privacy: .public) 段 fingerprint=\(session.importFingerprint, privacy: .public)")
 
         do {

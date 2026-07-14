@@ -942,9 +942,8 @@ private struct RecorderDetailSheet: View {
     /// 這筆錄音的覆盤按鈕三態(依 importFingerprint 反查全部 session 後判定;M9 FR-70)。
     /// `.generate` = 非會議、當時沒開輔助、或 live 場已被刪掉。
     @State private var reviewButtonState: CopilotReviewButtons.State = .generate
-    /// 非 nil = 離線覆盤跑動中(同時是進度來源:service 的 `@Published progress`)。
-    @State private var reviewService: MeetingReplayReviewService?
-    @State private var reviewError: String?
+    /// 覆盤跑在 app 級佇列裡,不在這個 sheet 裡(M9 FR-71):關掉 sheet 不中斷,跑完也不跳頁。
+    @ObservedObject private var replayQueue = MeetingReplayQueue.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -962,11 +961,9 @@ private struct RecorderDetailSheet: View {
             }
             .padding(.horizontal, 16).padding(.top, 12)
             .onAppear(perform: lookupMeetingSession)
-            if let reviewError {
-                Text(reviewError)
-                    .font(.system(size: 11)).foregroundStyle(AppTheme.Status.error)
-                    .padding(.horizontal, 16).padding(.top, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // 跑完不跳頁 → 三態要自己回頭刷新,否則「產生」會一直掛在那裡,看起來像沒跑成功。
+            .onChange(of: replayQueue.isBusy(transcription.id)) { _, isBusy in
+                if !isBusy { lookupMeetingSession() }
             }
             RecordingCard(
                 transcription: transcription,
@@ -987,32 +984,33 @@ private struct RecorderDetailSheet: View {
 
     @ViewBuilder
     private var copilotReviewButtons: some View {
-        if let reviewService {
-            // 跑動中:段數進度(一小時的會議可以切出上百段,沒有分母看起來像當掉)。
-            ReplayReviewProgressLabel(service: reviewService)
-        } else {
-            // M9 FR-70:有 live 場就不給補做——只有「查看」;live 被刪掉後「產生」自然回來。
-            switch reviewButtonState {
-            case .viewOnly(let latest):
-                openReviewButton(sessionId: latest)
-            case .viewAndRegenerate(let latest):
-                openReviewButton(sessionId: latest)
-                Button {
-                    generateReview()
-                } label: {
-                    Label("重新產生", systemImage: "arrow.clockwise")
-                }
-                .controlSize(.small)
-                .help("用目前的模型與 prompt 設定重跑一次覆盤。舊的覆盤不會被覆蓋——同一份逐字稿的多次覆盤並存,正是 prompt 調校的 A/B 對照")
-            case .generate:
-                Button {
-                    generateReview()
-                } label: {
-                    Label("產生會議copilot覆盤", systemImage: "person.2.wave.2")
-                }
-                .controlSize(.small)
-                .help("用既有逐字稿重演一次即時輔助:逐段偵測問題、產生開口稿,並掃出即時偵測漏抓的題目(不重跑轉錄)")
+        // M9 FR-70:有 live 場就不給補做——只有「查看」;live 被刪掉後「產生」自然回來。
+        switch reviewButtonState {
+        case .viewOnly(let latest):
+            openReviewButton(sessionId: latest)
+        case .viewAndRegenerate(let latest):
+            openReviewButton(sessionId: latest)
+            Button {
+                enqueueReview()
+            } label: {
+                Label("重新產生", systemImage: "arrow.clockwise")
             }
+            .controlSize(.small)
+            .disabled(replayQueue.isBusy(transcription.id))
+            .help("用目前的模型與 prompt 設定重跑一次覆盤。舊的覆盤不會被覆蓋——同一份逐字稿的多次覆盤並存,正是 prompt 調校的 A/B 對照")
+        case .generate:
+            Button {
+                enqueueReview()
+            } label: {
+                Label("產生會議copilot覆盤", systemImage: "person.2.wave.2")
+            }
+            .controlSize(.small)
+            .disabled(replayQueue.isBusy(transcription.id))
+            .help("用既有逐字稿重演一次即時輔助:逐段偵測問題、產生開口稿,並掃出即時偵測漏抓的題目(不重跑轉錄)。在背景跑,關掉這個視窗不會中斷")
+        }
+        if replayQueue.isBusy(transcription.id) {
+            // 跑動中:段數進度(一小時的會議可以切出上百段,沒有分母看起來像當掉)。
+            ReplayReviewProgressLabel(queue: replayQueue)
         }
     }
 
@@ -1043,54 +1041,18 @@ private struct RecorderDetailSheet: View {
             sessions: sessions.map { (id: $0.id, sourceRaw: $0.sourceRaw, startedAt: $0.startedAt) })
     }
 
-    /// 離線覆盤:既有逐字稿 → 一場 replay session,完成後直接開覆盤詳情。
-    ///
-    /// coordinator 的 fast/deep 一律走 `MeetingCopilotLiveController.makeStreamingCompleter`
-    /// —— 與 live **同一套**模型解析規則,兩邊各寫一份遲早分岔,覆盤結果就不再與 live 可比。
-    /// deep 在 replay 不會被呼叫(`AnswerCoordinator.runTier1ForReplay` 的成本紅線),但建構子
-    /// 要求它:給真的那顆,而不是一個從頭到尾不會被打到的假 stub。
-    private func generateReview() {
-        guard reviewService == nil else { return }
-        let config = MeetingCopilotConfigStore.shared
-        let fast = MeetingCopilotLiveController.makeStreamingCompleter(
-            provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
-        let deep = MeetingCopilotLiveController.makeStreamingCompleter(
-            provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
-        let coordinator = AnswerCoordinator(
-            fast: fast.completer,
-            deep: deep.completer,
-            grounding: MeetingGroundingProvider(screen: ScreenCaptureService(), modelContext: modelContext),
-            config: config,
-            fastLabel: fast.label,
-            deepLabel: deep.label)
-        let service = MeetingReplayReviewService(
-            extractorChat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config),
-            coordinator: coordinator,
-            modelContext: modelContext,
-            extractionModelLabel: fast.label,
-            config: config)
-
-        reviewError = nil
-        reviewService = service
-        Task {
-            do {
-                let session = try await service.generateReview(for: transcription)
-                reviewService = nil
-                onClose()
-                AppNavigator.shared.openMeetingReview(sessionId: session.id)
-            } catch {
-                // 失敗 = 整場 session 已被 service 刪掉(不留半套)→ 這裡只要照實顯示原因。
-                reviewService = nil
-                reviewError = "覆盤失敗:\(error.localizedDescription)"
-            }
-        }
+    /// 離線覆盤:排進 app 級佇列(M9 FR-71)。這個 view **不再持有 service** ——
+    /// 覆盤要跑好幾分鐘,綁在一個隨手會關掉的 sheet 上等於隨時會被殺掉;失敗改由佇列發 toast,
+    /// 完成也不再把使用者拉去覆盤頁(背景語意:跑完只是 badge 消失,三態按鈕自己刷新)。
+    private func enqueueReview() {
+        MeetingReplayQueue.shared.enqueue(transcription, aiService: aiService, modelContext: modelContext)
     }
 }
 
-/// 覆盤進度。**必須是獨立的 `@ObservedObject` 子 view**:父層用 `@State` 只存住 service 實例,
+/// 覆盤進度。**必須是獨立的 `@ObservedObject` 子 view**:父層只是讀 queue 的一個瞬時值,
 /// 不會因它內部的 `@Published progress` 變動而重繪 —— 進度條會一直停在起點。
 private struct ReplayReviewProgressLabel: View {
-    @ObservedObject var service: MeetingReplayReviewService
+    @ObservedObject var queue: MeetingReplayQueue
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1099,8 +1061,9 @@ private struct ReplayReviewProgressLabel: View {
         }
     }
 
+    /// 沒有 progress = 還在排隊(前面那場還沒跑完)——照樣顯示「覆盤中…」,不留白。
     private var text: String {
-        guard let p = service.progress, p.total > 0 else { return "覆盤中…" }
+        guard let p = queue.progress, p.total > 0 else { return "覆盤中…" }
         return "覆盤中… \(p.done)/\(p.total)"
     }
 }

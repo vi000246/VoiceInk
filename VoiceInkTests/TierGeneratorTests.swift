@@ -54,11 +54,15 @@ final class TierGeneratorTests: XCTestCase {
 
     // MARK: - Prompt 契約（AC-14）
 
+    /// M9 FR-73:不得編造的鐵律位於**三種風格共用的開頭段**,所以每一種 style 都必須帶著它
+    /// ——風格只換 analysis 的格式,不會、也不該換掉這條紅線。
     func testDeepSystemPromptForbidsFabrication() {
-        let sys = TierPrompts.tier2System(persona: "你是後端專家")
-        XCTAssertTrue(sys.contains("不要") && (sys.contains("捏造") || sys.contains("編造")),
-                      "Tier2 system prompt 必須含不得編造禁令(FR-27)")
-        XCTAssertTrue(sys.contains("uncertainties"))
+        for style in MeetingDeepStyle.allCases {
+            let sys = TierPrompts.tier2System(persona: "你是後端專家", style: style)
+            XCTAssertTrue(sys.contains("不要") && (sys.contains("捏造") || sys.contains("編造")),
+                          "Tier2 system prompt 必須含不得編造禁令(FR-27),style=\(style)")
+            XCTAssertTrue(sys.contains("uncertainties"), "style=\(style)")
+        }
     }
 
     /// Tier2 user block 帶入 Tier1 草稿全文（AC-8 的 prompt 半部）。

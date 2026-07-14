@@ -312,8 +312,10 @@ final class AnswerCoordinator: ObservableObject {
         // M9 FR-67 之後這裡不再分支:aboutMe 在 runAutoDeep / requestDeep 兩處就被擋下,走不到 Tier 2,
         // 對應的 aboutMe prompt 變體也一併從 TierPrompts 刪掉——留著死路只會讓下一個人以為
         // aboutMe 還有 deep 這條路。
+        // M9 FR-73:深答風格跟著 config 走(預設 `.bullets`)——會議進行中讀得完才算數。
         let system = TierPrompts.tier2System(persona: config.domainPersona,
-                                             outputLanguage: outputLanguage)
+                                             outputLanguage: outputLanguage,
+                                             style: config.deepStyle)
         let user = TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
         // 觀測資料:Tier2 的完整 user prompt(Tier1 草稿 + 接地 + 螢幕 OCR 全在裡面)。
         cue.tier2PromptUser = user

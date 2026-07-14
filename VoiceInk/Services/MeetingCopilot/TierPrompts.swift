@@ -101,8 +101,47 @@ enum TierPrompts {
 
     // MARK: - Tier 2(深度分析 + follow-up 預判)
 
-    static func tier2System(persona: String, outputLanguage: String = defaultOutputLanguage) -> String {
-        """
+    /// M9 FR-73:深答的**輸出密度**由 `style` 決定(`MeetingDeepStyle`,預設 `.bullets`)。
+    ///
+    /// # 為什麼要有這個參數
+    /// 段落式深答在會議**進行中**等於沒有:對方講完話到我該接話之間只有幾秒,眼睛掃得過三、四個
+    /// 要點,掃不過三段散文。以前那份寫得很好的分析,實際上是寫給「會後的我」看的。
+    ///
+    /// # 為什麼 `style` 沒有預設值
+    /// 三個呼叫點的正確答案彼此不同——coordinator 跟著 config 走、RunConfig 快照要記錄**當時真的
+    /// 送出去的那一份**、prompt 契約測試要鎖 `.detailed`。給預設值的話,下一個新增的呼叫點會安靜地
+    /// 拿到一個「看起來能動」但不是它要的風格,而 prompt 選錯風格不會 crash、不會報錯,只會讓輸出
+    /// 悄悄變成另一種東西。所以這裡強迫每個呼叫點自己講清楚。
+    ///
+    /// # 什麼**不**跟著 style 變
+    /// JSON 輸出契約(analysis / followUps / uncertainties 三鍵 + 格式範例)三種風格**共用同一段**,
+    /// 不得分岔:風格只活在 analysis 字串**內部**,所以 `TierParsers.parseTier2` 與
+    /// `AIEnhancementOutputFilter.filter` 零改動。同理,結尾的語言指示也是共用段。
+    ///
+    /// AC-58 回歸鎖:`.detailed` 的輸出與 M8 出貨版**逐字相同**
+    /// (`TierPromptsTests.testTier2StyleDetailedIsByteIdenticalToLegacy`)。
+    static func tier2System(persona: String,
+                            outputLanguage: String = defaultOutputLanguage,
+                            style: MeetingDeepStyle) -> String {
+        // 只有「analysis 該怎麼寫」這一段會換;上面的鐵律、下面的 JSON 契約與語言指示都不動。
+        let formatSection: String
+        switch style {
+        case .detailed:
+            formatSection = "followUps 給 2-3 個最可能的追問。"
+        case .bullets:
+            formatSection = """
+            analysis 以**條列**輸出:**至多 4 條**、每條一行,格式「**關鍵詞**:一句話」
+            (例:「**風險**:舊資料遷移會鎖表」)。對話進行中我只有 3 秒掃視時間——
+            關鍵詞是眼睛的錨點,所以每條都要從關鍵詞開頭,不要寫成一段沒有落腳點的長句。
+            followUps 至多 2 條;uncertainties 至多 2 條。
+            """
+        case .concise:
+            formatSection = """
+            analysis 以 **2~3 句話**直接給出結論與建議立場,不條列、不鋪陳、不重述問題。
+            followUps 至多 2 條。
+            """
+        }
+        return """
         \(persona)
         以下是我在會議中被問到的問題,以及我剛才的初步開口稿。請補強成足以應付追問的深度回答。
         **鐵律:不要捏造/編造任何 benchmark 數字、論文名稱、公司名、產品版本或不存在的事實。**
@@ -113,7 +152,7 @@ enum TierPrompts {
           "followUps": [{"question":"<對方很可能接著追問的問題>","oneLineAnswer":"<一句話答案>"}],
           "uncertainties": ["<我不確定、需要實測或查證的點>"]
         }
-        followUps 給 2-3 個最可能的追問。
+        \(formatSection)
         一律以\(outputLanguage)回答——不論對方用什麼語言發問(JSON 內的文字也是;key 名維持英文)。
         """
     }
