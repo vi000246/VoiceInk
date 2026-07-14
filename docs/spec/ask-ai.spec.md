@@ -10,12 +10,13 @@
 - **Owner**: TBD (personal fork — vi000246/VoiceInk)
 - **Status**: ACTIVE — living document
 - **Created**: 2026-07-06
-- **Last Updated**: 2026-07-13
+- **Last Updated**: 2026-07-14
 
 ## Change History
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
+| 2026-07-14 | N/A（使用者需求） | `docs/srs/ask-ai-obsidian-notes-rag.srs.md` | **Obsidian 筆記升級一級語料庫 spec'd（未實作）** — 修現有漏洞：`AskAISourceFilter.all` 的 `sources = nil` 完全不過濾 sourceKind → 筆記塊**已經**漏進預設查詢、引用誤稱「來源錄音」（修法：`.all` 改明確三 kind 集合＋回歸鎖）。新增：scope bar「語音庫／Obsidian 筆記」雙 chip（@AppStorage 持久化、預設語音庫開/筆記關、禁全關）；轉錄 facet（子來源/分類/時間）只作用轉錄塊，obsidian 塊豁免 category/date 過濾（分類過濾現況會誤殺筆記——合成 id 查不到 displayTag）；新 `ObsidianRAGConfigStore`（vault override 新鍵＋收編 include/exclude 資料夾設定、鍵沿用零遷移、`effectiveVaultRoot()` 單點解析）；齒輪「筆記來源設定」sheet（vault picker＋資料夾 multi-checkbox＋重建按鈕）；自動索引觸發（頁 onAppear＋筆記 chip 開啟，single-flight、失敗靜默）；`EmbeddingChunk`/`ChunkRef` 加 `sourceTitle`/`sourcePath`，sidecar 加 `schema: 2` 版號自癒（全量重嵌回填 metadata＋重嵌起點先清全部 obsidian 塊防幽靈殘留）；CitationPopup 筆記變體「在 Obsidian 開啟」（`obsidian://open?path=`）。meeting-copilot 側：設定頁筆記 section 瘦身＝消費開關＋導航連結；`scheduleNotesReindex` 改讀新 store。 |
 | 2026-07-14 | code-sync（`/prp-spec`） | `docs/srs/meeting-copilot-m8-notes-rag-auto-deep.srs.md` | **M8 的索引擴用已實作，但本模組的一半配合沒做（🔴 靜默失效）** — 已落地：`EmbeddingChunk` 第 4 種 `sourceKind` = `"obsidian"`（`ObsidianNoteIndexService`，身分鍵為路徑 SHA-256 前 16 bytes 的確定性 UUID，無 schema 變更）；`reconcileOrphans` 已排除 obsidian 塊（`TranscriptIndexService.swift:120`，測試 `AskAIIndexTests.testReconcileOrphansPreservesObsidianChunks`）。**未落地（FR-44 後半）**：`switchModel` 仍然刪光**所有** `EmbeddingChunk`（含 obsidian）而**不通知筆記索引**——`ObsidianNoteIndexService` 的增量比對只看**檔案內容 hash**、不看 `embeddingModel` tag，所以換模型後 sidecar hash 全部命中 → 筆記**永遠不會被重嵌**，且設定頁「重建筆記索引」會回報 0 檔、看起來一切正常。**筆記 RAG 從此靜默失效。** 修法：sidecar state 加 top-level `embeddingModel` 欄位，`loadState()` 發現 tag 不符 → 整份視為空（= 全量重嵌），語意正好對上「換模型＝向量空間不相容」。另：`AskAIModels.swift:22` 的 `sourceKind` doc comment 仍寫「dictation \| recorder \| meeting」，漏了 obsidian。 |
 | 2026-07-13 | N/A（meeting-copilot M8 跨模組） | `docs/srs/meeting-copilot-m8-notes-rag-auto-deep.srs.md` | **索引基建被 meeting-copilot M8 擴用（spec'd）** — `EmbeddingChunk` 新增第 4 種 `sourceKind` 值 `"obsidian"`（Obsidian 筆記塊；`transcriptionId` 對筆記為「vault 相對路徑 SHA-256 前 16 bytes」確定性 UUID、`timestamp` = 檔案 mtime，無 schema 變更）；新 `ObsidianNoteIndexService`（重用 `TranscriptChunker`/`EmbeddingClient`/同一 embedding model）。**本模組兩處行為配合**：`TranscriptIndexService.reconcileOrphans` 必須跳過 `sourceKind == "obsidian"`（筆記塊沒有對應 Transcription，否則任一次轉錄刪除把筆記索引全清）；`switchModel` 清索引後重嵌流程須涵蓋筆記。檢索層零改動（`AskAIScope.sources` 本就支援任意 sourceKind；Ask AI 聊天頁暫不查筆記——現有 scope 過濾不含 `"obsidian"` 即維持現狀）。 |
 | 2026-07-08 | N/A（v2 需求） | `docs/srs/ask-ai-enhancements.srs.md` | **Ask AI 增強 spec'd（WP6，未實作）** — 專用答案模型 picker（可選 Gemini Pro 等推理強者，獨立於 enhancement 預設）;來源篩選改語音輸入／錄音輸入（會議歸錄音輸入，映射 sourceKind {recorder,meeting}）;`AskAIScope.transcriptionId` 單檔提問（錄音/語音管理列上「Ask AI」按鈕）;新 `AskAITemplate` @Model + Ask AI 範本頁（預載 persona system prompt）;Ask AI 獨立側欄群 +`.askAITemplates`。 |
@@ -24,12 +25,14 @@
 
 ## Summary
 
-`ask-ai` turns the app's transcription history (dictation, recorder imports, meetings) into a
-queryable knowledge base: text is chunked and embedded via a cloud embedding API, vectors live in a
-local SwiftData store, retrieval is exact brute-force cosine (personal scale — no ANN), and answers
-come from one existing-provider chat call with retrieved excerpts and enforced citations. The module
-is read-only over core data: it consumes `Transcription` rows and lifecycle notifications, and never
-mutates them.
+`ask-ai` turns the app's transcription history (dictation, recorder imports, meetings) **and the
+user's Obsidian notes**（spec'd — notes-rag SRS）into a queryable knowledge base: text is chunked
+and embedded via a cloud embedding API, vectors live in a local SwiftData store, retrieval is exact
+brute-force cosine (personal scale — no ANN), and answers come from one existing-provider chat call
+with retrieved excerpts and enforced citations. The module is read-only over core data: it consumes
+`Transcription` rows and lifecycle notifications, and never mutates them; notes are likewise
+read-only（index 是衍生資料）. Scope 由「語音庫／Obsidian 筆記」雙 chip 組成（per-query 模式，
+非全域設定）；轉錄 facet（子來源/分類/時間）只作用於轉錄塊。
 
 ---
 
@@ -50,6 +53,10 @@ mutates them.
 | Scope | Retrieval pre-filter (source kind / category / date range) applied as a store predicate before similarity. |
 | Citation | A `[n]` marker in an answer mapping to a retrieved chunk (`ChunkRef {transcriptionId, chunkIndex, excerpt}`); tapping opens the source transcript. Fabricated citations are a defect (AC-gated). |
 | Thread | A persisted Ask AI conversation (`AskAIThread` + `AskAIMessage`), distinct from the ephemeral dictation Assistant. |
+| 語料庫 chip | scope bar 上「語音庫」「Obsidian 筆記」兩顆可獨立開關的 chip——決定這一題查哪個語料庫（per-query 模式，@AppStorage 記住上次選擇）。至少一顆開啟。 |
+| Effective Vault | 筆記 RAG 實際使用的 vault：`notesVaultBookmark`（override）優先，nil 時跟隨 `RecorderConfigStore.vaultRootBookmark`（錄音匯出 vault）。由 `ObsidianRAGConfigStore.effectiveVaultRoot()` 單點解析。 |
+| Facet 豁免 | 轉錄 facet（分類/時間）不套用於 obsidian 塊的 domain 規則——筆記無分類、mtime ≠ 內容時間；不豁免則分類篩選會整批誤殺筆記（合成 id 查不到 displayTag）。 |
+| Sidecar schema | 筆記索引 sidecar 的版號（`IndexState.schema`）。信任條件 = schema 與 embeddingModel 皆相符，任一不符 → 全量重嵌（自癒）。 |
 
 ### Domain Events
 | Event | Trigger Condition | Consumers |
@@ -116,6 +123,8 @@ mutates them.
 | `RetrievalService` | Scoped fetch → vDSP cosine → top-k with scores | `retrieve(queryVector:scope:k:) -> [ScoredChunk]` |
 | `AskAIService` | Prompt assembly (citation rules, 「找不到」 rule), `completeChat`, citation parsing, thread persistence | `ask(question:scope:thread:) async -> AskAIMessage` |
 | `AskAIView` + `.askAI` ViewType | Chat page, scope chips, thread list, citation buttons, backfill/settings UI | SwiftUI; registered via the 5 mandatory ViewType edits |
+| `ObsidianNoteIndexService`（M8 起既有；notes-rag SRS 收編為本模組共用基建） | Obsidian vault → 增量向量索引：內容 hash sidecar、確定性 noteId（路徑 SHA-256）、取代式 upsert、schema/model 版號自癒 | `@MainActor`；`reindex(vaultRoot:includeOnly:excluded:) async throws -> Int` |
+| `ObsidianRAGConfigStore`（spec'd） | 筆記 RAG 管線設定：vault override、include/exclude 資料夾、effective vault 單點解析 | `@MainActor` singleton；UserDefaults 持久化（資料夾鍵沿用 meeting-copilot 時期鍵名） |
 
 ### Data Flow
 Write path is event-driven and async (completion event → chunk → batch embed → upsert); the user
@@ -145,7 +154,7 @@ AskAIView ← answer with [n] buttons → tap → transcript detail (sheet; libr
 | `AskAIThread` / `AskAIMessage` (@Model) | `AskAIService` | Created in the chat page; user-deletable |
 
 ### Schema (new — all in `index.store`)
-See `docs/srs/ask-ai-semantic-qa.srs.md` for field-level detail. Keys: `EmbeddingChunk` identity `(transcriptionId, chunkIndex)`; `#Index` on `[\.transcriptionId]`, `[\.timestamp]`; `vector: Data` (Float32 LE, 768 dims default); `embeddingModel` space tag; denormalized `sourceKind`/`categoryId`/`timestamp` for scope predicates.
+See `docs/srs/ask-ai-semantic-qa.srs.md` for field-level detail. Keys: `EmbeddingChunk` identity `(transcriptionId, chunkIndex)`; `#Index` on `[\.transcriptionId]`, `[\.timestamp]`; `vector: Data` (Float32 LE, 768 dims default); `embeddingModel` space tag; denormalized `sourceKind`/`categoryId`/`timestamp` for scope predicates. `sourceKind` 現有 4 值：`dictation`/`recorder`/`meeting`/`obsidian`（obsidian 塊的 `transcriptionId` 為路徑衍生合成 UUID、`timestamp` = 檔案 mtime）。Spec'd（notes-rag SRS）：+`sourceTitle`/`sourcePath` optional（obsidian 塊的出處 metadata，轉錄塊 nil；輕量遷移）。
 
 ### Migration Strategy
 - **Forward**: additive — 2–3 new `@Model`s appended to the app `Schema` + a 4th `ModelConfiguration("index", …, cloudKitDatabase: .none)` in both container factories (`VoiceInk.swift:50-56, 236-299`). Core stores untouched.
@@ -222,6 +231,8 @@ user:   [1] <chunk text + 來源: 標題/日期> … [k] <…>\n\n問題: <quest
 | `APIKeyManager` (`Services/APIKeyManager.swift:45-48`) | Keychain read | Embedding provider keys (Gemini/OpenAI entries exist) | Yes |
 | `ViewType`/`ContentView`/`AppSidebar` (5 edits: `ContentView.swift:4-23,74-110`; `AppSidebar.swift:74-97,106-162`) | UI registration | `.askAI` page under Shared & System | Yes — additive (DEBUG assert enforces completeness) |
 | Recording Library focus hook (`pendingFocusTranscriptionId`, spec'd in recorder-automation) | In-process nav | Citation → focused library row | Yes — optional enhancement |
+| `ObsidianRAGConfigStore` ←→ meeting-copilot（spec'd） | In-process config | 筆記管線設定（vault/資料夾）的單一權威來源；meeting attach 的 `scheduleNotesReindex` 改讀此 store | Yes — UserDefaults 鍵沿用零遷移 |
+| `AppNavigator.navigate(to: .askAI)`（spec'd 呼叫點） | In-process nav | meeting-copilot 設定頁「筆記索引設定 →」連結 | Yes — 既有 API |
 
 ### Rollout Strategy
 Inert until an embedding key is configured + backfill run. Kill switch: none needed — removing the page/config leaves core untouched; `index.store` deletable at any time.
@@ -256,6 +267,7 @@ Inert until an embedding key is configured + backfill run. Kill switch: none nee
 | Index store growth (audio-heavy users) | L | L | 768-dim Float32 ≈ 3 KB/chunk; Float16 option queued |
 | SwiftData perf on bulk upsert (backfill) | M | M | Batch inserts in background context; progress + resume |
 | Gemini free-tier throttling mid-backfill | M | L | Batch + backoff + resumable job; OpenAI fallback |
+| sidecar schema bump 觸發的一次性全量重嵌（重嵌期間筆記索引短暫不完整） | H（升級後必發生一次） | L | 個人規模＋free tier 成本可忽略；重嵌期間檢索退化與今日 switchModel 相同；schema 寫回後不再觸發 |
 
 ---
 
@@ -268,6 +280,11 @@ Inert until an embedding key is configured + backfill run. Kill switch: none nee
 | Index placement | 4th SwiftData store | Rows in default store; SQLite sidecar | Derived-data lifecycle independence; no new deps |
 | Page identity | New `.askAI` page + durable threads | Extend Assistant | Different jobs: library QA (durable, cited) vs dictation companion (ephemeral) |
 | v1 citation UX | In-place detail sheet | Cross-page jump first | Ships without nav plumbing; upgrade path defined |
+| 筆記查詢開關位置（notes-rag SRS） | scope bar 雙 chip（per-query 模式） | 設定頁全域開關 | 「查什麼」每題都可能不同，是模式不是配置；@AppStorage 記住上次選擇即獲得設定的效果 |
+| 筆記塊 facet 語意（notes-rag SRS） | category/date 豁免 obsidian 塊 | 統一套用全部過濾 | 筆記無分類、mtime≠內容時間；不豁免則分類篩選誤殺筆記（合成 id 查不到 tag） |
+| 舊塊 metadata 回填（notes-rag SRS） | sidecar `schema` 版號 → 全量重嵌一次 | 免重嵌的 metadata-only 回填 pass | 三行實作、自癒、鏡射既有 model-tag 檢查；回填 pass 是一次性遷移碼，個人規模重嵌成本可忽略 |
+| 筆記管線設定的家（notes-rag SRS） | 新 `ObsidianRAGConfigStore`（ask-ai 側） | 留在 MeetingCopilotConfigStore | 索引成為兩功能共用資產；掛在 meeting 設定下逼 Ask AI-only 使用者翻不相干頁面；鍵沿用零遷移 |
+| 點回筆記的 URL（notes-rag SRS） | `obsidian://open?path=`（絕對路徑） | `vault=&file=` 參數對 | path 免 vault 名匹配、Obsidian 自行解析所屬 vault；限制（vault 需在 Obsidian 註冊過）記入 Open Questions |
 
 ---
 
@@ -278,3 +295,5 @@ Inert until an embedding key is configured + backfill run. Kill switch: none nee
 - [ ] Chunk overlap 10% vs 0% — A/B on real corpus (2026 evidence: overlap may not help).
 - [ ] Default answer model — reuse enhancement default vs pin a fast model.
 - [ ] Segment-level citation highlight in the detail sheet (Could).
+- [ ] 筆記塊 vs 轉錄塊的檢索分數平衡——同一 embedding 空間理論可比；若實務上筆記長期壓過轉錄（或反之），考慮 per-source k 配額（notes-rag SRS 觀察項）。
+- [ ] `obsidian://open?path=` 對未在 Obsidian 註冊過的 vault 會跳錯誤對話框——v1 只檢查檔案存在，不驗證 vault 註冊狀態。
