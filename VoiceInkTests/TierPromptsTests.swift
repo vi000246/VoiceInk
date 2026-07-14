@@ -62,4 +62,28 @@ final class TierPromptsTests: XCTestCase {
         XCTAssertTrue(u.contains("《訂單分庫》筆記"), "接地帶入")
         XCTAssertTrue(u.contains("後端工程師"), "自介帶入")
     }
+
+    /// 🟠 回歸鎖（2026-07-14）：aboutMe 的**片段標題不得自打嘴巴**。
+    ///
+    /// aboutMe 的 system prompt 把筆記立為「唯一事實來源、沒記載就說筆記沒記」。若 user block
+    /// 的片段標題還沿用技術 cue 那句「僅供參考，**可能過時**」，同一則訊息裡就有兩種相反語氣 ——
+    /// 模型會傾向不敢引用筆記、動不動說「筆記沒記」，正好毀掉這個功能存在的理由
+    /// （被問到自己的專案時腦袋空白，要的就是筆記裡的事實）。
+    func testAboutMeLabelsNotesAsAuthoritativeNotStale() {
+        let g = MeetingGrounding(brief: "", ragExcerpts: ["《專案A》我主導了快取重構，P99 800→120ms"],
+                                 screenText: nil)
+
+        for u in [TierPrompts.tier1UserAboutMe(cue: "你有什麼貢獻?", grounding: g, aboutMeBrief: ""),
+                  TierPrompts.tier2UserAboutMe(cue: "你有什麼貢獻?",
+                                               draft: Tier1Draft(opener: "o", bullets: []),
+                                               grounding: g, aboutMeBrief: "")] {
+            XCTAssertTrue(u.contains("唯一事實來源"), "aboutMe 的筆記是唯一事實來源，標題要這樣說")
+            XCTAssertFalse(u.contains("可能過時"), "不能同時說「唯一事實來源」又說「可能過時」")
+            XCTAssertTrue(u.contains("我主導了快取重構"), "片段本身照樣帶入")
+        }
+
+        // 技術 cue 的歷史逐字稿**確實**可能過時 —— 那句話留著，不是回歸。
+        let technical = TierPrompts.tier1User(cue: "怎麼設計快取?", grounding: g)
+        XCTAssertTrue(technical.contains("可能過時"), "技術 cue 的歷史逐字稿標題不變")
+    }
 }

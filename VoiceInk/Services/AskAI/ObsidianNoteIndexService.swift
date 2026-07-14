@@ -60,9 +60,11 @@ final class ObsidianNoteIndexService {
         let accessing = vaultRoot.startAccessingSecurityScopedResource()
         defer { if accessing { vaultRoot.stopAccessingSecurityScopedResource() } }
 
-        let oldState = loadState()
-        let files = scanMarkdownFiles(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
         let model = TranscriptIndexService.shared.model
+        // 空 = 全量重嵌（首次索引，或**換過 embedding 模型**——見 loadState）。
+        let oldState = loadState(currentModelTag: model.tag)
+        if oldState.isEmpty { discardStaleNoteChunks(currentModelTag: model.tag) }
+        let files = scanMarkdownFiles(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
 
         var newState: [String: String] = [:]
         var reembedded = 0
@@ -125,7 +127,7 @@ final class ObsidianNoteIndexService {
 
         // GOTCHA：sidecar 一定最後寫——先 persist 後記 hash。中途中斷時 sidecar 仍是舊狀態，
         // 下次重掃會重做未記錄的檔；因 upsert 冪等，重做只是多花錢、不會壞資料。
-        try saveState(newState)
+        try saveState(newState, modelTag: model.tag)
         return reembedded
     }
 
@@ -183,13 +185,50 @@ final class ObsidianNoteIndexService {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func loadState() -> [String: String] {
-        guard let data = try? Data(contentsOf: stateURL),
-              let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
-        return dict
+    /// sidecar 的內容。`embeddingModel` **不是裝飾欄位**——它是換模型時唯一能救回筆記索引的訊號，
+    /// 見 `loadState`。
+    private struct IndexState: Codable {
+        /// 這份 hash 表是在哪個向量空間下建立的（= `EmbeddingModel.tag`）。
+        var embeddingModel: String
+        /// vault 相對路徑 → 內容 SHA-256。
+        var files: [String: String]
     }
 
-    private func saveState(_ state: [String: String]) throws {
+    /// 可信的「路徑 → 內容 hash」。**回空 = 全量重嵌。**
+    ///
+    /// 🔴 tag 不符時必須回空（2026-07-14 修 FR-44 後半）：`TranscriptIndexService.switchModel`
+    /// 換模型時會刪光**所有** `EmbeddingChunk`（含筆記塊），但 vault 的檔案內容一個字都沒改。
+    /// 只比對內容 hash 的話，下次掃描會全部命中、全部跳過 → **筆記塊永遠回不來**，而且設定頁的
+    /// 「重建筆記索引」還會回報「0 檔」，看起來一切正常。使用者只會發現 aboutMe 突然開始說
+    /// 「筆記沒記」——**失效是靜默的**，這是最糟的失敗模式。
+    /// tag 不符 = 向量空間不相容 = 全量重嵌，正是 `switchModel` 的語意。
+    ///
+    /// 舊格式（M8 首版的裸 `[路徑: hash]`，不知道當時用哪顆模型）一律視為不符：保守重嵌一次，
+    /// 比賭「它剛好是同一顆模型」安全。
+    private func loadState(currentModelTag: String) -> [String: String] {
+        guard let data = try? Data(contentsOf: stateURL),
+              let state = try? JSONDecoder().decode(IndexState.self, from: data),
+              state.embeddingModel == currentModelTag else { return [:] }
+        return state.files
+    }
+
+    /// 全量重嵌前，先清掉**不屬於現行向量空間**的筆記塊。
+    ///
+    /// 正常路徑上 `switchModel` 已經刪光了，這裡會是 no-op（一次空 fetch）。但「模型變了」是
+    /// reindex 唯一能自己觀察到的可靠訊號——不能假設 `switchModel` 一定跑過（舊格式 sidecar、
+    /// 未來新的觸發點）。清掉才不會在索引裡留下永遠查不到、也永遠不會被回收的死重量
+    /// （`RetrievalService` 的 predicate 會用 model tag 過濾掉它們 → 佔空間但永不命中）。
+    private func discardStaleNoteChunks(currentModelTag: String) {
+        let kind = Self.sourceKind
+        let stale = (try? modelContext.fetch(FetchDescriptor<EmbeddingChunk>(
+            predicate: #Predicate { $0.sourceKind == kind && $0.embeddingModel != currentModelTag }))) ?? []
+        guard !stale.isEmpty else { return }
+        for chunk in stale { modelContext.delete(chunk) }
+        try? modelContext.save()
+    }
+
+    private func saveState(_ files: [String: String], modelTag: String) throws {
+        let state = IndexState(embeddingModel: modelTag, files: files)
         try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
     }
 }

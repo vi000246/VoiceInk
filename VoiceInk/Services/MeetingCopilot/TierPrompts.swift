@@ -82,7 +82,8 @@ enum TierPrompts {
     /// `aboutMeBrief` 空(預設)→ **整行略過**,不留一行空的「我的自介:」誤導模型「我沒有自介」。
     static func tier1UserAboutMe(cue: String, grounding: MeetingGrounding, aboutMeBrief: String) -> String {
         var lines: [String] = []
-        let g = grounding.userBlock()
+        // `.personalNotes`:片段全來自個人筆記,標題必須與 system 的「唯一事實來源」同一口徑。
+        let g = grounding.userBlock(excerptLabel: .personalNotes)
         if !g.isEmpty { lines.append(g) }
         if !aboutMeBrief.isEmpty { lines.append("我的自介:\(aboutMeBrief)") }
         lines.append("對方問/說:\(cue)")
@@ -153,7 +154,8 @@ enum TierPrompts {
     static func tier2UserAboutMe(cue: String, draft: Tier1Draft, grounding: MeetingGrounding,
                                  aboutMeBrief: String) -> String {
         var lines: [String] = []
-        let g = grounding.userBlock()
+        // 同 tier1UserAboutMe:筆記標題與 system 的「唯一事實來源」同一口徑。
+        let g = grounding.userBlock(excerptLabel: .personalNotes)
         if !g.isEmpty { lines.append(g) }
         if !aboutMeBrief.isEmpty { lines.append("我的自介:\(aboutMeBrief)") }
         lines.append("對方問/說:\(cue)")
