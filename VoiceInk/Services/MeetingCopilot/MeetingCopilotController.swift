@@ -154,6 +154,7 @@ final class MeetingCopilotController: ObservableObject {
                 kind: e.kind,
                 askedAt: time,
                 contextExcerpt: String(sourceText.prefix(300)))
+            cue.searchHint = e.searchHint   // aboutMe 的筆記檢索改寫詞(檢索路由用;其他類為空)
             cue.sourceSegmentId = segment?.id
             // committed 到 persist 的全程延遲(含抽取 LLM 往返)——「cue 多久才浮上 overlay」。
             if let segment {

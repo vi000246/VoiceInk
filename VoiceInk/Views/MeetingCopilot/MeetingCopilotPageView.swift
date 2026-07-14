@@ -467,6 +467,7 @@ private extension MeetingCueKind {
         case .directQuestion: return "問題"
         case .impliedChallenge: return "質疑"
         case .assignedToMe: return "點名"
+        case .aboutMe: return "個人"
         case .informational: return "資訊"
         }
     }

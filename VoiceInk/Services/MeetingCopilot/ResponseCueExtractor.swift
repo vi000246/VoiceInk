@@ -6,6 +6,8 @@ import os
 struct ExtractedCue: Codable, Equatable {
     let text: String
     let kind: MeetingCueKind
+    /// aboutMe 專用:fast model 把問題改寫成的筆記檢索詞(其他類為空;M8 FR-45)。
+    var searchHint: String = ""
 }
 
 /// 一次抽取的完整結果:cues 之外還帶覆盤用的原始資料(回寫 `MeetingLiveSegment`)。
@@ -19,7 +21,7 @@ struct CueExtractionOutcome: Equatable {
     var elapsedMs: Int = 0
 }
 
-/// 從「對方」的 committed 逐字稿抽出 response cue 並四分類(FR-8/FR-9)。
+/// 從「對方」的 committed 逐字稿抽出 response cue 並五分類(FR-8/FR-9;M8 FR-45 加 aboutMe)。
 ///
 /// - **一次非串流呼叫**:輸出是結構化 JSON、使用者看不到中間產物,不需要逐 token 顯示,
 ///   所以走既有 `AIService.completeChat`,**不碰 SSE**(SSE 屬 M3;canon §3.3/§3.4)。
@@ -37,27 +39,33 @@ final class ResponseCueExtractor {
 
     // MARK: - Prompt(純函式,FR-12)
 
-    /// 四分類定義 + JSON 契約。**不要只靠問號**是本模組的核心要求(umbrella AC-4)。
+    /// 五分類定義 + JSON 契約。**不要只靠問號**是本模組的核心要求(umbrella AC-4)。
     ///
-    /// 主題過濾(2026-07-13 依使用者要求):只有**技術/軟體工程相關**的問題才需要 AI 輔助
-    /// 回答;非技術問題(期望待遇、個人資料、行為面試等)歸 `informational`——會持久化供
-    /// 覆盤,但預設不上 overlay、不觸發三層回應(informational 本來就不觸發,見
-    /// MeetingCopilotController.ingest)。
+    /// 主題過濾(2026-07-13 依使用者要求)+ aboutMe 分流(M8 FR-45/46):技術問題歸前三類;
+    /// 「關於我本人」的問題(專案經歷、績效考核、行為面試)歸 `aboutMe`——即使非技術也要
+    /// 觸發回應,靠個人筆記 RAG 接地,並要求 fast model 順手給 `searchHint`(問題改寫成
+    /// 筆記檢索詞);剩下真正不需要 AI 的(純資訊、純隱私資料、寒暄、行政)才歸
+    /// `informational`——會持久化供覆盤,但預設不上 overlay、不觸發三層回應
+    /// (見 MeetingCopilotController.ingest)。
     static let systemPrompt = """
     你是會議即時輔助的 cue 偵測器。輸入是「對方剛說的話」的即時 ASR 逐字稿(可能有錯字,\
-    請判斷語意而非字面)。從中抽出所有「需要我(聽者)回應的東西」,每一則分類為以下四類之一:
+    請判斷語意而非字面)。從中抽出所有「需要我(聽者)回應的東西」,每一則分類為以下五類之一:
     - directQuestion:**技術/軟體工程相關**的直接問句(例:「你會怎麼設計一個短網址服務?」)
     - impliedChallenge:**技術面**的質疑或疑慮——沒有問號,但明顯期待我回應\
     (例:「我對這個寫入效能有點擔心」)
     - assignedToMe:點名或指派我說明/負責**技術上的**某事(例:「這塊 Logan 你來說明一下」)
-    - informational:不需要 AI 輔助回答的一切——純資訊陳述(例:「我們上週上線了 v2」),\
-    以及**所有非技術問題**:薪資/期望待遇、住址/個人資料、行為面試(自我介紹、優缺點、\
-    團隊衝突經驗)、寒暄閒聊、公司流程行政事項。這些就算是問句、就算點名我,也一律歸此類。
-    判斷基準:只有「需要軟體/系統/程式專業知識才能答好」的,才歸前三類。
+    - aboutMe:需要回憶**我做過什麼/我的貢獻/我的觀點**才能答的——問我的專案、我的經歷、\
+    績效考核(例:「你對某專案有什麼**貢獻**?」「最有成就感的專案?」「你負責的範圍?」\
+    「你從中學到什麼?」)、行為面試(**自我介紹**、優缺點、團隊衝突經驗)。\
+    **即使非技術也歸此類**。
+    - informational:不需要 AI 輔助回答的——純資訊陳述(例:「我們上週上線了 v2」)、\
+    純隱私資料問題(薪資/期望待遇/住址)、寒暄閒聊、公司流程行政事項。
+    判斷基準:「需要軟體/系統/程式專業知識才能答好」的歸前三類;「需要回憶我個人的經歷\
+    /貢獻/觀點」的歸 aboutMe;兩者皆非才歸 informational。
     注意:**不要只靠問號判斷**——質疑與指派常以陳述句出現,漏抓它們是最嚴重的錯誤。
     沒有任何 cue 時回空陣列。
     只輸出 JSON,不要任何其他文字、不要 markdown code fence,格式:
-    {"cues":[{"text":"<cue 原句>","kind":"directQuestion|impliedChallenge|assignedToMe|informational"}]}
+    {"cues":[{"text":"<cue 原句>","kind":"directQuestion|impliedChallenge|assignedToMe|aboutMe|informational","searchHint":"<僅 aboutMe 給:把問題改寫成筆記檢索詞(專案名/動詞/名詞);其他類給空字串>"}]}
     """
 
     /// 組 prompt。純函式:不讀 UserDefaults、不發網路、同輸入同輸出(FR-12)。
@@ -82,6 +90,8 @@ final class ResponseCueExtractor {
     private struct RawCue: Codable {
         let text: String
         let kind: String
+        /// optional:模型省略欄位(尤其非 aboutMe)時不可讓整包 decode 失敗。
+        let searchHint: String?
     }
 
     /// 解析 fast model 回的 JSON。任何失敗 → [](沿用 repo `try? JSONDecoder` 容錯慣例)。純函式。
@@ -99,7 +109,7 @@ final class ResponseCueExtractor {
         return envelope.cues.compactMap { raw in
             let text = raw.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, let kind = MeetingCueKind(rawValue: raw.kind) else { return nil }
-            return ExtractedCue(text: text, kind: kind)
+            return ExtractedCue(text: text, kind: kind, searchHint: raw.searchHint ?? "")
         }
     }
 

@@ -10,7 +10,8 @@ import SwiftData
 /// 三處註冊見 VoiceInk.swift(master Schema / createPersistentContainer /
 /// createInMemoryContainer)——漏任一處 = launch `fatalError`。
 
-/// cue 的四分類(FR-8)。String-in-raw 慣例:persist `kindRaw`,computed `kind` 包住它。
+/// cue 的五分類(FR-8;M8 FR-45 加入 aboutMe)。String-in-raw 慣例:persist `kindRaw`,
+/// computed `kind` 包住它。
 enum MeetingCueKind: String, Codable, CaseIterable {
     /// 直接問句:「你會怎麼設計一個短網址服務?」
     case directQuestion
@@ -18,6 +19,9 @@ enum MeetingCueKind: String, Codable, CaseIterable {
     case impliedChallenge
     /// 點名/指派:「這塊 Logan 你來說明一下」
     case assignedToMe
+    /// 關於我本人——需回憶「我做過什麼/我的貢獻/我的觀點」才能答:「你對X專案有什麼貢獻?」
+    /// 即使非技術也歸此類,走個人筆記 RAG 而非技術回答(M8 FR-45)。
+    case aboutMe
     /// 純資訊,不需回應:「我們上週上線了 v2」(FR-11:persist 但預設不暴露)
     case informational
 }
@@ -120,6 +124,11 @@ final class MeetingLiveCue {
     var tier2StreamElapsedMs: Int = 0
     var tier2Error: String = ""
     var tier2GroundingNote: String = ""
+    /// aboutMe cue 的檢索改寫詞(fast model 把問題改寫成筆記檢索詞;其他類為空)。
+    /// 檢索路由拿它取代 cue 原句做 embed 查詢——原句常是口語問法,直接嵌入命中率差(M8 FR-45)。
+    var searchHint: String = ""
+    /// Tier 2 觸發來源:"auto" = 自動深答、"manual" = 使用者點擊、空 = 未跑(M8 觀測用)。
+    var tier2TriggerRaw: String = ""
 
     init(
         session: MeetingLiveSession?,

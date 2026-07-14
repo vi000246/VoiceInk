@@ -117,6 +117,29 @@ final class ResponseCueExtractorTests: XCTestCase {
         XCTAssertEqual(parsed, [ExtractedCue(text: "這塊 Logan 你來說明一下", kind: .assignedToMe)])
     }
 
+    /// M8 AC-31:aboutMe cue 帶 searchHint(fast model 把問題改寫成筆記檢索詞)。
+    func testParseAboutMeWithSearchHint() {
+        let raw = #"{"cues":[{"text":"你對X專案有什麼貢獻？","kind":"aboutMe","searchHint":"X專案 貢獻 成果"}]}"#
+        let cues = ResponseCueExtractor.parse(raw)
+        XCTAssertEqual(cues, [ExtractedCue(text: "你對X專案有什麼貢獻？", kind: .aboutMe,
+                                           searchHint: "X專案 貢獻 成果")])
+    }
+
+    /// searchHint 缺漏(模型省略欄位)→ 預設空字串,整則 cue 不得因此丟棄。
+    func testParseMissingSearchHintDefaultsEmpty() {
+        let raw = #"{"cues":[{"text":"你會怎麼設計快取？","kind":"directQuestion"}]}"#
+        XCTAssertEqual(ResponseCueExtractor.parse(raw).first?.searchHint, "")
+    }
+
+    /// M8 golden:五分類 prompt 必含 aboutMe 判準關鍵詞與 searchHint 契約。
+    func testSystemPromptCoversFiveKindsAndReviewExamples() {
+        let p = ResponseCueExtractor.systemPrompt
+        XCTAssertTrue(p.contains("aboutMe"))
+        XCTAssertTrue(p.contains("貢獻"))       // 績效考核正例必須在 prompt 裡
+        XCTAssertTrue(p.contains("自我介紹"))   // 從 informational 搬到 aboutMe 的關鍵例
+        XCTAssertTrue(p.contains("searchHint"))
+    }
+
     /// 解析容錯:壞 JSON / 未知 kind / 空 text / markdown fence。
     func testParseToleratesGarbage() {
         XCTAssertEqual(ResponseCueExtractor.parse("這不是 JSON"), [])
