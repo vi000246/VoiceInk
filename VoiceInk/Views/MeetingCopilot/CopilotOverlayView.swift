@@ -10,22 +10,26 @@ struct CopilotOverlayView: View {
     /// 點「深度分析」→ 觸發 Tier 2(接 M3 AnswerCoordinator;click-through 開啟時自然不會觸發)。
     var onCueTapped: ((MeetingLiveCue) -> Void)?
 
-    /// 手風琴:使用者手動展開的 cue(nil = 自動展開最新一則)。
+    /// 手風琴:使用者手動展開的 cue(`controller.expandedCueId`;nil = 自動展開最新一則)。
     /// 面試官連問兩題時,可點任一題展開、其餘自動收成單行;新題進來仍排最上,
     /// 但不會搶走使用者正在回答的那一題的展開狀態。
-    @State private var expandedCueId: UUID?
-
+    ///
+    /// 狀態住在 controller 而非 view 的 `@State`:AnswerCoordinator 的取消判斷與
+    /// auto-expand 也要讀「使用者現在在讀哪一則」(AC-37)。
     private var arranged: [(cue: MeetingLiveCue, emphasis: CopilotOverlayEmphasis)] {
         CopilotOverlayArranger.arrange(
             controller.cues,
             askedAt: { $0.askedAt },
             isAnswered: { $0.status == .answered },
-            maxCount: config.maxCuesShown)
+            maxCount: config.maxCuesShown,
+            // 展開中的那則不被 maxCount 擠出——讀到一半整段消失是 M8 要修的痛點。
+            pinnedId: controller.expandedCueId,
+            id: { $0.id })
     }
 
     /// 實際展開者:手動選擇優先(且仍在列表上);否則最新一則。
     private var effectiveExpandedId: UUID? {
-        if let id = expandedCueId, arranged.contains(where: { $0.cue.id == id }) { return id }
+        if let id = controller.expandedCueId, arranged.contains(where: { $0.cue.id == id }) { return id }
         return arranged.first?.cue.id
     }
 
@@ -110,7 +114,7 @@ struct CopilotOverlayView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .contentShape(Rectangle())
-        .onTapGesture { expandedCueId = cue.id }
+        .onTapGesture { controller.expandedCueId = cue.id }
     }
 
     /// focus cue:opener 最大字級單獨呈現(FR-26 的核心——讓你能直接照著念)。

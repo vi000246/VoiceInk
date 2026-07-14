@@ -34,6 +34,13 @@ final class MeetingCopilotController: ObservableObject {
     /// Tier 2 進行中的 cue id(overlay 顯示「深度分析中…」;由點擊 handler 設定/清除)。
     @Published var deepInFlightCueId: UUID?
 
+    /// 展開中(使用者正在閱讀)的 cue id。
+    /// nil = 自動跟隨最新一則;非 nil = 使用者點開/自動展開中,受閱讀保護——
+    /// 該 cue 不會被 `maxCount` 從 overlay 擠出(AC-37,見 CopilotOverlayArranger.arrange 的 pinnedId),
+    /// 在途的深度分析也不會被新 cue 取消。狀態放在 controller 而非 view:
+    /// 非 UI 端(AnswerCoordinator 的取消判斷、auto-expand)也要讀得到。
+    @Published var expandedCueId: UUID?
+
     /// M3 的三層回應編排器。設定後,每則新持久化的非 informational cue 會觸發
     /// Tier 0 + 預跑 Tier 1(`AnswerCoordinator.onNewCue`)。nil = 只偵測不回應(M2 行為)。
     var answerCoordinator: AnswerCoordinator?
