@@ -19,13 +19,20 @@ final class EmbeddingChunk {
     /// 產生此向量的 embedding 模型標籤。不同模型的向量空間互不相容——查詢時強制檢查,
     /// 換模型＝全量重嵌。
     var embeddingModel: String = ""
-    /// "dictation" | "recorder" | "meeting"(反正規化,供 scope 過濾)。
+    /// "dictation" | "recorder" | "meeting" | "obsidian"(反正規化,供 scope 過濾)。
     var sourceKind: String = ""
     var categoryId: UUID?
     var timestamp: Date = Date()
+    /// 出處(目前只有 obsidian 塊會填):筆記標題與 vault 相對路徑。
+    /// 轉錄塊的出處查得到 `Transcription`(靠 transcriptionId),筆記塊沒有那張表——所以
+    /// 反正規化存在塊上,引用 UI 才能顯示「《標題》」並開啟 `obsidian://` 連結。
+    /// optional + 預設 nil = SwiftData lightweight migration 安全(舊 store 的塊自動是 nil)。
+    var sourceTitle: String?
+    var sourcePath: String?
 
     init(transcriptionId: UUID, chunkIndex: Int, text: String, vector: Data, dims: Int,
-         embeddingModel: String, sourceKind: String, categoryId: UUID?, timestamp: Date) {
+         embeddingModel: String, sourceKind: String, categoryId: UUID?, timestamp: Date,
+         sourceTitle: String? = nil, sourcePath: String? = nil) {
         self.transcriptionId = transcriptionId
         self.chunkIndex = chunkIndex
         self.text = text
@@ -35,6 +42,8 @@ final class EmbeddingChunk {
         self.sourceKind = sourceKind
         self.categoryId = categoryId
         self.timestamp = timestamp
+        self.sourceTitle = sourceTitle
+        self.sourcePath = sourcePath
     }
 }
 

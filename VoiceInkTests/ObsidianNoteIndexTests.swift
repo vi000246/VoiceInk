@@ -110,6 +110,33 @@ final class ObsidianNoteIndexTests: XCTestCase {
                       "重嵌後的塊必須標新的向量空間")
     }
 
+    /// 🔴 AC-7：舊 sidecar（無 schema）→ 全量重嵌＋metadata 回填＋幽靈塊清理＋sidecar 寫回 schema:2。
+    @MainActor
+    func testSchemaBumpForcesFullReembedBackfillsMetadataAndClearsGhosts() async throws {
+        let (ctx, embedder) = try makeInMemoryContextAndFakeEmbedder()
+        let vault = try makeTempVault(files: ["工作/專案A.md": "內容甲"])
+        let stateURL = vault.appendingPathComponent(".state.json")
+        let svc = ObsidianNoteIndexService(embedder: embedder, modelContext: ctx, stateURL: stateURL)
+        // 幽靈：state 裡有、磁碟上沒有的檔的塊（同 model tag —— discardStale 不會清它）
+        let ghostId = ObsidianNoteChunking.noteId(relativePath: "已刪/舊筆記.md")
+        ctx.insert(EmbeddingChunk(transcriptionId: ghostId, chunkIndex: 0, text: "《舊筆記》幽靈",
+            vector: EmbeddingClient.floatsToData([0.1, 0.2, 0.3]), dims: 3,
+            embeddingModel: TranscriptIndexService.shared.model.tag, sourceKind: "obsidian",
+            categoryId: nil, timestamp: Date()))
+        try ctx.save()
+        // 舊版 sidecar：無 schema 欄位（M8 出貨格式）
+        let legacy = #"{"embeddingModel":"\#(TranscriptIndexService.shared.model.tag)","files":{"工作/專案A.md":"deadbeef","已刪/舊筆記.md":"cafebabe"}}"#
+        try legacy.write(to: stateURL, atomically: true, encoding: .utf8)
+
+        let n = try await svc.reindex(vaultRoot: vault, includeOnly: [], excluded: [])
+        XCTAssertEqual(n, 1, "schema 不符 → 視為空 → 全量重嵌")
+        let chunks = try ctx.fetch(FetchDescriptor<EmbeddingChunk>())
+        XCTAssertFalse(chunks.contains { $0.text.contains("幽靈") }, "全量起點清掉幽靈塊")
+        XCTAssertTrue(chunks.allSatisfy { $0.sourceTitle == "專案A" && $0.sourcePath == "工作/專案A.md" })
+        let written = try String(contentsOf: stateURL, encoding: .utf8)
+        XCTAssertTrue(written.contains(#""schema":2"#))
+    }
+
     // MARK: - Helpers
 
     /// in-memory SwiftData context（鏡射 AskAIIndexTests 的建法；索引測試只需 EmbeddingChunk schema）

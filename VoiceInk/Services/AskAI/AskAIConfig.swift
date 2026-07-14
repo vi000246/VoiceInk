@@ -49,12 +49,25 @@ enum AskAISourceFilter: String, CaseIterable, Identifiable {
         case .recorder: return "錄音輸入"
         }
     }
-    /// 對應的 sourceKind 集合;nil = 不限。錄音輸入涵蓋一般錄音匯入與會議擷取。
-    var sources: Set<String>? {
+    /// 對應的 sourceKind 集合——永遠是明確集合，不再有 nil（= 不過濾）語意。
+    /// `.all` 指的是「全部**逐字稿**來源」，不含 obsidian 筆記塊：
+    /// 舊的 nil 會讓檢索層跳過 source 過濾，把筆記塊漏進預設查詢（見 AskAIScopeTests 回歸鎖）。
+    /// 錄音輸入涵蓋一般錄音匯入與會議擷取。
+    var sources: Set<String> {
         switch self {
-        case .all: return nil
+        case .all: return ["dictation", "recorder", "meeting"]
         case .voice: return ["dictation"]
         case .recorder: return ["recorder", "meeting"]
         }
+    }
+}
+
+/// scope bar 雙 chip → 檢索來源集合。空集合 = 兩顆都關（UI 會擋，這裡是最後防線）。
+enum AskAIScopeComposer {
+    static func sources(transcriptsOn: Bool, notesOn: Bool, filter: AskAISourceFilter) -> Set<String> {
+        var s: Set<String> = []
+        if transcriptsOn { s.formUnion(filter.sources) }
+        if notesOn { s.insert(ObsidianNoteIndexService.sourceKind) }
+        return s
     }
 }
