@@ -99,4 +99,7 @@ Icon
 .AppleDesktop
 Network Trash Folder
 Temporary Items
-.apdisk 
+.apdisk
+
+# Git worktrees (parallel PRP implementation)
+.worktrees/
