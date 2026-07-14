@@ -1,5 +1,16 @@
 import XCTest
+import SwiftData
 @testable import VoiceInk
+
+/// 回固定向量並計數呼叫的假嵌入器：`embedCallCount` 供「增量只重嵌變更檔」斷言。
+/// 用 class（非 struct）讓測試能跨呼叫觀察/重設計數。
+private final class FakeCountingEmbedder: EmbeddingProviding {
+    var embedCallCount = 0
+    func embed(texts: [String], model: EmbeddingModel) async throws -> [[Float]] {
+        embedCallCount += 1
+        return texts.map { _ in [0.25, 0.5, 0.75] }
+    }
+}
 
 final class ObsidianNoteIndexTests: XCTestCase {
 
@@ -24,5 +35,57 @@ final class ObsidianNoteIndexTests: XCTestCase {
         let b  = ObsidianNoteChunking.noteId(relativePath: "工作/專案B.md")
         XCTAssertEqual(a1, a2, "同路徑恆定")
         XCTAssertNotEqual(a1, b)
+    }
+
+    // MARK: - 索引服務（全量 → 增量）
+
+    @MainActor
+    func testFullIndexThenIncrementalOnlyReembedsChangedFile() async throws {
+        let (ctx, embedder) = try makeInMemoryContextAndFakeEmbedder()
+        let vault = try makeTempVault(files: [
+            "工作/專案A.md": "---\ntags: [x]\n---\n# A\n內容甲",
+            "日記/2026.md": "今天內容"])
+        let svc = ObsidianNoteIndexService(embedder: embedder, modelContext: ctx,
+                                           stateURL: vault.appendingPathComponent(".state.json"))
+        // 全量
+        let n1 = try await svc.reindex(vaultRoot: vault, includeOnly: [], excluded: [".obsidian"])
+        XCTAssertGreaterThan(n1, 0)
+        let all = try ctx.fetch(FetchDescriptor<EmbeddingChunk>())
+        XCTAssertTrue(all.allSatisfy { $0.sourceKind == "obsidian" })
+        XCTAssertTrue(all.contains { $0.text.hasPrefix("《專案A》") && !$0.text.contains("tags:") })
+        // 增量：只改一檔＋刪一檔
+        embedder.embedCallCount = 0
+        try "改過的內容".write(to: vault.appendingPathComponent("工作/專案A.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: vault.appendingPathComponent("日記/2026.md"))
+        _ = try await svc.reindex(vaultRoot: vault, includeOnly: [], excluded: [".obsidian"])
+        XCTAssertEqual(embedder.embedCallCount, 1, "只有變更檔重嵌")
+        let after = try ctx.fetch(FetchDescriptor<EmbeddingChunk>())
+        XCTAssertFalse(after.contains { $0.text.hasPrefix("《2026》") }, "刪除檔的塊要消失")
+    }
+
+    // MARK: - Helpers
+
+    /// in-memory SwiftData context（鏡射 AskAIIndexTests 的建法；索引測試只需 EmbeddingChunk schema）
+    /// ＋ 計數 fake embedder。
+    private func makeInMemoryContextAndFakeEmbedder() throws -> (ModelContext, FakeCountingEmbedder) {
+        let container = try ModelContainer(
+            for: EmbeddingChunk.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        return (ModelContext(container), FakeCountingEmbedder())
+    }
+
+    /// 臨時 vault：temp 目錄下依 [相對路徑: 內容] 建 .md 檔；teardown 自動清理。
+    private func makeTempVault(files: [String: String]) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for (relativePath, content) in files {
+            let url = root.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try content.write(to: url, atomically: true, encoding: .utf8)
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
     }
 }
