@@ -36,6 +36,10 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let overlayClickThroughKey = "meetingCopilotOverlayClickThroughV1"
     private let maxCuesShownKey = "meetingCopilotMaxCuesShownV1"
 
+    // Keys(M8 新增：個人筆記 RAG)
+    private let useNotesRAGKey = "meetingCopilotUseNotesRAGV1"
+    private let notesInTechnicalRAGKey = "meetingCopilotNotesInTechnicalRAGV1"
+
     // MARK: - Settings
 
     /// 總開關（kill switch）。**預設 true**（2026-07-13 依使用者要求改:會議錄製時
@@ -104,6 +108,17 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// overlay 最多列出幾則 cue(FR-26)。夾在 [1, 20]。
     @Published private(set) var maxCuesShown: Int = 5
 
+    // MARK: - Settings(M8 新增：個人筆記 RAG;設定頁 UI 屬 Task 7)
+
+    /// M8 FR-47:aboutMe cue 是否以個人筆記(obsidian)RAG 接地。**預設 true**——
+    /// 這是 aboutMe 路由的總開關,獨立於 `useHistoryRAG`(被問到自己的經歷時,
+    /// 逐字稿歷史沒有答案,筆記才有;不該被「先求快」的 RAG 預設關掉)。
+    /// 未建筆記索引時 retrieve 自然回空,無額外成本。
+    @Published private(set) var useNotesRAG: Bool = true
+    /// M8:技術 cue 檢索是否也納入個人筆記。**預設 false**——技術答案不被個人筆記
+    /// 污染(既有行為不變的 NFR);要混用的人到設定頁顯式開啟。
+    @Published private(set) var notesInTechnicalRAG: Bool = false
+
     // MARK: - Init
 
     init() {
@@ -142,6 +157,9 @@ final class MeetingCopilotConfigStore: ObservableObject {
         if d.object(forKey: maxCuesShownKey) != nil {
             maxCuesShown = min(max(d.integer(forKey: maxCuesShownKey), 1), 20)
         }
+
+        useNotesRAG = (d.object(forKey: useNotesRAGKey) as? Bool) ?? true   // 未設定 → true
+        notesInTechnicalRAG = (d.object(forKey: notesInTechnicalRAGKey) as? Bool) ?? false
     }
 
     // MARK: - Mutators
@@ -224,5 +242,17 @@ final class MeetingCopilotConfigStore: ObservableObject {
         let clamped = min(max(value, 1), 20)
         maxCuesShown = clamped
         UserDefaults.standard.set(clamped, forKey: maxCuesShownKey)
+    }
+
+    // MARK: - Mutators(M8 筆記 RAG)
+
+    func setUseNotesRAG(_ value: Bool) {
+        useNotesRAG = value
+        UserDefaults.standard.set(value, forKey: useNotesRAGKey)
+    }
+
+    func setNotesInTechnicalRAG(_ value: Bool) {
+        notesInTechnicalRAG = value
+        UserDefaults.standard.set(value, forKey: notesInTechnicalRAGKey)
     }
 }

@@ -5,7 +5,11 @@ import os
 
 /// 接地的可注入介面(測試注入 noop / fake)。
 protocol MeetingGroundingProviding {
-    func gather(cueText: String, brief: String, includeRAG: Bool, includeScreen: Bool) async -> MeetingGrounding
+    /// - Parameters:
+    ///   - query: 檢索用查詢文字(呼叫端按 cue 種類決定:aboutMe 用 searchHint 改寫詞,其他用 cue 原句)。
+    ///   - sources: 檢索來源白名單(`EmbeddingChunk.sourceKind`);nil = 不限來源(M8 FR-47)。
+    func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
+                sources: Set<String>?) async -> MeetingGrounding
 }
 
 extension MeetingGroundingProvider: MeetingGroundingProviding {}
@@ -72,13 +76,31 @@ final class AnswerCoordinator: ObservableObject {
         }
     }
 
+    // MARK: - 檢索路由(M8 FR-47)
+
+    /// 按 cue 種類決定接地參數。aboutMe 走個人筆記:query 用 searchHint 改寫詞(口語原句直接
+    /// 嵌入命中率差)、開關看 `useNotesRAG`(**不看** useHistoryRAG——被問到自己的經歷時,
+    /// 逐字稿歷史沒有答案,筆記才有)。其他種類維持逐字稿三來源——**明確排除 obsidian**,
+    /// 技術答案不被個人筆記污染(既有行為不變的 NFR;`notesInTechnicalRAG` 顯式開啟才納入)。
+    private func groundingPlan(for cue: MeetingLiveCue) -> (query: String, includeRAG: Bool, sources: Set<String>?) {
+        if cue.kind == .aboutMe {
+            let q = cue.searchHint.isEmpty ? cue.text : cue.searchHint
+            return (q, config.useNotesRAG, ["obsidian"])
+        }
+        var s: Set<String> = ["dictation", "recorder", "meeting"]
+        if config.notesInTechnicalRAG { s.insert("obsidian") }
+        return (cue.text, config.useHistoryRAG, s)
+    }
+
     // MARK: - Tier 1
 
     private func runTier1(_ cue: MeetingLiveCue) async {
         let started = Date()
+        let plan = groundingPlan(for: cue)
         let g = await grounding.gather(
-            cueText: cue.text, brief: cue.session?.brief ?? "",
-            includeRAG: config.useHistoryRAG, includeScreen: false)   // Tier1 不抓螢幕
+            query: plan.query, brief: cue.session?.brief ?? "",
+            includeRAG: plan.includeRAG, includeScreen: false,   // Tier1 不抓螢幕
+            sources: plan.sources)
         let system = TierPrompts.tier1System(persona: config.domainPersona)
         let user = TierPrompts.tier1User(cue: cue.text, grounding: g)
         // 觀測資料:模型看到的完整 user prompt(接地內容全在裡面);system 在 session 快照。
@@ -141,9 +163,11 @@ final class AnswerCoordinator: ObservableObject {
 
     private func runTier2(_ cue: MeetingLiveCue, draft: Tier1Draft) async {
         let groundingStart = Date()
+        let plan = groundingPlan(for: cue)
         let g = await grounding.gather(
-            cueText: cue.text, brief: cue.session?.brief ?? "",
-            includeRAG: config.useHistoryRAG, includeScreen: config.useScreenContext)   // Tier2 才抓螢幕
+            query: plan.query, brief: cue.session?.brief ?? "",
+            includeRAG: plan.includeRAG, includeScreen: config.useScreenContext,   // Tier2 才抓螢幕
+            sources: plan.sources)
         let groundingElapsed = Date().timeIntervalSince(groundingStart)
         logger.notice("🫆 tier2 接地完成 elapsed=\(groundingElapsed, format: .fixed(precision: 1), privacy: .public)s → deep model 串流開始")
         let system = TierPrompts.tier2System(persona: config.domainPersona)
@@ -188,4 +212,9 @@ final class AnswerCoordinator: ObservableObject {
         deepTask?.cancel()
         deepTask = nil
     }
+
+    // MARK: - 測試 hook
+
+    /// 測試用:等待預跑的 Tier 1 完成(免 sleep 輪詢;正式碼不呼叫)。
+    func drainPrefetchForTest() async { await prefetchTask?.value }
 }

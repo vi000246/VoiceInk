@@ -42,21 +42,25 @@ final class MeetingGroundingProvider {
 
     /// 組接地快照。任何來源失敗都靜默(回空),不阻斷答案。
     /// - Parameters:
-    ///   - includeRAG: 通常 = `config.useHistoryRAG`
+    ///   - query: 檢索用查詢文字(呼叫端按 cue 種類決定:aboutMe 用 searchHint 改寫詞,其他用 cue 原句)。
+    ///   - includeRAG: 技術 cue = `config.useHistoryRAG`;aboutMe = `config.useNotesRAG`(呼叫端決定)。
     ///   - includeScreen: 通常 Tier 2 才為 true(= `config.useScreenContext`)
-    func gather(cueText: String, brief: String, includeRAG: Bool, includeScreen: Bool) async -> MeetingGrounding {
+    ///   - sources: 檢索來源白名單(`EmbeddingChunk.sourceKind`);nil = 不限來源。
+    func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
+                sources: Set<String>?) async -> MeetingGrounding {
         var ragExcerpts: [String] = []
         var ragError: String?
 
         if includeRAG {
             let model = TranscriptIndexService.shared.model
             do {
-                let vectors = try await embedder.embed(texts: [cueText], model: model)
+                let vectors = try await embedder.embed(texts: [query], model: model)
                 if let vector = vectors.first {
                     // retrieve 為 @MainActor 同步;本類已在 @MainActor,直接呼叫。
-                    // scope = .all:個人會議即時場景,搜全部歷史(含 dictation/recorder/meeting)最大召回。
+                    // 檢索來源由呼叫端按 cue 種類決定(M8 FR-47:aboutMe 限個人筆記、技術 cue 限
+                    // 逐字稿三來源);sources == nil 不限來源,等同原本寫死的 `.all` 行為(向下相容)。
                     let scored = RetrievalService.retrieve(
-                        queryVector: vector, scope: .all, k: ragK,
+                        queryVector: vector, scope: AskAIScope(sources: sources), k: ragK,
                         model: model, context: modelContext)
                     ragExcerpts = scored.map { String($0.chunk.text.prefix(800)) }
                 }
