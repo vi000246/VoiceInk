@@ -53,6 +53,18 @@ final class MeetingLiveSession {
     /// 空字串 = 舊資料(欄位引入前)。
     var configSnapshotRaw: String = ""
 
+    // MARK: - M8 欄位(有預設值 = lightweight migration 安全;無新 @Model → 不必動三處註冊)
+
+    /// session 的來源:`"live"`(即時會議)或 `"replay"`(離線覆盤,從既有逐字稿重演)。
+    /// String-in-raw 慣例。覆盤列表靠這個對 replay 顯示「離線覆盤」badge——兩者資料同構,
+    /// 只有產生方式不同,所以用一個標記而不是第二個 @Model(FR-59)。
+    /// 同一錄音可多次 replay(各帶當下 `configSnapshotRaw`)= prompt 調校的 A/B 基礎。
+    var sourceRaw: String = "live"
+    /// 漏抓掃描結果(JSON `[SweepItem]`,JSON-in-raw 慣例,同 cue 的 tier 陣列)。
+    /// 「無主題過濾的通用 prompt 掃全文 → 與已偵測 cue 匹配 → 未匹配項」= 即時抽取漏掉的東西,
+    /// 是分類 prompt 的調校訊號。空字串 = 尚未掃描(FR-57)。
+    var reviewSweepRaw: String = ""
+
     /// 父端:cascade + inverse(鏡射 AskAIThread.messages,AskAIModels.swift:45-46)。
     /// **OPTIONAL 陣列、預設 []** ——兩者缺一不可。
     @Relationship(deleteRule: .cascade, inverse: \MeetingLiveCue.session)
