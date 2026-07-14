@@ -274,6 +274,17 @@ final class MeetingLiveSegment {
     /// 抽取失敗原因(LLM 呼叫失敗;空 = 成功)。
     var extractionError: String = ""
 
+    // MARK: - M8 即時翻譯(remote 段才寫;有預設值 = lightweight migration 安全,FR-64)
+
+    /// 即時翻譯結果(空 = 未翻譯:翻譯關閉、local 段、或尚未完成)。
+    /// 與原文一起 persist,覆盤詳情的逐段時間軸才能顯示雙語對照。
+    var translatedText: String = ""
+    /// 單段翻譯往返耗時(調校訊號:翻譯是否跟得上說話速度)。
+    var translationElapsedMs: Int = 0
+    /// 翻譯失敗原因(空 = 成功)。失敗對使用者靜默——該句 overlay 顯示原文,
+    /// 只有這裡留得下線索(同 `extractionError` 的紀律)。
+    var translationError: String = ""
+
     init(
         session: MeetingLiveSession?,
         channel: MeetingSegmentChannel,
