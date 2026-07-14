@@ -44,6 +44,13 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let notesExcludedKey = "meetingCopilotNotesExcludedV1"
     private let autoDeepEnabledKey = "meetingCopilotAutoDeepV1"
 
+    // Keys(M8 D 組：即時翻譯)
+    private let liveTranslationEnabledKey = "meetingCopilotLiveTranslationV1"
+    private let translationProviderKey = "meetingCopilotTranslationProviderV1"
+    private let translationModelKey = "meetingCopilotTranslationModelV1"
+    private let translationSourceLanguageKey = "meetingCopilotTranslationSourceV1"
+    private let translationTargetLanguageKey = "meetingCopilotTranslationTargetV1"
+
     // MARK: - Settings
 
     /// 總開關（kill switch）。**預設 true**（2026-07-13 依使用者要求改:會議錄製時
@@ -146,6 +153,26 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 舊 cue 的在途 deep 會被新 cue 取消(latest-only),不會累積。要省錢的人到設定頁關掉。
     @Published private(set) var autoDeepEnabled: Bool = true
 
+    // MARK: - Settings(M8 D 組：即時翻譯;設定頁 UI 屬 Task 19)
+
+    /// M8 FR-62:每段 remote committed 逐字稿即時翻成目標語言,顯示在 overlay 上區。
+    /// **預設 false**——這是每段一次 LLM 呼叫的**額外**成本(與 cue 抽取平行,不是取代),
+    /// 對單語會議純屬浪費。要用的人到設定頁開(AC-47:關閉時零 API 呼叫)。
+    @Published private(set) var liveTranslationEnabled: Bool = false
+
+    /// 翻譯用的 model(provider rawValue)。nil = 跟隨 AI Models 的預設 provider。
+    /// 與 fast/deep **各自獨立**:翻譯要的是「便宜、快、量大」(每段都打),
+    /// 跟 cue 抽取的判斷力、深度分析的推理力是三種不同取捨。
+    @Published private(set) var translationProviderName: String?
+    /// 翻譯 model 名稱。nil = 用該 provider 的預設 model。
+    @Published private(set) var translationModelName: String?
+
+    /// 來源語言碼。預設 `"auto"` = 不假設輸入語言(混語會議的唯一正解;
+    /// 見 `MeetingTranslationPrompt` 檔頭:任何語言偵測器都會在中英夾雜句上判錯)。
+    @Published private(set) var translationSourceLanguage: String = "auto"
+    /// 目標語言碼。預設繁體中文(本 app 的主要使用情境:聽英文會議、看中文字幕)。
+    @Published private(set) var translationTargetLanguage: String = "zh-TW"
+
     // MARK: - Init
 
     init() {
@@ -195,6 +222,14 @@ final class MeetingCopilotConfigStore: ObservableObject {
         // 就會被上面的預設值蓋回去,使用者永遠清不掉預設排除。
         if let a = d.stringArray(forKey: notesIncludeOnlyKey) { notesIncludeOnlyFolders = a }
         if let a = d.stringArray(forKey: notesExcludedKey) { notesExcludedFolders = a }
+
+        // M8 D 組:即時翻譯。未設定 → false(AC-47:預設零成本)。
+        liveTranslationEnabled = (d.object(forKey: liveTranslationEnabledKey) as? Bool) ?? false
+        translationProviderName = d.string(forKey: translationProviderKey)
+        translationModelName = d.string(forKey: translationModelKey)
+        // 照 domainPersona:空字串視同沒設定(壞設定不該把 prompt 的語言指示清空)。
+        if let s = d.string(forKey: translationSourceLanguageKey), !s.isEmpty { translationSourceLanguage = s }
+        if let t = d.string(forKey: translationTargetLanguageKey), !t.isEmpty { translationTargetLanguage = t }
     }
 
     // MARK: - Mutators
@@ -309,5 +344,28 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setAutoDeepEnabled(_ value: Bool) {
         autoDeepEnabled = value
         UserDefaults.standard.set(value, forKey: autoDeepEnabledKey)
+    }
+
+    // MARK: - Mutators(M8 D 組 即時翻譯)
+
+    func setLiveTranslationEnabled(_ value: Bool) {
+        liveTranslationEnabled = value
+        UserDefaults.standard.set(value, forKey: liveTranslationEnabledKey)
+    }
+
+    /// 雙欄 setter,形式照 `setFastModel(provider:model:)`——provider 與 model 是一組,
+    /// 分開寫會出現「provider 已換、model 還是舊 provider 的」這種解析不出來的中間狀態。
+    func setTranslationModel(provider: String?, model: String?) {
+        translationProviderName = provider
+        translationModelName = model
+        persistString(provider, translationProviderKey)
+        persistString(model, translationModelKey)
+    }
+
+    func setTranslationLanguages(source: String, target: String) {
+        translationSourceLanguage = source
+        translationTargetLanguage = target
+        UserDefaults.standard.set(source, forKey: translationSourceLanguageKey)
+        UserDefaults.standard.set(target, forKey: translationTargetLanguageKey)
     }
 }

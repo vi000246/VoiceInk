@@ -14,6 +14,11 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         "meetingCopilotNotesIncludeOnlyV1",
         "meetingCopilotNotesExcludedV1",
         "meetingCopilotAutoDeepV1",
+        "meetingCopilotLiveTranslationV1",
+        "meetingCopilotTranslationProviderV1",
+        "meetingCopilotTranslationModelV1",
+        "meetingCopilotTranslationSourceV1",
+        "meetingCopilotTranslationTargetV1",
     ]
     private var saved: [String: Any?] = [:]
 
@@ -95,6 +100,37 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
 
         MeetingCopilotConfigStore().setAutoDeepEnabled(true)
         XCTAssertTrue(MeetingCopilotConfigStore().autoDeepEnabled)
+    }
+
+    /// M8 D 組:即時翻譯設定 round-trip(開關＋雙欄 model＋來源/目標語言)。
+    func testTranslationSettingsRoundTrip() {
+        let store = MeetingCopilotConfigStore()
+        store.setLiveTranslationEnabled(true)
+        store.setTranslationModel(provider: "groq", model: "llama-3.1-8b-instant")
+        store.setTranslationLanguages(source: "auto", target: "zh-TW")
+
+        let reloaded = MeetingCopilotConfigStore()
+        XCTAssertTrue(reloaded.liveTranslationEnabled)
+        XCTAssertEqual(reloaded.translationProviderName, "groq")
+        XCTAssertEqual(reloaded.translationModelName, "llama-3.1-8b-instant")
+        XCTAssertEqual(reloaded.translationSourceLanguage, "auto")
+        XCTAssertEqual(reloaded.translationTargetLanguage, "zh-TW")
+
+        // 清空 = removeObject(nil 語意,同 setFastModel)。
+        store.setTranslationModel(provider: nil, model: nil)
+        XCTAssertNil(MeetingCopilotConfigStore().translationProviderName)
+        XCTAssertNil(UserDefaults.standard.object(forKey: "meetingCopilotTranslationProviderV1"))
+    }
+
+    /// AC-47:翻譯**預設關**——每段一次額外 LLM 呼叫,單語會議純屬浪費。
+    /// 語言預設 auto → 繁中(混語會議不假設輸入語言)。
+    func testTranslationDefaults() {
+        let store = MeetingCopilotConfigStore()
+        XCTAssertFalse(store.liveTranslationEnabled, "未設定 → 關(零 API 呼叫)")
+        XCTAssertNil(store.translationProviderName, "未設定 → nil = 跟隨預設 provider")
+        XCTAssertNil(store.translationModelName)
+        XCTAssertEqual(store.translationSourceLanguage, "auto")
+        XCTAssertEqual(store.translationTargetLanguage, "zh-TW")
     }
 
     /// 空排除清單必須能覆寫預設——「使用者清空」與「使用者沒設定過」是**不同**語意。

@@ -34,6 +34,8 @@ final class MeetingCopilotLiveController {
     private var transcriber: MeetingLiveTranscriber?
     private var controller: MeetingCopilotController?
     private var coordinator: AnswerCoordinator?
+    /// 即時字幕翻譯(M8)。overlay 之後綁的是這同一個實例。
+    private var translator: MeetingLiveTranslator?
     /// grounding 需持有**單一**長生命週期 ScreenCaptureService 實例(per-instance reentrancy guard)。
     private var grounding: MeetingGroundingProvider?
 
@@ -117,7 +119,15 @@ final class MeetingCopilotLiveController {
         coordinator.expandedCueIdProvider = { [weak controller] in controller?.expandedCueId }
         coordinator.onDeepCompleted = { [weak controller] id in controller?.handleDeepCompleted(cueId: id) }
 
-        // 5. overlay 接線。
+        // 5. 即時翻譯(M8 D 組)。**翻譯關閉時照樣建**——建構本身不打任何 API(guard 在
+        //    translator.translate 內,AC-47),而恆存在的實例讓 overlay 有個穩定的
+        //    @ObservedObject 可綁:設定中途開/關翻譯不必重建整條 pipeline,feed 空著就是了。
+        let translator = MeetingLiveTranslator(
+            chat: Self.makeTranslationCompleter(config: config, aiService: aiService),
+            config: config)
+        controller.translator = translator
+
+        // 6. overlay 接線。
         CopilotOverlayWindowManager.shared.configure(
             controller: controller,
             onCueTapped: { [weak controller] cue in
@@ -130,7 +140,7 @@ final class MeetingCopilotLiveController {
                 }
             })
 
-        // 6. 掛 cue pipeline(內含 beginSession,帶執行設定快照)+ 啟動轉錄。
+        // 7. 掛 cue pipeline(內含 beginSession,帶執行設定快照)+ 啟動轉錄。
         let snapshot = MeetingCopilotRunConfig.capture(
             config: config, asrModelDisplayName: asrModel.displayName,
             fastModelLabel: fast.label, deepModelLabel: deep.label)
@@ -144,13 +154,14 @@ final class MeetingCopilotLiveController {
             }
         }
 
-        // 7. 筆記索引跟上這場會議前的最新編輯(fire-and-forget,不擋 attach)。
+        // 8. 筆記索引跟上這場會議前的最新編輯(fire-and-forget,不擋 attach)。
         scheduleNotesReindex(config: config)
 
         self.transcriber = transcriber
         self.controller = controller
         self.coordinator = coordinator
         self.grounding = grounding
+        self.translator = translator
     }
 
     /// 會議停止時呼叫。停轉錄、收 session、釋放元件。
@@ -170,6 +181,7 @@ final class MeetingCopilotLiveController {
         self.controller = nil
         self.coordinator = nil
         self.grounding = nil
+        self.translator = nil
     }
 
     // MARK: - 筆記增量索引(M8)
@@ -232,5 +244,25 @@ final class MeetingCopilotLiveController {
         let modelName = resolved.model ?? aiService.selectedModel(for: aiProvider)
         return (LiveStreamingChatCompleter(aiService: aiService, provider: aiProvider, modelName: resolved.model),
                 "\(resolved.provider)/\(modelName)")
+    }
+
+    /// 翻譯用的 completer。
+    ///
+    /// **非串流**(`MeetingFastChatCompleter`,不是 `LiveStreamingChatCompleter`):一句字幕就那麼
+    /// 幾十個字,整段回來即可——逐 token 打出來的字幕反而更難讀(讀者的眼睛會追著游標跑)。
+    ///
+    /// model 解析與 fast/deep 走**同一套** `MeetingCopilotModels.resolve`:使用者移掉某 provider
+    /// 的 API key 後,翻譯也必須跟著回退預設,不得繼續拿失效 provider 發請求。
+    private static func makeTranslationCompleter(
+        config: MeetingCopilotConfigStore, aiService: AIService
+    ) -> ChatCompleting {
+        let resolved = MeetingCopilotModels.resolve(
+            storedProvider: config.translationProviderName,
+            storedModel: config.translationModelName,
+            defaultProvider: aiService.selectedProvider.rawValue,
+            available: aiService.connectedProviders.map(\.rawValue))
+        let provider = AIProvider(rawValue: resolved.provider) ?? aiService.selectedProvider
+        return MeetingFastChatCompleter(
+            aiService: aiService, provider: provider, modelName: resolved.model)
     }
 }

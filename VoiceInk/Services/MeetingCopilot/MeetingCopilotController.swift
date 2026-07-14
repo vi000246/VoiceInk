@@ -51,6 +51,10 @@ final class MeetingCopilotController: ObservableObject {
     /// Tier 0 + 預跑 Tier 1(`AnswerCoordinator.onNewCue`)。nil = 只偵測不回應(M2 行為)。
     var answerCoordinator: AnswerCoordinator?
 
+    /// M8 的即時字幕翻譯器。**nil = 翻譯未接線**(沒注入,例如離線覆盤與純 M2 測試路徑)。
+    /// 非 nil 時仍不保證會打 API——翻譯開關的 guard 在 `MeetingLiveTranslator.translate` 內(AC-47)。
+    var translator: MeetingLiveTranslator?
+
     /// 在途抽取(每個 committed 一個 Task)。測試用 `drainInflight()` 等待。
     private var inflightTasks: [Task<Void, Never>] = []
 
@@ -113,6 +117,12 @@ final class MeetingCopilotController: ObservableObject {
         // 先落 segment:就算抽出 0 則,「這段話當時被看過、模型怎麼回」也要留下——
         // 漏抓只能從完整時間軸對照出來。
         let segment = recordSegment(channel: .remote, text: text)
+
+        // 即時翻譯:committed 的**第二個獨立 consumer**,與下面的 cue 抽取 Task 平行、互不阻塞
+        // (翻譯慢不該讓 cue 晚到;抽取失敗也不該讓字幕消失)。translator 自帶開關 guard——
+        // 翻譯關閉時這行零成本(AC-47)。segment == nil = copilot 關閉,上面的 guard 已擋掉。
+        if let segment { translator?.translate(segment: segment) }
+
         let extractor = self.extractor
         let logger = self.logger
         let task = Task { [weak self] in
