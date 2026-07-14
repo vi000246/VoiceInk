@@ -34,6 +34,15 @@ final class MeetingCopilotControllerTests: XCTestCase {
         return ModelContext(container)
     }
 
+    /// 只測展開狀態機時用:extractor 掛一個不會被呼叫的 fake(這條路徑不跑 cue 抽取,
+    /// 也不讀 config —— `handleDeepCompleted`/`expand` 是純狀態轉移)。
+    private func makeController() throws -> MeetingCopilotController {
+        MeetingCopilotController(
+            extractor: ResponseCueExtractor(chat: FakeChatCompleting()),
+            config: MeetingCopilotConfigStore(),
+            modelContext: try makeContext())
+    }
+
     /// AC-4:30 秒窗內兩句相似 committed → 只 persist 一則 cue。
     func testDedupesSimilarCuesWithinWindow() async throws {
         let ctx = try makeContext()
@@ -111,5 +120,31 @@ final class MeetingCopilotControllerTests: XCTestCase {
         XCTAssertEqual(try ctx.fetch(FetchDescriptor<MeetingLiveSession>()).count, 0,
                        "關閉時連 session 都不建")
         XCTAssertTrue(controller.cues.isEmpty)
+    }
+
+    /// AC-35 / FR-51:deep 完成的自動展開只在「沒人在讀」時發生;有人在讀就只亮未讀標記。
+    func testAutoExpandOnlyWhenNothingExpanded() throws {
+        let c = try makeController()
+        let a = UUID(), b = UUID()
+
+        // 無展開 → 自動展開 a(沒人在讀,直接把分析推到眼前)
+        c.handleDeepCompleted(cueId: a)
+        XCTAssertEqual(c.expandedCueId, a)
+        XCTAssertFalse(c.unreadDeepCueIds.contains(a), "已經展開給你看了,不該再標未讀")
+
+        // a 展開中 → b 的分析完成:不搶展開,只進未讀
+        c.handleDeepCompleted(cueId: b)
+        XCTAssertEqual(c.expandedCueId, a, "使用者正在讀 a → 不得被 b 搶走")
+        XCTAssertTrue(c.unreadDeepCueIds.contains(b))
+
+        // 展開中那則自己的分析完成(手動點 a 之後其 Tier 2 回來)→ 不標未讀
+        c.handleDeepCompleted(cueId: a)
+        XCTAssertEqual(c.expandedCueId, a)
+        XCTAssertFalse(c.unreadDeepCueIds.contains(a), "自己就是展開中那則,眼前就看得到")
+
+        // 使用者點開 b(view 的點擊手勢走這條)→ 未讀清除
+        c.expand(cueId: b)
+        XCTAssertEqual(c.expandedCueId, b)
+        XCTAssertFalse(c.unreadDeepCueIds.contains(b), "讀了就不再是未讀")
     }
 }

@@ -112,9 +112,20 @@ struct CopilotOverlayView: View {
                 .foregroundStyle(cue.status == .answered ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
                 .lineLimit(2)   // 收合列保持精簡,但至少讓長問題看得出在問什麼
                 .fixedSize(horizontal: false, vertical: true)
+            // FR-51:auto-deep 在背景跑完、但你當時在讀別則 → 這裡是唯一的線索,
+            // 沒有徽章的話,那份分析等於不存在(不會有人去逐則點開碰運氣)。
+            if controller.unreadDeepCueIds.contains(cue.id) {
+                Spacer(minLength: 6)
+                Text("● 分析完成")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.45, green: 0.72, blue: 1.0))   // 同 tier0/深度分析的亮藍
+                    .fixedSize()          // 長 cue 也不得把徽章擠到換行/截斷
+                    .layoutPriority(1)
+            }
         }
         .contentShape(Rectangle())
-        .onTapGesture { controller.expandedCueId = cue.id }
+        // 走 expand(cueId:) 而非直接寫 expandedCueId——未讀標記只在那裡清除。
+        .onTapGesture { controller.expand(cueId: cue.id) }
     }
 
     /// focus cue:opener 最大字級單獨呈現(FR-26 的核心——讓你能直接照著念)。

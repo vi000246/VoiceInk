@@ -55,6 +55,14 @@ final class AnswerCoordinator: ObservableObject {
     /// 預設回 nil = 沒有展開 → 保護不生效,行為與 M8 之前完全一致。
     var expandedCueIdProvider: () -> UUID? = { nil }
 
+    /// Tier 2 **成功寫回之後**的通知(cue.id)。live 端接到 `MeetingCopilotController.handleDeepCompleted`
+    /// 去做自動展開/未讀標記(FR-51)。同上,用 closure 反轉依賴,不讓引擎層認得 UI controller。
+    ///
+    /// auto 與 manual 兩條路都會叫:手動點擊時 `expandedCueId` 通常已經是該 cue,
+    /// `handleDeepCompleted` 內是 no-op,不必在這裡分支。失敗/取消不叫——沒有分析可讀,
+    /// 亮「分析完成」徽章只會騙人。
+    var onDeepCompleted: (UUID) -> Void = { _ in }
+
     init(
         fast: StreamingChatCompleting,
         deep: StreamingChatCompleting,
@@ -289,6 +297,11 @@ final class AnswerCoordinator: ObservableObject {
         cue.answeredAt = Date()
         cue.status = .answered
         try? cue.modelContext?.save()
+
+        // 分析已經 persist 完 → 才通知 UI 展開/標未讀(FR-51)。
+        // 放在 save 之後是必要的:handleDeepCompleted 會讓 overlay 立刻渲染這則的 tier2 欄位,
+        // 早一步通知就可能展開到一張還沒寫上分析的空卡。
+        onDeepCompleted(cue.id)
     }
 
     func cancelDeep() {

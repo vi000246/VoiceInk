@@ -39,7 +39,13 @@ final class MeetingCopilotController: ObservableObject {
     /// 該 cue 不會被 `maxCount` 從 overlay 擠出(AC-37,見 CopilotOverlayArranger.arrange 的 pinnedId),
     /// 在途的深度分析也不會被新 cue 取消。狀態放在 controller 而非 view:
     /// 非 UI 端(AnswerCoordinator 的取消判斷、auto-expand)也要讀得到。
+    ///
+    /// **要展開某一則請走 `expand(cueId:)`**,不要直接寫這個屬性——未讀標記只在那裡清除。
     @Published var expandedCueId: UUID?
+
+    /// 深度分析已完成、但使用者還沒讀到的 cue(overlay 收合列顯示「● 分析完成」徽章)。
+    /// auto-deep(FR-53)會在背景把分析跑完,不亮個標記的話,使用者根本不知道有東西可以點開。
+    @Published private(set) var unreadDeepCueIds: Set<UUID> = []
 
     /// M3 的三層回應編排器。設定後,每則新持久化的非 informational cue 會觸發
     /// Tier 0 + 預跑 Tier 1(`AnswerCoordinator.onNewCue`)。nil = 只偵測不回應(M2 行為)。
@@ -189,6 +195,31 @@ final class MeetingCopilotController: ObservableObject {
         cues = config.showInformationalCues
             ? all
             : all.filter { $0.kind != .informational }
+    }
+
+    // MARK: - 展開與未讀標記(AC-35)
+
+    /// 一則 cue 的深度分析完成(auto 或手動皆呼叫;由 `AnswerCoordinator.onDeepCompleted` 接線)。
+    ///
+    /// FR-51 的兩條路:
+    /// - 沒人在讀(`expandedCueId == nil`)→ 直接展開,分析主動送到眼前(這才是 auto-deep 的價值)。
+    /// - 使用者正在讀**別則** → **不搶**。會議中被抽換掉眼前的分析,比晚幾秒看到新的糟得多;
+    ///   只把它記成未讀,讓 overlay 亮個徽章,由使用者決定何時切過去。
+    ///
+    /// 展開中那則自己的分析完成(手動點擊常見)→ 兩個分支都不進 = no-op:它就在眼前,不必標未讀。
+    func handleDeepCompleted(cueId: UUID) {
+        if expandedCueId == nil {
+            expand(cueId: cueId)   // 走 expand:自動展開 = 已經送到眼前 = 不該同時掛著未讀
+        } else if expandedCueId != cueId {
+            unreadDeepCueIds.insert(cueId)
+        }
+    }
+
+    /// 展開某一則(nil = 收合全部,回到自動跟隨最新)。**view 點擊與熱鍵都走這裡**——
+    /// 直接寫 `expandedCueId` 會漏掉清未讀這一步,徽章就永遠亮著。
+    func expand(cueId: UUID?) {
+        expandedCueId = cueId
+        if let cueId { unreadDeepCueIds.remove(cueId) }   // 讀了就不再是未讀
     }
 
     /// 測試用:等待所有在途抽取完成。

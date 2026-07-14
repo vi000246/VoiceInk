@@ -109,6 +109,13 @@ final class MeetingCopilotLiveController {
             fastLabel: fast.label,
             deepLabel: deep.label)
         controller.answerCoordinator = coordinator
+        // 展開狀態的雙向接線(closure 反轉依賴:coordinator 是引擎層,不認得 UI controller;
+        // controller 已持有 coordinator,直接互相引用就成環)。
+        //   - 讀:在途 deep 是不是使用者眼前正在讀的那則 → 不得被新 cue 取消(FR-54)。
+        //   - 寫:deep 完成 → 沒人在讀就自動展開,有人在讀就只標未讀(FR-51)。
+        // 兩個 closure 都在 @MainActor 上被呼叫(AnswerCoordinator 是 @MainActor),直接碰 controller 安全。
+        coordinator.expandedCueIdProvider = { [weak controller] in controller?.expandedCueId }
+        coordinator.onDeepCompleted = { [weak controller] id in controller?.handleDeepCompleted(cueId: id) }
 
         // 5. overlay 接線。
         CopilotOverlayWindowManager.shared.configure(
