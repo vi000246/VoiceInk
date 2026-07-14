@@ -222,6 +222,25 @@ final class MeetingCopilotController: ObservableObject {
         if let cueId { unreadDeepCueIds.remove(cueId) }   // 讀了就不再是未讀
     }
 
+    /// 最新一則**有 tier 內容**的 cue(`cues` 依 askedAt 遞增,故反向找第一個)。
+    /// 只有偵測到、tier 還沒回來的 cue 展開等於一張空卡片 —— 不算數。
+    var latestCueWithContent: MeetingLiveCue? {
+        cues.last { !$0.tier1Opener.isEmpty || !$0.tier2Analysis.isEmpty }
+    }
+
+    /// AC-36:展開/收合 toggle(熱鍵入口;熱鍵端零邏輯,「展開哪一則」由這裡決定)。
+    /// - 有展開中的 → 收合(回到自動跟隨最新)。
+    /// - 沒有展開的 → 展開最新一則有內容者(走 `expand(cueId:)` 以清未讀徽章)。
+    /// - 一則有內容的都沒有 → no-op(不展開空卡片)。
+    func toggleExpansion() {
+        if expandedCueId != nil {
+            expand(cueId: nil)
+            return
+        }
+        guard let latest = latestCueWithContent else { return }
+        expand(cueId: latest.id)
+    }
+
     /// 測試用:等待所有在途抽取完成。
     func drainInflight() async {
         let tasks = inflightTasks

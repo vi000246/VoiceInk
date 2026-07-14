@@ -350,6 +350,9 @@ class RecordingShortcutManager: ObservableObject {
         case .togglePresenterScript:
             // 讀稿面板 —— 獨立於 live pipeline,keyUp-only,樣式比照 .toggleMeetingCopilotOverlay。
             PresenterScriptWindowManager.shared.toggle()
+        case .toggleCopilotCueExpansion:
+            // overlay 內的展開/收合(AC-36)。keyUp-only,狀態在 controller,不碰視窗開關。
+            CopilotOverlayWindowManager.shared.toggleCueExpansion()
         default:
             break
         }

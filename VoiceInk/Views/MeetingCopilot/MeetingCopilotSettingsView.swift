@@ -146,7 +146,10 @@ struct MeetingCopilotSettingsView: View {
                 }
             }
             Toggle("先預跑開口稿(最新一則)", isOn: bind(\.prefetchEnabled, store.setPrefetchEnabled))
+            Toggle("Tier 1 完成後自動深度分析", isOn: bind(\.autoDeepEnabled, store.setAutoDeepEnabled))
             Text("快模型負責「立刻可開口」的草稿(選低延遲的 Groq 最佳);深模型隨後補深度分析與追問預判。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("自動深度分析:開口稿一回來就在背景續跑深模型,不必手動點開。分析完成時,沒在讀別則就直接展開,否則只亮未讀徽章(熱鍵「展開/收合分析」可切過去)。關閉則回到點擊才跑。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -304,6 +307,9 @@ struct MeetingCopilotSettingsView: View {
             }
             LabeledContent("按住瞄一眼") {
                 ShortcutRecorder(action: .peekMeetingCopilotOverlay).controlSize(.small)
+            }
+            LabeledContent("展開/收合分析") {
+                ShortcutRecorder(action: .toggleCopilotCueExpansion).controlSize(.small)
             }
             LabeledContent("開/關讀稿面板") {
                 ShortcutRecorder(action: .togglePresenterScript).controlSize(.small)

@@ -97,6 +97,15 @@ struct SettingsView: View {
                         .controlSize(.small)
                 }
 
+                // 會議 copilot overlay 的展開/收合(AC-36)。其餘會議熱鍵只在
+                // 「會議copilot設定」頁設定;這一列在該頁也有鏡射列,兩處共用同一個 ShortcutStore 鍵。
+                LabeledContent("展開/收合分析（會議 copilot）") {
+                    ShortcutRecorder(action: .toggleCopilotCueExpansion) {
+                        recordingShortcutManager.updateShortcutStatus()
+                    }
+                        .controlSize(.small)
+                }
+
                 LabeledContent("Cancel Recording") {
                     HStack(spacing: 8) {
                         ShortcutRecorder(

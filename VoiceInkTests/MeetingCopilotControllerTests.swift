@@ -147,4 +147,61 @@ final class MeetingCopilotControllerTests: XCTestCase {
         XCTAssertEqual(c.expandedCueId, b)
         XCTAssertFalse(c.unreadDeepCueIds.contains(b), "讀了就不再是未讀")
     }
+
+    /// AC-36:展開 toggle 熱鍵的三條語意——收合 / 展開最新一則**有內容**的 cue / 無內容 no-op。
+    /// 熱鍵端零邏輯(只呼叫 `toggleExpansion()`),所以「最新有內容者」的判斷在這裡驗。
+    func testToggleExpansionSemantics() throws {
+        let ctx = try makeContext()
+        let config = MeetingCopilotConfigStore()
+        config.setCopilotEnabled(true)
+        defer { config.setCopilotEnabled(false) }
+
+        let c = MeetingCopilotController(
+            extractor: ResponseCueExtractor(chat: FakeChatCompleting()),
+            config: config, modelContext: ctx)
+        c.beginSession(appName: "test")
+
+        let t0 = Date()
+
+        // 只偵測到、tier 內容還沒回來的 cue:展開它等於展開一張空卡片 → 不算「有內容」
+        let bare = addCue(c, ctx: ctx, text: "剛偵測到,還沒有任何 tier 內容", at: t0)
+        c.toggleExpansion()
+        XCTAssertNil(c.expandedCueId, "沒有任何有內容的 cue → no-op")
+
+        // 較舊者只有開口稿、最新者只有深度分析 —— 兩者都算有內容,toggle 取最新
+        let older = addCue(c, ctx: ctx, text: "舊題", at: t0.addingTimeInterval(1), opener: "嗨,我的看法是…")
+        let newest = addCue(c, ctx: ctx, text: "新題", at: t0.addingTimeInterval(2), analysis: "深度分析內文")
+
+        c.toggleExpansion()
+        XCTAssertEqual(c.expandedCueId, newest, "無展開 → 展開最新一則有內容者")
+        XCTAssertNotEqual(c.expandedCueId, bare, "沒有 tier 內容的 cue 不該被選中")
+
+        c.toggleExpansion()
+        XCTAssertNil(c.expandedCueId, "有展開者 → 收合")
+
+        // 展開必須走 expand(cueId:) —— 否則未讀徽章清不掉,會永遠亮著
+        c.expand(cueId: older)
+        c.handleDeepCompleted(cueId: newest)                 // 在讀 older,newest 的分析只進未讀
+        XCTAssertTrue(c.unreadDeepCueIds.contains(newest))
+        c.toggleExpansion()                                  // 有展開者 → 先收合
+        XCTAssertNil(c.expandedCueId)
+        c.toggleExpansion()                                  // 再按 → 展開 newest
+        XCTAssertEqual(c.expandedCueId, newest)
+        XCTAssertFalse(c.unreadDeepCueIds.contains(newest), "toggle 展開要清未讀(走 expand(cueId:))")
+    }
+
+    /// 造一則掛在 session 底下的 cue 並同步到 `cues` 暴露面。回傳其 id。
+    @discardableResult
+    private func addCue(
+        _ c: MeetingCopilotController, ctx: ModelContext, text: String, at: Date,
+        opener: String = "", analysis: String = ""
+    ) -> UUID {
+        let cue = MeetingLiveCue(session: c.session, text: text, kind: .directQuestion, askedAt: at)
+        cue.tier1Opener = opener
+        cue.tier2Analysis = analysis
+        ctx.insert(cue)
+        try? ctx.save()
+        c.refreshPublishedCues()
+        return cue.id
+    }
 }

@@ -125,6 +125,19 @@ final class CopilotOverlayWindowManager: ObservableObject {
         if !isPinned { hide() }
     }
 
+    /// `.toggleCopilotCueExpansion` 熱鍵(keyUp-only,AC-36):展開/收合最新一則有內容的分析。
+    /// 「展開哪一則」的邏輯全在 controller(`toggleExpansion()`),這裡只轉呼叫。
+    ///
+    /// **overlay 沒顯示時一律 no-op**(而非順手 show):
+    /// 1. 一鍵一事——掀開視窗是 `.toggleMeetingCopilotOverlay` / peek 的職責。分享整個螢幕時
+    ///    overlay 會被錄到,不該由「展開分析」這種純閱讀動作意外把它推上畫面。
+    /// 2. 看不見的展開等於沒發生,還會害下次開 overlay 時莫名有一則是展開的。
+    /// live pipeline 沒跑(controller 未 configure)時同樣 no-op。
+    func toggleCueExpansion() {
+        guard panel?.isVisible == true else { return }
+        controller?.toggleExpansion()
+    }
+
     // MARK: - 視窗生命週期
 
     func show() {
