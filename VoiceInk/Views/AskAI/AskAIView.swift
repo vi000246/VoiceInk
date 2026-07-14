@@ -58,6 +58,9 @@ struct AskAIView: View {
     // Embedding-model switch
     @State private var pendingModelSwitch: EmbeddingModel?
 
+    /// FR-7:筆記來源設定 sheet（vault／索引範圍／重建）。
+    @State private var showNotesSettings = false
+
     private var hasEmbeddingKey: Bool {
         let key = APIKeyManager.shared.getAPIKey(forProvider: indexService.model.providerName)
         return !(key ?? "").isEmpty
@@ -101,6 +104,10 @@ struct AskAIView: View {
         .sheet(item: $focusTranscription) { t in
             TranscriptionDetailView(transcription: t)
                 .frame(minWidth: 480, minHeight: 400)
+        }
+        .sheet(isPresented: $showNotesSettings) {
+            AskAINotesSettingsSheet()
+                .frame(width: 560, height: 520)
         }
         .centeredModal(item: $citationTarget) { ctx in
             CitationPopup(context: ctx,
@@ -157,11 +164,13 @@ struct AskAIView: View {
                         Text(c.label).tag(RecorderModelChoice?.some(c))
                     }
                 }
+                Divider()
+                Button("筆記來源設定…") { showNotesSettings = true }
             } label: {
                 Image(systemName: "gearshape")
             }
             .menuIndicator(.hidden)
-            .help("Embedding／回答模型設定")
+            .help("Embedding／回答模型／筆記來源設定")
         }
     }
 

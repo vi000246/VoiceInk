@@ -55,4 +55,17 @@ final class ObsidianRAGConfigStoreTests: XCTestCase {
     func testEffectiveVaultRootNilWhenNothingConfigured() {
         XCTAssertNil(ObsidianRAGConfigStore().effectiveVaultRoot())
     }
+
+    /// FR-7:資料夾 multi-checkbox 的選項來源。只列目錄——把散檔混進「資料夾」清單,
+    /// 使用者勾了也不會有任何效果(索引端只比對路徑前綴),是純粹的誤導。
+    func testFirstLevelFoldersScansDirectoriesOnly() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tmp.appendingPathComponent("工作"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: tmp.appendingPathComponent(".obsidian"), withIntermediateDirectories: true)
+        try "x".write(to: tmp.appendingPathComponent("散檔.md"), atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        XCTAssertEqual(ObsidianVaultBrowser.firstLevelFolders(of: tmp), [".obsidian", "工作"],
+                       "只列目錄、含 dot 目錄、排序;散檔不列")
+    }
 }
