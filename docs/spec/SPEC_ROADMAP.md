@@ -1,6 +1,6 @@
 # Spec Roadmap
 
-> Auto-updated index. Last updated: 2026-07-13
+> Auto-updated index. Last updated: 2026-07-14
 >
 > **AI Agents**: Read this file first to decide which specs to load. Load only what's relevant to
 > your task to avoid context bloat.
@@ -14,7 +14,7 @@
 | templates | [templates.spec.md](./templates.spec.md) | Supporting Domain | 單一共用範本庫 + 類別標籤（語音輸入／錄音輸入），語音/錄音模式以類別多選篩選共用範本;連帶側欄 IA 重構。Spec'd（WP1+WP2），未實作。 | — |
 | library-management | [library-management.spec.md](./library-management.spec.md) | Supporting Domain | Notion 式清單管理頁（欄位/排序/詳情彈窗/批次+星號保護）共用基建，供錄音管理與新語音管理兩頁。Spec'd（WP3+WP4），未實作。 | — |
 | voice-input | [voice-input.spec.md](./voice-input.spec.md) | Core Domain | 語音聽寫輸出路徑（Modes + TranscriptionDelivery）;新增「編輯後貼上」——貼上前用外部真 MacVim/nvim 阻塞編輯再貼回。Spec'd，未實作。 | — |
-| meeting-copilot | [meeting-copilot.spec.md](./meeting-copilot.spec.md) | Supporting Domain | 會議**即時**輔助。設計第一原則:瓶頸不是答案品質,是「開口的頭五秒」。聲道分流（mixToMono 之前切 tap=對方 / mic=我）取得零成本講者歸屬,免 diarization;`ResponseCueExtractor` 抓「需要我回應的東西」（含陳述句質疑,非只抓問號）;**三層漸進揭露**（Tier0 本機關鍵字 <0.5s 不呼叫 LLM ／ Tier1 fast model 產「開口稿」<1.5s 且最新一則預跑 ／ Tier2 deep model 產結構化 follow-up 預判）;答案接地於 brief + 歷史逐字稿 RAG + 分享畫面 OCR;`sharingType=.none` 的 overlay（toggle + peek 雙熱鍵、近鏡頭定位、說話時淡出、失敗靜默）。Spec'd,未實作。 | — |
+| meeting-copilot | [meeting-copilot.spec.md](./meeting-copilot.spec.md) | Supporting Domain | 會議**即時**輔助。設計第一原則:瓶頸不是答案品質,是「開口的頭五秒」。聲道分流（mixToMono 之前切 tap=對方 / mic=我）取得零成本講者歸屬,免 diarization;`ResponseCueExtractor` 抓「需要我回應的東西」（含陳述句質疑,非只抓問號）;**三層漸進揭露**（Tier0 本機關鍵字 <0.5s 不呼叫 LLM ／ Tier1 fast model 產「開口稿」<1.5s 且最新一則預跑 ／ Tier2 deep model 產結構化 follow-up 預判）;答案接地於 brief + 歷史逐字稿 RAG + 分享畫面 OCR;`sharingType=.none` 的 overlay（toggle + peek 雙熱鍵、近鏡頭定位、說話時淡出、失敗靜默）。**M1–M8 已實作**（M8：cue 五分類 + Obsidian 筆記 RAG／auto-deep + 閱讀保護／離線覆盤 + 漏抓掃描／即時翻譯；2026-07-14，302 測試綠）。**⚠️ 一個已知靜默失效**：換 embedding 模型後筆記索引不會重建（見 spec Risks）。 | — |
 
 ## Loading Guide
 
@@ -28,6 +28,7 @@
 
 | Date | Module | Feature SRS | One-line Summary |
 |------|--------|-------------|-----------------|
+| 2026-07-14 | meeting-copilot + ask-ai | [m8-notes-rag-auto-deep.srs.md](../srs/meeting-copilot-m8-notes-rag-auto-deep.srs.md) | **M8 implemented（19 commits / 302 測試綠 / build 綠）+ code-sync** — 四組全數落地。實作階段的關鍵翻案（已寫回 spec Decisions Log）:漏抓匹配改用 `max(Jaccard, 包含度)`（純 Jaccard 對短改寫系統性低估 → 假漏抓）；replay **合成時間軸**（否則去重 30 秒窗退化成全場去重，live/replay 不可比）；觀測快照的 M8 欄位一律 optional（Swift 合成 Decodable 不套預設值 → 舊快照會整份 decode 失敗）；auto-deep 的世代守門（防被取消的舊 deep 抹掉新 deep 的在途標記）。**🔴 一個 FR 未落地且靜默失效**:`switchModel` 換 embedding 模型後,筆記索引永遠不會重建（sidecar 只比對檔案 hash、不看 model tag）→ 筆記 RAG 死掉但 UI 回報正常。修法與待補測試見 meeting-copilot / ask-ai 兩份 spec 的 Risks。 |
 | 2026-07-13 | meeting-copilot | [m8-notes-rag-auto-deep.srs.md](../srs/meeting-copilot-m8-notes-rag-auto-deep.srs.md) | **M8 spec'd:筆記 RAG + auto-deep + 離線覆盤 + 即時翻譯** — cue 五分類（新增 `aboutMe`:問我/我的專案/績效考核，同呼叫輸出 searchHint 檢索改寫）+ Obsidian 筆記索引（重用 EmbeddingChunk `sourceKind:"obsidian"`、vault 用既有 `vaultRootBookmark`；reconcile/switchModel 兩地雷顯式防護）+ aboutMe 記憶錨點 tier prompts；最新 cue 自動 Tier2 並自動展開 + 閱讀保護不變量（展開不被擠出/搶展開/取消）+ 展開 toggle 熱鍵；錄音管理任一錄音可離線產生覆盤（逐字稿重演管線,`sourceRaw:"replay"`,可重複 A/B）+ 漏抓掃描 + 覆盤三層 debug 排序；remote committed 即時翻譯（LLM 混語自動辨識→繁中,overlay 翻譯區與 cue 區分隔,回應恆目標語言）。FR-41~64 / AC-28~47。 |
 | 2026-07-13 | meeting-copilot | [m7-preset-scripts.srs.md](../srs/meeting-copilot-m7-preset-scripts.srs.md) | **M7 spec'd:預設講稿讀稿器** — 私人提詞面板，顯示使用者事先寫好的具名講稿（自我介紹等），開會看著唸（ADHD 看稿）。硬界線：只顯示自寫文字，**不接 AI/ASR/LLM、不讀 cue、獨立於 copilot 開關**；獨立 panel/store/view，複製 overlay 的螢幕分享排除＋不搶焦點視窗技術但不持有 controller。FR-33~40 / AC-20~27。 |
 | 2026-07-13 | meeting-copilot | [m2-cue-detection.srs.md](../srs/meeting-copilot-m2-cue-detection.srs.md) | **M1–M5 全數 implemented + 執行期整合完成（build 253）** — 五個里程碑的引擎與 UI 皆建置且測試通過，並已接成 live pipeline（`MeetingCopilotLiveController` 在會議擷取啟停時建立/釋放：音源→雙路 ASR→cue 偵測→三層回應→overlay）。M1 音訊骨幹（248）/ M2 cue+store（249）/ M3 三層+SSE+接地（250）/ M4 overlay+熱鍵（251）/ M5 頁面+設定（252）/ 整合（253）。**剩純人工 gate**：M1 tapFirst 實機 probe、AC-15 螢幕分享三情境、真實模型 cue/tier 品質。見各 `docs/reports/meeting-copilot-m*-report.md`。 |
