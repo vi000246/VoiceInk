@@ -29,8 +29,12 @@ struct AskAIView: View {
     @State private var isAsking = false
 
     @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
+    @ObservedObject private var notesConfig = ObsidianRAGConfigStore.shared
 
     // Scope
+    /// 知識庫兩大來源，各自獨立開關（可同時開）。持久化以免每次回到頁面都要重選。
+    @AppStorage("askAIScopeTranscriptsV1") private var scopeTranscripts = true
+    @AppStorage("askAIScopeNotesV1") private var scopeNotes = false
     @State private var sourceFilter: AskAISourceFilter = .all   // 全部 / 語音輸入 / 錄音輸入(含會議)
     @State private var categoryNameFilter: String?              // 依分類/tag 名稱（統一 displayTag）
     @State private var dateFilter: String = "all"       // all/7d/30d
@@ -64,7 +68,7 @@ struct AskAIView: View {
         VStack(spacing: 0) {
             AppScreenHeader(
                 title: "Ask AI",
-                infoMessage: "用自然語言問你的語音庫（聽寫／錄音／會議）。回答會標註來源片段，點擊可跳到原始逐字稿。索引與問答都用雲端 embedding（BYOK）。",
+                infoMessage: "用自然語言問你的知識庫（聽寫／錄音／會議／Obsidian 筆記）。回答會標註來源片段，點擊可看出處。索引與問答都用雲端 embedding（BYOK）。",
                 infoURL: nil
             ) { headerControls }
 
@@ -86,6 +90,8 @@ struct AskAIView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             sidebarModel.refresh(modelContext)
+            // 筆記 chip 開著就順手增量掃一次（single-flight，vault 沒動就是 no-op）。
+            if scopeNotes { kickNotesAutoIndex() }
             // 後備：若 onReceive 沒接到（時序/首次建立），這裡再消費一次單檔提問目標。
             if let id = AppNavigator.shared.pendingAskTranscriptionId {
                 focusScope(on: id)
@@ -246,16 +252,28 @@ struct AskAIView: View {
                 .background(Capsule().fill(AppTheme.Accent.primary.opacity(0.14)))
                 .foregroundStyle(AppTheme.Accent.primary)
             } else {
-                Picker("", selection: $sourceFilter) {
-                    ForEach(AskAISourceFilter.allCases) { f in Text(f.label).tag(f) }
-                }.fixedSize()
-                .onChange(of: sourceFilter) { _, _ in categoryNameFilter = nil }   // 換來源→自動清分類
-                categoryMenu
-                Picker("", selection: $dateFilter) {
-                    Text("不限時間").tag("all")
-                    Text("近 7 天").tag("7d")
-                    Text("近 30 天").tag("30d")
-                }.fixedSize()
+                // 知識庫來源雙 chip：語音庫／Obsidian 筆記，可單開也可同時開（不可全關）。
+                scopeChip("🎙 語音庫", isOn: scopeTranscripts) { toggleChip(transcripts: true) }
+                    .help("把聽寫／錄音／會議逐字稿納入檢索")
+                scopeChip("📝 Obsidian 筆記", isOn: scopeNotes) { toggleChip(transcripts: false) }
+                    .disabled(notesVaultMissing)
+                    .help(notesVaultMissing
+                          ? "尚未設定筆記 vault — 到齒輪「筆記來源設定」選擇"
+                          : "把 Obsidian 筆記納入檢索")
+
+                // 下面三個 facet 只作用在逐字稿（筆記塊豁免來源/分類/日期），語音庫關掉就一併收起。
+                if scopeTranscripts {
+                    Picker("", selection: $sourceFilter) {
+                        ForEach(AskAISourceFilter.allCases) { f in Text(f.label).tag(f) }
+                    }.fixedSize()
+                    .onChange(of: sourceFilter) { _, _ in categoryNameFilter = nil }   // 換來源→自動清分類
+                    categoryMenu
+                    Picker("", selection: $dateFilter) {
+                        Text("不限時間").tag("all")
+                        Text("近 7 天").tag("7d")
+                        Text("近 30 天").tag("30d")
+                    }.fixedSize()
+                }
             }
 
             Spacer()
@@ -271,6 +289,57 @@ struct AskAIView: View {
         }
         .labelsHidden()
         .padding(.horizontal, 14).padding(.vertical, 8)
+        // facet 隨語音庫一起藏起來時，把分類殘值一併清掉——否則下次重開語音庫，
+        // 一個看不見的舊分類會悄悄套用，使用者只會看到「怎麼都查不到東西」。
+        .onChange(of: scopeTranscripts) { _, on in if !on { categoryNameFilter = nil } }
+    }
+
+    /// 尚未設定（且錄音匯出也沒有）任何 vault → 筆記 chip 不給點。
+    private var notesVaultMissing: Bool { notesConfig.effectiveVaultRoot() == nil }
+
+    /// scope chip：選中 = accent 填色＋checkmark;未選 = secondary 描邊。鏡射單檔限定膠囊的樣式。
+    private func scopeChip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if isOn {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
+                }
+                Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(isOn ? AppTheme.Accent.primary.opacity(0.14) : Color.clear))
+            .overlay(Capsule().strokeBorder(isOn ? Color.clear : AppTheme.Border.control, lineWidth: 0.8))
+            .foregroundStyle(isOn ? AppTheme.Accent.primary : Color.secondary)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 兩顆 chip 至少要開一顆——全關等於「什麼都不查」，是個沒有意義又難察覺的狀態，直接不給關。
+    private func toggleChip(transcripts: Bool) {
+        if transcripts {
+            guard !(scopeTranscripts && !scopeNotes) else { return }   // 禁全關
+            scopeTranscripts.toggle()
+        } else {
+            guard !notesVaultMissing else { return }                   // disabled 的第二道防線
+            guard !(scopeNotes && !scopeTranscripts) else { return }   // 禁全關
+            scopeNotes.toggle()
+            if scopeNotes { kickNotesAutoIndex() }   // 由關轉開 → 立刻補一次增量掃
+        }
+    }
+
+    /// 背景增量索引筆記（single-flight 在 service 內;失敗只寫 log，不打擾使用者）。
+    private func kickNotesAutoIndex() {
+        guard let vault = notesConfig.effectiveVaultRoot(),
+              let stateURL = try? ObsidianNoteIndexService.defaultStateURL() else { return }
+        let include = notesConfig.includeOnlyFolders
+        let exclude = notesConfig.excludedFolders
+        let ctx = modelContext
+        Task {
+            await ObsidianNoteIndexService.autoIndex(
+                vaultRoot: vault, includeOnly: include, excluded: exclude,
+                stateURL: stateURL, modelContext: ctx)
+        }
     }
 
     // 分類/tag 名稱來源：錄音分類 vs 語音 tag。兩者都出現的名稱 → 「通用」。
@@ -378,7 +447,7 @@ struct AskAIView: View {
 
     private var inputRow: some View {
         HStack(spacing: 8) {
-            TextField("問你的語音庫……", text: $question, axis: .vertical)
+            TextField("問你的知識庫……", text: $question, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .padding(.horizontal, 12).padding(.vertical, 9)
@@ -465,7 +534,13 @@ struct AskAIView: View {
         case "30d": range = Date().addingTimeInterval(-30 * 86400)...Date().addingTimeInterval(86400)
         default: range = nil
         }
-        return AskAIScope(sources: sourceFilter.sources, categoryName: categoryNameFilter, dateRange: range)
+        // 來源集合由雙 chip 組出（語音庫關掉時 sourceFilter 不參與）。
+        // 分類/日期是逐字稿專屬 facet：語音庫關掉時一律不帶，否則會連筆記塊一起濾掉。
+        let sources = AskAIScopeComposer.sources(
+            transcriptsOn: scopeTranscripts, notesOn: scopeNotes, filter: sourceFilter)
+        return AskAIScope(sources: sources,
+                          categoryName: scopeTranscripts ? categoryNameFilter : nil,
+                          dateRange: scopeTranscripts ? range : nil)
     }
 
     private func reloadMessages() {
