@@ -9,6 +9,9 @@ struct MeetingCopilotSettingsView: View {
     @StateObject private var scriptStore = PresenterScriptStore.shared
     /// vault 根目錄是全域錄音設定(「錄音裝置」頁選的),筆記 RAG 直接沿用同一個。
     @StateObject private var recorderStore = RecorderConfigStore.shared
+    /// FR-6:筆記索引**範圍**(include/exclude 資料夾)的所有權在筆記管線這邊,
+    /// 不再是 meeting-copilot 的設定。(這頁的筆記區塊在 Task 11 會整段瘦身掉。)
+    @StateObject private var notesStore = ObsidianRAGConfigStore.shared
     @EnvironmentObject private var aiService: AIService
     @Environment(\.modelContext) private var modelContext
 
@@ -73,8 +76,8 @@ struct MeetingCopilotSettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            includeOnlyText = store.notesIncludeOnlyFolders.joined(separator: ", ")
-            excludedText = store.notesExcludedFolders.joined(separator: ", ")
+            includeOnlyText = notesStore.includeOnlyFolders.joined(separator: ", ")
+            excludedText = notesStore.excludedFolders.joined(separator: ", ")
         }
         .sheet(item: $scriptDraft) { draft in
             ScriptEditorSheet(
@@ -223,11 +226,11 @@ struct MeetingCopilotSettingsView: View {
 
             TextField("只索引這些資料夾(逗號分隔,空=全部)", text: $includeOnlyText)
                 .onChange(of: includeOnlyText) { _, new in
-                    store.setNotesIncludeOnlyFolders(Self.parseFolders(new))
+                    notesStore.setIncludeOnlyFolders(Self.parseFolders(new))
                 }
             TextField("排除資料夾(逗號分隔)", text: $excludedText)
                 .onChange(of: excludedText) { _, new in
-                    store.setNotesExcludedFolders(Self.parseFolders(new))
+                    notesStore.setExcludedFolders(Self.parseFolders(new))
                 }
 
             HStack(spacing: 8) {
@@ -272,8 +275,8 @@ struct MeetingCopilotSettingsView: View {
                     stateURL: try MeetingCopilotLiveController.notesIndexStateURL())
                 let count = try await index.reindex(
                     vaultRoot: vaultRoot,
-                    includeOnly: store.notesIncludeOnlyFolders,
-                    excluded: store.notesExcludedFolders)
+                    includeOnly: notesStore.includeOnlyFolders,
+                    excluded: notesStore.excludedFolders)
                 indexMessage = count == 0
                     ? "已是最新(沒有檔案變動)"
                     : "已索引 \(count) 檔"

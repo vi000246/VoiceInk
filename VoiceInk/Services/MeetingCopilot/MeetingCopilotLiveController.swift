@@ -200,11 +200,13 @@ final class MeetingCopilotLiveController {
     /// (與 `MeetingGroundingProvider` 的靜默紀律一致)。
     private func scheduleNotesReindex(config: MeetingCopilotConfigStore) {
         // 兩個開關都關 = 沒人會用到筆記塊 → 連掃都不掃(不平白打 embedding API)。
+        // 「要不要檢索筆記」是 meeting-copilot 的消費決定;**索引範圍**(vault／資料夾)
+        // 屬筆記管線,FR-6 起一律問 `ObsidianRAGConfigStore`(Ask AI 與這裡的單一權威)。
         guard config.useNotesRAG || config.notesInTechnicalRAG else { return }
-        guard let bookmark = RecorderConfigStore.shared.vaultRootBookmark,
-              let vaultRoot = VaultExportService.shared.resolveVaultRoot(bookmark) else { return }
-        let includeOnly = config.notesIncludeOnlyFolders
-        let excluded = config.notesExcludedFolders
+        let notesConfig = ObsidianRAGConfigStore.shared
+        guard let vaultRoot = notesConfig.effectiveVaultRoot() else { return }
+        let includeOnly = notesConfig.includeOnlyFolders
+        let excluded = notesConfig.excludedFolders
         Task.detached(priority: .background) { [weak self] in
             await self?.runNotesReindex(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
         }

@@ -99,6 +99,12 @@ struct ChunkRef: Codable, Equatable {
     var transcriptionId: UUID
     var chunkIndex: Int
     var excerpt: String
+    /// 出處(只有 obsidian 筆記塊會填,轉錄塊恆 nil):筆記標題與 vault 相對路徑。
+    /// 從 `EmbeddingChunk` 反正規化帶過來——引用 UI 才能顯示「《標題》」並開啟 `obsidian://` 連結。
+    /// **刻意不寫 CodingKeys**:Codable 合成 + optional = 舊版已持久化的三欄 JSON
+    /// (transcriptionId/chunkIndex/excerpt)照常 decode,新欄自動 nil。
+    var sourceTitle: String?
+    var sourcePath: String?
 }
 
 /// Ask AI 分析角色範本(persona)。問答時可選一個 → 把 persona 段注入 system prompt(引用規則段固定保留)。

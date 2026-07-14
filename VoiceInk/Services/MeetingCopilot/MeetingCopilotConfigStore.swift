@@ -40,8 +40,6 @@ final class MeetingCopilotConfigStore: ObservableObject {
     private let useNotesRAGKey = "meetingCopilotUseNotesRAGV1"
     private let notesInTechnicalRAGKey = "meetingCopilotNotesInTechnicalRAGV1"
     private let aboutMeBriefKey = "meetingCopilotAboutMeBriefV1"
-    private let notesIncludeOnlyKey = "meetingCopilotNotesIncludeOnlyV1"
-    private let notesExcludedKey = "meetingCopilotNotesExcludedV1"
     private let autoDeepEnabledKey = "meetingCopilotAutoDeepV1"
 
     // Keys(M8 D 組：即時翻譯)
@@ -139,13 +137,9 @@ final class MeetingCopilotConfigStore: ObservableObject {
     /// 預設空字串 → prompt 直接略過該行(不留空欄位誤導模型「我沒有自介」)。
     @Published private(set) var aboutMeBrief: String = ""
 
-    /// 只索引 vault 這些**第一層資料夾**(`ObsidianNoteIndexService.scanMarkdownFiles` 的過濾粒度)。
-    /// 空 = 不限資料夾(全 vault)。
-    @Published private(set) var notesIncludeOnlyFolders: [String] = []
-
-    /// 排除的第一層資料夾。預設擋掉 obsidian 自身的設定檔、垃圾桶與範本——這些是純雜訊,
-    /// 嵌進索引只會稀釋檢索品質又多花 embedding 錢。
-    @Published private(set) var notesExcludedFolders: [String] = [".obsidian", ".trash", "Templates"]
+    // FR-6:索引**範圍**（include/exclude 資料夾清單）不再住這裡——那是筆記管線的設定,
+    // Ask AI 與 meeting-copilot 兩個消費者共用,已搬到 `ObsidianRAGConfigStore`(鍵名沿用,
+    // 使用者既有設定零遷移)。這裡只留 meeting-copilot 自己的**消費開關**(要不要檢索筆記)。
 
     /// M8 FR-53:Tier 1 完成後自動接跑 Tier 2(只對「活到最後的最新一則」cue)。**預設 true**——
     /// 手點 Tier 2 這件事在會議中根本做不到:要嘛在聽對方講、要嘛在講話,手離不開;
@@ -216,12 +210,6 @@ final class MeetingCopilotConfigStore: ObservableObject {
         notesInTechnicalRAG = (d.object(forKey: notesInTechnicalRAGKey) as? Bool) ?? false
         autoDeepEnabled = (d.object(forKey: autoDeepEnabledKey) as? Bool) ?? true   // 未設定 → true
         if let b = d.string(forKey: aboutMeBriefKey), !b.isEmpty { aboutMeBrief = b }   // 照 domainPersona
-
-        // GOTCHA:只 `if let`(stringArray 未設定才回 nil),**不可**再加 `!isEmpty` 條件——
-        // 「使用者清空排除清單」與「使用者沒設定過」是不同語意;把空陣列當成沒設定,
-        // 就會被上面的預設值蓋回去,使用者永遠清不掉預設排除。
-        if let a = d.stringArray(forKey: notesIncludeOnlyKey) { notesIncludeOnlyFolders = a }
-        if let a = d.stringArray(forKey: notesExcludedKey) { notesExcludedFolders = a }
 
         // M8 D 組:即時翻譯。未設定 → false(AC-47:預設零成本)。
         liveTranslationEnabled = (d.object(forKey: liveTranslationEnabledKey) as? Bool) ?? false
@@ -329,16 +317,6 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setAboutMeBrief(_ value: String) {
         aboutMeBrief = value
         UserDefaults.standard.set(value, forKey: aboutMeBriefKey)
-    }
-
-    func setNotesIncludeOnlyFolders(_ value: [String]) {
-        notesIncludeOnlyFolders = value
-        UserDefaults.standard.set(value, forKey: notesIncludeOnlyKey)
-    }
-
-    func setNotesExcludedFolders(_ value: [String]) {
-        notesExcludedFolders = value
-        UserDefaults.standard.set(value, forKey: notesExcludedKey)
     }
 
     func setAutoDeepEnabled(_ value: Bool) {

@@ -72,4 +72,24 @@ final class AskAIIndexTests: XCTestCase {
         XCTAssertEqual(left.count, 1)
         XCTAssertEqual(left.first?.sourceKind, "obsidian")
     }
+
+    /// AC-9:M8 之前的三欄 JSON 必須照常 decode(新欄 nil)。
+    func testChunkRefDecodesLegacyThreeFieldJSON() throws {
+        let legacy = #"[{"transcriptionId":"00000000-0000-0000-0000-000000000001","chunkIndex":0,"excerpt":"舊引用"}]"#
+        let refs = try JSONDecoder().decode([ChunkRef].self, from: Data(legacy.utf8))
+        XCTAssertEqual(refs.first?.excerpt, "舊引用")
+        XCTAssertNil(refs.first?.sourceTitle)
+        XCTAssertNil(refs.first?.sourcePath)
+    }
+
+    /// FR-10:引用鏈全程攜帶筆記出處——extractCitations 從塊上的 metadata 帶進 ChunkRef。
+    @MainActor
+    func testExtractCitationsCarriesNoteMetadata() throws {
+        let chunk = EmbeddingChunk(transcriptionId: UUID(), chunkIndex: 0, text: "《專案A》內容",
+            vector: Data(), dims: 0, embeddingModel: "m", sourceKind: "obsidian",
+            categoryId: nil, timestamp: Date(), sourceTitle: "專案A", sourcePath: "工作/專案A.md")
+        let refs = AskAIService.extractCitations(from: "答案 [1]", retrieved: [ScoredChunk(chunk: chunk, score: 1)])
+        XCTAssertEqual(refs.first?.sourceTitle, "專案A")
+        XCTAssertEqual(refs.first?.sourcePath, "工作/專案A.md")
+    }
 }
