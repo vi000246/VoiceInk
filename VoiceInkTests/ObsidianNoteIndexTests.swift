@@ -137,6 +137,23 @@ final class ObsidianNoteIndexTests: XCTestCase {
         XCTAssertTrue(written.contains(#""schema":2"#))
     }
 
+    // MARK: - 自動增量觸發
+
+    /// AC-11：single-flight —— 併發兩次 kick 只跑一次 reindex。
+    @MainActor
+    func testAutoIndexSingleFlight() async throws {
+        let (ctx, embedder) = try makeInMemoryContextAndFakeEmbedder()
+        let vault = try makeTempVault(files: ["a.md": "內容"])
+        async let first: Void = ObsidianNoteIndexService.autoIndex(
+            vaultRoot: vault, includeOnly: [], excluded: [],
+            stateURL: vault.appendingPathComponent(".s.json"), modelContext: ctx, embedder: embedder)
+        async let second: Void = ObsidianNoteIndexService.autoIndex(
+            vaultRoot: vault, includeOnly: [], excluded: [],
+            stateURL: vault.appendingPathComponent(".s.json"), modelContext: ctx, embedder: embedder)
+        _ = await (first, second)
+        XCTAssertEqual(embedder.embedCallCount, 1, "第二次 kick 撞 in-flight → no-op")
+    }
+
     // MARK: - Helpers
 
     /// in-memory SwiftData context（鏡射 AskAIIndexTests 的建法；索引測試只需 EmbeddingChunk schema）

@@ -62,6 +62,25 @@ enum AskAISourceFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// 引用點回 Obsidian 的深連結：`obsidian://open?path=<絕對路徑>`。
+///
+/// 一律用 `URLComponents` 組，不手拼字串——筆記路徑含空白／中文是常態
+/// （「工作/專案 A.md」），queryItems 會自動 percent-encode，手拼會生出非法 URL（→ nil，點了沒反應）。
+///
+/// 用 `path=`（絕對路徑）而非 `vault=`＋`file=`：讓 Obsidian 自己解析這條路徑屬於哪個 vault，
+/// 我們就不必知道／匹配 vault 名稱（使用者可能重新命名 vault，或同一機器多個 vault）。
+/// 前提：該 vault 至少被 Obsidian 開啟過一次（Obsidian 只認得它註冊過的 vault）。
+enum ObsidianLink {
+    static func openURL(vaultRoot: URL, relativePath: String) -> URL? {
+        var comps = URLComponents()
+        comps.scheme = "obsidian"
+        comps.host = "open"
+        comps.queryItems = [URLQueryItem(name: "path",
+                                         value: vaultRoot.appendingPathComponent(relativePath).path)]
+        return comps.url
+    }
+}
+
 /// scope bar 雙 chip → 檢索來源集合。空集合 = 兩顆都關（UI 會擋，這裡是最後防線）。
 enum AskAIScopeComposer {
     static func sources(transcriptsOn: Bool, notesOn: Bool, filter: AskAISourceFilter) -> Set<String> {

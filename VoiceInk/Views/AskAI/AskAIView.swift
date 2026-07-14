@@ -496,7 +496,10 @@ struct AskAIView: View {
         let targetId = ref.transcriptionId
         let match = (try? modelContext.fetch(FetchDescriptor<Transcription>(
             predicate: #Predicate { $0.id == targetId })))?.first
-        let title = match?.recorderTitle ?? match.map { String($0.text.prefix(24)) } ?? "來源錄音"
+        // 筆記塊的 transcriptionId 是合成 UUID，fetch 必定落空 → 舊的 "來源錄音" 尾巴會把
+        // 一則 Obsidian 筆記誤稱成錄音。先試轉錄標題／首句，再退回筆記標題，最後才中性字樣。
+        let title = match?.recorderTitle ?? match.map { String($0.text.prefix(24)) }
+            ?? ref.sourceTitle ?? "來源"
         citationTarget = CitationContext(ref: ref, title: title, transcription: match)
     }
 
@@ -522,17 +525,37 @@ struct CitationContext: Identifiable {
 }
 
 /// 點引用 [n] 開的出處小視窗：只顯示「這段回答出自哪一段」，不再直接攤開整篇逐字稿。
+/// 兩種出處共用同一個殼：轉錄 → 可開完整逐字稿；Obsidian 筆記（`sourcePath` 非 nil）→ 可回 Obsidian 開原檔。
 private struct CitationPopup: View {
     let context: CitationContext
     let onClose: () -> Void
     let onOpenFull: (Transcription) -> Void
+
+    @StateObject private var notesConfig = ObsidianRAGConfigStore.shared
+
+    /// 筆記塊的判別式：只有 obsidian 來源會帶 `sourcePath`（轉錄塊恆 nil）。
+    private var isNote: Bool { context.ref.sourcePath != nil }
+
+    /// 筆記檔仍在、vault 也解析得出來，才給連結。任一不成立 → nil → 按鈕整個不 render
+    /// （筆記被刪／vault 未設 → popup 仍照常顯示標題＋片段，不會留一顆點了沒反應的死按鈕）。
+    private var obsidianURL: URL? {
+        guard let path = context.ref.sourcePath,
+              let vault = notesConfig.effectiveVaultRoot() else { return nil }
+        // vault 是 security-scoped bookmark 解析出來的 URL —— 碰檔案前要開 scope
+        // （非沙盒下是 no-op，照 house 慣例包起來；鏡射 ObsidianNoteIndexService.reindex）。
+        let accessing = vault.startAccessingSecurityScopedResource()
+        defer { if accessing { vault.stopAccessingSecurityScopedResource() } }
+        guard FileManager.default.fileExists(atPath: vault.appendingPathComponent(path).path) else { return nil }
+        return ObsidianLink.openURL(vaultRoot: vault, relativePath: path)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             AppPanelHeader(title: "出處", onClose: onClose)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
-                    Image(systemName: "quote.opening").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Image(systemName: isNote ? "doc.richtext" : "quote.opening")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
                     Text(context.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                 }
                 Text("這段回答引用的出處段落：").font(.caption).foregroundStyle(.secondary)
@@ -546,11 +569,20 @@ private struct CitationPopup: View {
                 .frame(maxHeight: 300)
                 .background(AppTheme.Surface.control, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.Border.control, lineWidth: 0.5))
-                if let t = context.transcription {
+                // 兩種出處互斥：筆記塊沒有對應的 Transcription，轉錄塊沒有 sourcePath。
+                // 筆記出處不掛「開啟完整逐字稿」——那顆開的是錄音詳情，對筆記毫無意義。
+                if !isNote, let t = context.transcription {
                     HStack {
                         Spacer()
                         Button { onOpenFull(t) } label: {
                             Label("開啟完整逐字稿", systemImage: "doc.text")
+                        }.controlSize(.small)
+                    }
+                } else if let url = obsidianURL {
+                    HStack {
+                        Spacer()
+                        Button { NSWorkspace.shared.open(url) } label: {
+                            Label("在 Obsidian 開啟", systemImage: "arrow.up.forward.app")
                         }.controlSize(.small)
                     }
                 }

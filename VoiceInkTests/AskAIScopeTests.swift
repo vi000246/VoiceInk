@@ -45,6 +45,19 @@ final class AskAIScopeTests: XCTestCase {
                        "obsidian 豁免 category/date；dictation 被 tag 過濾掉")
     }
 
+    /// 🔴 FR-10：筆記路徑含空白／中文是常態（「工作/專案 A.md」）。手拼字串會生出
+    /// 非法 URL → `openURL` 回 nil → 引用點了沒反應。用 URLComponents 組才會自動 percent-encode。
+    func testObsidianOpenURLPercentEncodesPath() {
+        let url = ObsidianLink.openURL(vaultRoot: URL(fileURLWithPath: "/Users/me/Vault"),
+                                       relativePath: "工作/專案 A.md")
+        XCTAssertEqual(url?.scheme, "obsidian")
+        XCTAssertEqual(url?.host, "open")
+        let s = url!.absoluteString
+        XCTAssertTrue(s.contains("path="), s)
+        XCTAssertFalse(s.contains(" "), "空白必須 percent-encoded")
+        XCTAssertTrue(s.contains("%20") || s.contains("+"), s)
+    }
+
     // MARK: - Helpers
 
     /// in-memory SwiftData context（鏡射 ObsidianNoteIndexTests 底部的建法）。

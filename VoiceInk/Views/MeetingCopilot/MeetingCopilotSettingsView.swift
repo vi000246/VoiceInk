@@ -269,10 +269,11 @@ struct MeetingCopilotSettingsView: View {
         indexMessage = nil
         Task {
             do {
-                // stateURL 與 live 端的背景掃描共用(見 MeetingCopilotLiveController.notesIndexStateURL)。
+                // stateURL 與 live 端的背景掃描、Ask AI 的 autoIndex 共用
+                // (見 ObsidianNoteIndexService.defaultStateURL)。
                 let index = ObsidianNoteIndexService(
                     modelContext: modelContext,
-                    stateURL: try MeetingCopilotLiveController.notesIndexStateURL())
+                    stateURL: try ObsidianNoteIndexService.defaultStateURL())
                 let count = try await index.reindex(
                     vaultRoot: vaultRoot,
                     includeOnly: notesStore.includeOnlyFolders,

@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import SwiftData
+import os
 
 /// Obsidian 筆記 → 索引塊的純函式（切塊委給既有 TranscriptChunker）。
 enum ObsidianNoteChunking {
@@ -247,5 +248,37 @@ final class ObsidianNoteIndexService {
     private func saveState(_ files: [String: String], modelTag: String) throws {
         let state = IndexState(schema: Self.sidecarSchema, embeddingModel: modelTag, files: files)
         try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
+    }
+
+    // MARK: - 自動增量觸發（Ask AI 頁 onAppear／筆記 chip 開啟；attach 觸發沿用 scheduleNotesReindex）
+
+    /// sidecar 路徑（原本住在 `MeetingCopilotLiveController`，FR-8 搬家不搬檔——路徑一字不差，
+    /// 否則兩邊各記各的 hash，互看都是「全新 vault」，每次全量重嵌純燒錢）。
+    static func defaultStateURL() throws -> URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("obsidian-index-state.json")
+    }
+
+    @MainActor private static var autoIndexInFlight = false
+
+    /// 背景增量掃（single-flight、失敗靜默 log-only——與 scheduleNotesReindex 同紀律）。
+    @MainActor
+    static func autoIndex(vaultRoot: URL, includeOnly: [String], excluded: [String],
+                          stateURL: URL, modelContext: ModelContext,
+                          embedder: EmbeddingProviding = LiveEmbedder()) async {
+        guard !autoIndexInFlight else { return }
+        autoIndexInFlight = true
+        defer { autoIndexInFlight = false }
+        do {
+            let svc = ObsidianNoteIndexService(embedder: embedder, modelContext: modelContext, stateURL: stateURL)
+            let count = try await svc.reindex(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+            Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AskAI")
+                .notice("🗂️ Ask AI 筆記增量索引完成（重嵌 \(count, privacy: .public) 檔）")
+        } catch {
+            Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AskAI")
+                .notice("🗂️ Ask AI 筆記增量索引失敗: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
