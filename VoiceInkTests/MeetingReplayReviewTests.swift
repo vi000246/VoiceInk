@@ -38,6 +38,20 @@ private struct ReplayNoopGrounding: MeetingGroundingProviding {
     }
 }
 
+/// 恰好回一則筆記片段的接地 fake。鏡射 `AnswerCoordinatorTests.GroundingWithOneExcerpt`。
+///
+/// 為什麼 replay 這邊也需要它:M9 FR-65 的 aboutMe **零接地短路**在 `runTier1` 裡(replay 走
+/// `runTier1ForReplay` → 共用同一支),所以 noop 接地 + aboutMe cue 根本走不到 fast model。
+/// 要驗「非 informational cue 在 replay 會跑 Tier 1」,接地就必須非空——否則測到的是短路,
+/// 不是 Tier 1 管線。
+private struct ReplayGroundingWithExcerpt: MeetingGroundingProviding {
+    func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
+                sources: Set<String>?) async -> MeetingGrounding {
+        MeetingGrounding(brief: brief, ragExcerpts: ["《訂單分庫》我主導了快取重構,P99 800→120ms"],
+                         screenText: nil)
+    }
+}
+
 /// 排序用的素 struct(不碰 SwiftData)。`MeetingReviewOrdering.tiers` generic over protocol,
 /// 所以純函式測試不必開 in-memory container —— 鏡射 `CopilotOverlayArrangerTests` 的素 struct 測法。
 private struct ReviewCueStub: MeetingReviewOrderable {
@@ -100,8 +114,10 @@ final class MeetingReplayReviewTests: XCTestCase {
             #"{"analysis":"不該跑","followUps":[],"uncertainties":[]}"#
         ])
         let config = makeConfig()
+        // 接地非空:aboutMe 零接地會被 M9 的短路攔在 LLM 之前(下一個測試專門鎖那條路),
+        // 本測試要驗的是 Tier 1 管線本身 —— 接地必須有東西,cue 才會真的走到 fast model。
         let coordinator = AnswerCoordinator(
-            fast: fast, deep: deep, grounding: ReplayNoopGrounding(), config: config)
+            fast: fast, deep: deep, grounding: ReplayGroundingWithExcerpt(), config: config)
         let svc = MeetingReplayReviewService(
             extractorChat: chat, coordinator: coordinator, modelContext: ctx,
             extractionModelLabel: "groq/llama-3.1-8b", config: config)
@@ -154,6 +170,48 @@ final class MeetingReplayReviewTests: XCTestCase {
         XCTAssertEqual((again.cues ?? []).count, 2, "第二次是完整獨立的覆盤")
         XCTAssertEqual((session.cues ?? []).count, 2, "第一次的 cue 沒被搬走/刪掉")
         XCTAssertEqual(deep.callCount, 0)
+    }
+
+    /// M9 FR-65(AC-48 的 replay 面):**覆盤路徑的 aboutMe 零接地一樣不呼叫 LLM**。
+    ///
+    /// 為什麼要在這裡再鎖一次(`AnswerCoordinatorTests` 已經鎖了 live 面):replay 走的是
+    /// `runTier1ForReplay` 這個獨立入口,它今天恰好只是 `runTier1(autoDeep: false)` 的轉呼叫——
+    /// 但這是實作細節,不是契約。有人日後把 replay 的 Tier 1 抽成獨立實作(例如想換 prompt),
+    /// 防幻覺守門就會從覆盤這條路上悄悄消失,而 live 的測試照樣全綠。
+    ///
+    /// 這裡的 config `useNotesRAG` 是**關**的(makeConfig 預設)—— 零片段不論成因(關檢索、
+    /// 檢索零命中、RAG 降級)都是同一件事:手上沒有使用者的資料,就不准編。
+    @MainActor
+    func testReplayAboutMeZeroGroundingShortCircuitsWithoutLLM() async throws {
+        let ctx = try makeContext()
+        let chat = ScriptedChat(replies: [
+            #"{"cues":[{"text":"先自我介紹一下你的經歷","kind":"aboutMe","searchHint":"自介"}]}"#,
+            #"{"cues":[]}"#,
+            #"{"cues":[]}"#,
+            #"{"items":[]}"#,
+        ])
+        let fast = FakeStreamingChatCompleting(script: ["OPENER: 不該被呼叫"])
+        let deep = FakeStreamingChatCompleting(script: [#"{"analysis":"不該跑","followUps":[],"uncertainties":[]}"#])
+        let config = makeConfig()
+        let coordinator = AnswerCoordinator(
+            fast: fast, deep: deep, grounding: ReplayNoopGrounding(), config: config)
+        let svc = MeetingReplayReviewService(
+            extractorChat: chat, coordinator: coordinator, modelContext: ctx,
+            extractionModelLabel: "groq/llama-3.1-8b", config: config)
+
+        let session = try await svc.generateReview(for: makeTranscription(in: ctx))
+
+        let cues = (session.cues ?? []).sorted { $0.askedAt < $1.askedAt }
+        XCTAssertEqual(cues.count, 1)
+        XCTAssertEqual(cues[0].kind, .aboutMe)
+        XCTAssertEqual(fast.callCount, 0, "零接地的 aboutMe 不得呼叫 fast model —— 覆盤路徑同樣受保護")
+        XCTAssertEqual(deep.callCount, 0)
+        XCTAssertTrue(cues[0].tier1Opener.contains("筆記沒有記載"), cues[0].tier1Opener)
+        XCTAssertTrue(cues[0].tier1GroundingNote.contains("短路"),
+                      "短路原因要 persist —— 否則覆盤時分不出「模型答得爛」與「根本沒問模型」")
+        XCTAssertTrue(cues[0].fastModelName.isEmpty,
+                      "沒打模型就不冒名(覆盤的成本歸因要誠實)")
+        XCTAssertEqual(chat.callCount, 4, "抽取與掃描照跑 —— 短路只影響 Tier 1")
     }
 
     /// 取消 → **不留半套**:已建立的 session(含 cascade 的 segment/cue)整場刪掉,錯誤往外拋。

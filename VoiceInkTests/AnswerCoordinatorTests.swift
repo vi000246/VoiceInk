@@ -37,6 +37,16 @@ private struct GroundingWithOneExcerpt: MeetingGroundingProviding {
     }
 }
 
+/// RAG **靜默降級**的接地 fake:片段空著,但帶著失敗原因(`ragError`)。
+/// 「檢索零命中」與「檢索打不通」在 prompt 上是同一件事(都沒片段),在覆盤上不是——
+/// 前者是使用者沒寫筆記,後者是索引壞了,只有 `ragError` 分得出來。
+private struct DegradedGrounding: MeetingGroundingProviding {
+    func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
+                sources: Set<String>?) async -> MeetingGrounding {
+        MeetingGrounding(brief: brief, ragExcerpts: [], screenText: nil, ragError: "索引壞了")
+    }
+}
+
 /// 可掛起的串流 fake:`stream` 開著但**不吐字**,直到測試呼叫 `releaseAll()` 才吐完 reply 並結束。
 ///
 /// 為什麼需要它:展開保護（FR-54）只在「某則 cue 的 Tier 2 還在途」的那段時間窗內有意義,
@@ -422,6 +432,29 @@ final class AnswerCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(fast.callCount, 0)
         XCTAssertEqual(cue.tier1Bullets, ["後端工程師，主力訂單系統重構"])
+    }
+
+    /// AC-48 的降級面:RAG **打不通**(索引壞掉/嵌入模型換掉/vault 不見)與「檢索零命中」在
+    /// 防幻覺上是同一件事——手上都沒有筆記片段,都不准問模型。
+    ///
+    /// 但兩者在**覆盤**上不是同一件事:groundingNote 必須寫出降級原因,否則使用者看到「筆記沒有
+    /// 記載」只會去怪自己沒寫筆記,而真正的病因(索引掛了)沒有任何地方顯示。守門若被挪到 gather
+    /// 之前(看起來更省事),這個原因就永遠拿不到了——這條測試鎖的是「先 gather、再短路」的順序。
+    func testAboutMeShortCircuitsOnDegradedRAGAndKeepsReason() async {
+        let fast = FakeStreamingChatCompleting(script: ["OPENER: 不該被呼叫\n- a"])
+        let deep = FakeStreamingChatCompleting(script: ["{}"])
+        let coord = AnswerCoordinator(fast: fast, deep: deep, grounding: DegradedGrounding(),
+                                      config: makeConfig())
+        let cue = makeCue(text: "你在前公司負責什麼？", kind: .aboutMe)
+
+        await coord.onNewCue(cue)
+        await coord.drainPrefetchForTest()
+
+        XCTAssertEqual(fast.callCount, 0, "RAG 降級 = 零片段 = 不准問模型")
+        XCTAssertTrue(cue.tier1Opener.contains("筆記沒有記載"), cue.tier1Opener)
+        XCTAssertTrue(cue.tier1GroundingNote.contains("短路"), cue.tier1GroundingNote)
+        XCTAssertTrue(cue.tier1GroundingNote.contains("索引壞了"),
+                      "降級原因要寫進 groundingNote,否則「筆記沒記載」與「索引掛了」在覆盤時無法區分")
     }
 
     // MARK: - M9 FR-67:aboutMe 不進 Tier 2
