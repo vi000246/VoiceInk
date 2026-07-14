@@ -135,6 +135,26 @@ final class AnswerCoordinator: ObservableObject {
             query: plan.query, brief: cue.session?.brief ?? "",
             includeRAG: plan.includeRAG, includeScreen: false,   // Tier1 不抓螢幕
             sources: plan.sources)
+
+        // M9 FR-65:aboutMe 零接地守門——沒有筆記片段就沒有事實可依,呼叫模型只會拿到編的。
+        // 不呼叫 LLM 是唯一的**結構性**保證(prompt 紅線只能降低機率)。ragError(RAG 降級)與
+        // 檢索零命中在這裡是同一件事:兩者都代表「我手上沒有你的資料」。replay 路徑共用本函式,
+        // 同樣受保護。
+        if cue.kind == .aboutMe, g.ragExcerpts.isEmpty {
+            cue.tier1Opener = "筆記沒有記載這題——照實說，或把話題帶回你記得的部分。"
+            cue.tier1Bullets = config.aboutMeBrief.isEmpty ? [] : [config.aboutMeBrief]
+            cue.tier1GroundingNote = "aboutMe 零接地短路（未呼叫 LLM）"
+                + (g.ragError.map { "；RAG 降級:\($0)" } ?? "")
+            cue.tier1ElapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+            cue.tier1At = Date()
+            cue.tier1Error = ""
+            // fastModelName 不寫:沒打模型就不冒名(覆盤的成本歸因要誠實)。
+            try? cue.modelContext?.save()
+            // drafts[cue.id] 不塞:短路沒有 Tier 1 草稿。塞了反而讓 requestDeep 的
+            // 「無草稿 → 中止」防線失效,aboutMe 就從後門溜進 deep model 自由發揮。
+            return
+        }
+
         // M8 FR-48:aboutMe 走「個人記憶助手」變體——鎖死筆記與自介為唯一事實來源、bullets 出
         // 記憶錨點而非論述句。既有函式簽章不動,純 if/else 分支(技術 cue 行為零改變)。
         let system = cue.kind == .aboutMe
@@ -203,6 +223,10 @@ final class AnswerCoordinator: ObservableObject {
     /// Tier 1 完成後的自動深答(FR-53)。不 await 起出來的 task:deep 動輒十餘秒,
     /// 綁著 prefetchTask 一起等只會讓「新 cue 取消舊 prefetch」的語意糊掉(prefetch 該只代表 Tier 1)。
     private func runAutoDeep(_ cue: MeetingLiveCue) {
+        // M9 FR-67:aboutMe 不進 deep——記憶錨點看一眼就夠,深度分析對「回憶自己的經歷」沒有增量,
+        // 只是多一段對話中讀不完的文字 + 一次 deep token。
+        guard cue.kind != .aboutMe else { return }
+
         // 無草稿 = tier1 沒成功寫回 → 不進 deep(降級語意同 requestDeep)。
         guard let draft = drafts[cue.id] else { return }
 
@@ -218,6 +242,12 @@ final class AnswerCoordinator: ObservableObject {
     }
 
     func requestDeep(_ cue: MeetingLiveCue) async {
+        // M9 FR-67:守門 auto 那條還不夠——覆盤頁與 overlay 都有「深答」按鈕,手點一樣會走到這裡。
+        // aboutMe 在兩條路上都是 no-op(理由同 runAutoDeep)。
+        guard cue.kind != .aboutMe else {
+            logger.notice("🫆 tier2 skipped: aboutMe 不進 deep（M9 FR-67）")
+            return
+        }
         logger.notice("🫆 tier2 requested: \(cue.text.prefix(40), privacy: .public)")
         // 先確保 Tier 1 完成(等待預跑,或補跑)。
         await prefetchTask?.value
@@ -279,17 +309,14 @@ final class AnswerCoordinator: ObservableObject {
             sources: plan.sources)
         let groundingElapsed = Date().timeIntervalSince(groundingStart)
         logger.notice("🫆 tier2 接地完成 elapsed=\(groundingElapsed, format: .fixed(precision: 1), privacy: .public)s → deep model 串流開始")
-        // M8 FR-48:aboutMe 變體。JSON 契約與既有 tier2System 相同(parser/overlay 不分支),
-        // 只是 uncertainties 語意換成「筆記沒覆蓋、要我靠現場記憶補的部分」= 現場警示燈。
-        let system = cue.kind == .aboutMe
-            ? TierPrompts.tier2SystemAboutMe(persona: config.domainPersona,
-                                             outputLanguage: outputLanguage)
-            : TierPrompts.tier2System(persona: config.domainPersona,
-                                      outputLanguage: outputLanguage)
-        let user = cue.kind == .aboutMe
-            ? TierPrompts.tier2UserAboutMe(cue: cue.text, draft: draft, grounding: g,
-                                           aboutMeBrief: config.aboutMeBrief)
-            : TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
+        // M9 FR-67 之後這裡不再分支:aboutMe 在 runAutoDeep / requestDeep 兩處就被擋下,走不到 Tier 2,
+        // 對應的 aboutMe prompt 變體也一併從 TierPrompts 刪掉——留著死路只會讓下一個人以為
+        // aboutMe 還有 deep 這條路。
+        // M9 FR-73:深答風格跟著 config 走(預設 `.bullets`)——會議進行中讀得完才算數。
+        let system = TierPrompts.tier2System(persona: config.domainPersona,
+                                             outputLanguage: outputLanguage,
+                                             style: config.deepStyle)
+        let user = TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)
         // 觀測資料:Tier2 的完整 user prompt(Tier1 草稿 + 接地 + 螢幕 OCR 全在裡面)。
         cue.tier2PromptUser = user
         cue.tier2GroundingElapsedMs = Int(groundingElapsed * 1000)

@@ -51,6 +51,16 @@ final class ObsidianRAGConfigStoreTests: XCTestCase {
         XCTAssertEqual(ObsidianRAGConfigStore().excludedFolders, [".obsidian", ".trash", "Templates"])
     }
 
+    /// 空排除清單必須能覆寫預設——「使用者清空」與「使用者沒設定過」是**不同**語意。
+    /// load() 若拿 `!isEmpty` 當「有設定」的判準,清空後會被預設三個資料夾蓋回去,永遠清不掉。
+    /// (設定所有權自 `MeetingCopilotConfigStore` 搬來時,這條守則跟著搬——原測試連同舊 store 的
+    ///  setter 一起被刪,若不補回來,這個 bug 類別就再也沒有東西守著了。)
+    func testEmptyExcludedFoldersOverridesDefault() {
+        ObsidianRAGConfigStore().setExcludedFolders([])
+        XCTAssertEqual(ObsidianRAGConfigStore().excludedFolders, [],
+                       "空陣列是合法設定,不可被預設值蓋回")
+    }
+
     /// override 沒設、錄音 vault 也沒設 → nil(呼叫端據此直接跳過索引)。
     func testEffectiveVaultRootNilWhenNothingConfigured() {
         XCTAssertNil(ObsidianRAGConfigStore().effectiveVaultRoot())

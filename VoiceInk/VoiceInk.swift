@@ -141,6 +141,8 @@ struct VoiceInkApp: App {
         ICloudSourceWatcher.shared.start()
         // Ask AI: index new/deleted transcriptions (mainContext spans the index store too).
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
+        // meeting-copilot: 錄音刪除 → 關聯 session(live＋replay)跟著刪(FR-69)。
+        MeetingSessionReconciler.shared.configure(modelContext: resolvedContainer.mainContext)
         // meeting-copilot 即時輔助:注入依賴,會議錄製啟停時建立/釋放 live pipeline。
         // fluidAudioService 與聽寫共用 registry 的實例(共用模型快取;本機 parakeet 串流必需)。
         MeetingCopilotLiveController.shared.configure(

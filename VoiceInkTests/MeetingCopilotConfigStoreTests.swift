@@ -17,6 +17,7 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         "meetingCopilotTranslationModelV1",
         "meetingCopilotTranslationSourceV1",
         "meetingCopilotTranslationTargetV1",
+        "meetingCopilotDeepStyleV1",
     ]
     private var saved: [String: Any?] = [:]
 
@@ -125,5 +126,18 @@ final class MeetingCopilotConfigStoreTests: XCTestCase {
         XCTAssertNil(store.translationModelName)
         XCTAssertEqual(store.translationSourceLanguage, "auto")
         XCTAssertEqual(store.translationTargetLanguage, "zh-TW")
+    }
+
+    /// M9 FR-73 / AC-58:深答風格**預設條列式**——現行段落式分析在會議中讀不完,
+    /// 這是刻意的行為變更(不是 detailed 保守預設)。並且要能持久化 round-trip。
+    func testDeepStyleDefaultsToBulletsAndRoundTrips() {
+        UserDefaults.standard.removeObject(forKey: "meetingCopilotDeepStyleV1")
+        XCTAssertEqual(MeetingCopilotConfigStore().deepStyle, .bullets, "預設條列式＝本需求的目的")
+
+        let store = MeetingCopilotConfigStore()
+        store.setDeepStyle(.detailed)
+        XCTAssertEqual(MeetingCopilotConfigStore().deepStyle, .detailed, "round-trip")
+
+        UserDefaults.standard.removeObject(forKey: "meetingCopilotDeepStyleV1")
     }
 }
