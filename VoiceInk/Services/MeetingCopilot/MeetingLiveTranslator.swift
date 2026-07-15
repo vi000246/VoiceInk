@@ -33,18 +33,31 @@ final class MeetingLiveTranslator: ObservableObject {
     /// 字幕來源。**恆按 `committedAt` 排序**,只保留最近 `maxFeedLines` 句。
     @Published private(set) var feed: [FeedLine] = []
 
-    private let chat: ChatCompleting
+    /// 目前正在講、還沒 committed 的**在途譯文**(Stage B provisional):趁講者還沒停就先翻,
+    /// 顯示在字幕最下方(最新)。句子 committed 後由 feed 的定稿取代、這裡收成 nil;
+    /// 翻譯關閉時恆為 nil(AC-47)。
+    @Published private(set) var provisional: FeedLine?
+
+    /// 串流翻譯:逐 token 回來就地更新該行(M8 延遲優化,option 3)。改用串流的理由是**感知延遲**——
+    /// 長句一次回來要等整段(實測十幾秒),逐字冒出來讓使用者第一秒就看到譯文開頭。
+    private let chat: StreamingChatCompleting
     private let config: MeetingCopilotConfigStore
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MeetingCopilot")
 
     /// 在途翻譯(每段一個 Task,不等前一段完成)。測試用 `drainForTest()` 等待。
     private var inflight: [Task<Void, Never>] = []
 
-    /// 字幕保留句數。會議兩小時的逐字稿全留在記憶體沒有意義——overlay 一次只看得到最後幾句,
-    /// 往前捲的需求由覆盤頁(persist 的 segment)承接。
-    private let maxFeedLines = 20
+    /// provisional 的在途翻譯(每次尾巴變動就取消重跑)。與 committed 的 `inflight` 分開——
+    /// 它會被頻繁取消,不該混進測試 drain。
+    private var provisionalTask: Task<Void, Never>?
+    /// provisional 那一行的固定 id(就地更新,SwiftUI diff 才穩定)。
+    private let provisionalId = UUID()
 
-    init(chat: ChatCompleting, config: MeetingCopilotConfigStore = .shared) {
+    /// 字幕保留句數。展開檢視要能回看最近 30 句,故保留 40 留點緩衝;會議兩小時的逐字稿全留
+    /// 在記憶體沒有意義——更早的往前捲需求由覆盤頁(persist 的 segment)承接。
+    private let maxFeedLines = 40
+
+    init(chat: StreamingChatCompleting, config: MeetingCopilotConfigStore = .shared) {
         self.chat = chat
         self.config = config
     }
@@ -67,21 +80,33 @@ final class MeetingLiveTranslator: ObservableObject {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            // 先以原文成行:任何失敗路徑都會用到它,不必在 catch 裡重組。
+            // 先以原文成行:任何失敗路徑都會用到它,不必在 catch 裡重組。第一個 delta 到之前
+            // 字幕先顯示原文(空白字幕看起來像 app 壞了),有譯文再逐步取代。
             var line = FeedLine(
                 id: segment.id, committedAt: segment.committedAt,
                 original: segment.text, translated: segment.text)
+            var accumulated = ""
             do {
-                // complete 為 async——await 期間讓出 main,轉錄與 cue 抽取照跑。
-                let reply = try await self.chat.complete(system: system, user: user)
-                let translated = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                // 空回覆視同沒翻到:字幕留原文(空白字幕看起來像 app 壞了)。
-                if !translated.isEmpty {
-                    line.translated = translated
-                    segment.translatedText = translated
+                // 串流:await 期間讓出 main,轉錄與 cue 抽取照跑;每個 delta 就地更新該行,
+                // 譯文逐字冒出來(不必等整段回來)。
+                for try await delta in self.chat.stream(system: system, user: user) {
+                    if Task.isCancelled { break }
+                    accumulated += delta
+                    let trimmed = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        line.translated = trimmed
+                        self.insertSorted(line)   // feed 依 id 取代同一行 → 就地刷新,不新增行
+                    }
+                }
+                // 收尾:最終譯文回寫 segment(空回覆視同沒翻到,字幕留原文/已收到的部分)。
+                let finalText = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !finalText.isEmpty {
+                    line.translated = finalText
+                    segment.translatedText = finalText
                 }
             } catch {
-                // 靜默:不跳 UI、不中斷後續段落。線索只留在 segment 與 log。
+                // 靜默:不跳 UI、不中斷後續段落。已收到的部分譯文保留(比整段回退原文好),
+                // 什麼都沒收到才留原文。線索只留在 segment 與 log。
                 segment.translationError = error.localizedDescription
                 logger.error("🌐 即時翻譯失敗: \(error.localizedDescription, privacy: .public)")
             }
@@ -90,6 +115,59 @@ final class MeetingLiveTranslator: ObservableObject {
             self.insertSorted(line)
         }
         inflight.append(task)
+    }
+
+    // MARK: - Provisional 即時翻譯(Stage B)
+
+    /// 未定稿尾巴進來(講者正在講、還沒停頓切段)→ debounce 後**串流翻譯**,顯示成 provisional
+    /// (字幕最下方最新那行)。這是「連續講話也追得上」的關鍵:不必等講者停頓把句子切成 committed。
+    ///
+    /// - AC-47(硬需求):翻譯關閉 = 零 API 呼叫(guard 在最前)。
+    /// - 尾巴為空(該句已 committed / 靜音 / 斷線 reset)→ 收掉 provisional。
+    /// - 尾巴每變一次就取消在途、重排 250ms debounce:partial ~1s 才更新一次,coalesce 掉微調,
+    ///   避免每次微幅修正都打一發 API。
+    func observePartialTail(_ tail: String) {
+        guard config.liveTranslationEnabled else {
+            provisionalTask?.cancel(); provisionalTask = nil
+            provisional = nil
+            return
+        }
+        let trimmed = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            provisionalTask?.cancel(); provisionalTask = nil
+            provisional = nil
+            return
+        }
+        // 太短不值得翻(尾音、單字雜訊)。
+        guard trimmed.count >= 2 else { return }
+
+        provisionalTask?.cancel()
+        let (system, user) = MeetingTranslationPrompt.build(
+            text: trimmed,
+            sourceLanguage: config.translationSourceLanguage,
+            targetLanguage: config.translationTargetLanguage)
+        let stream = self.chat
+        let pid = self.provisionalId
+        provisionalTask = Task { [weak self] in
+            // debounce:等 250ms;期間又有新尾巴就會 cancel 掉這個 Task(連 network 一起收)。
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let self else { return }
+            // 先擺原文尾巴佔位(還沒譯文時字幕顯示原文,不空白)。
+            self.provisional = FeedLine(id: pid, committedAt: Date(), original: trimmed, translated: trimmed)
+            var acc = ""
+            do {
+                for try await delta in stream.stream(system: system, user: user) {
+                    if Task.isCancelled { return }
+                    acc += delta
+                    let t = acc.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !t.isEmpty {
+                        self.provisional = FeedLine(id: pid, committedAt: Date(), original: trimmed, translated: t)
+                    }
+                }
+            } catch {
+                // 靜默:provisional 失敗留原文尾巴,不吵(比照 committed 的失敗紀律)。
+            }
+        }
     }
 
     /// feed 恆按 `committedAt` 排序,**不按完成序**。
@@ -109,5 +187,10 @@ final class MeetingLiveTranslator: ObservableObject {
         let tasks = inflight
         inflight.removeAll()
         for task in tasks { await task.value }
+    }
+
+    /// 測試用:等待目前的 provisional 翻譯(含 250ms debounce)跑完。
+    func drainProvisionalForTest() async {
+        await provisionalTask?.value
     }
 }

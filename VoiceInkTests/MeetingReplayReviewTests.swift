@@ -33,7 +33,7 @@ private final class ScriptedChat: ChatCompleting, @unchecked Sendable {
 /// 接地 noop(不碰網路/索引/螢幕)。鏡射 `AnswerCoordinatorTests.NoopGrounding`。
 private struct ReplayNoopGrounding: MeetingGroundingProviding {
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         .empty
     }
 }
@@ -46,7 +46,7 @@ private struct ReplayNoopGrounding: MeetingGroundingProviding {
 /// 不是 Tier 1 管線。
 private struct ReplayGroundingWithExcerpt: MeetingGroundingProviding {
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         MeetingGrounding(brief: brief, ragExcerpts: ["《訂單分庫》我主導了快取重構,P99 800→120ms"],
                          screenText: nil)
     }
@@ -63,6 +63,9 @@ private struct ReviewCueStub: MeetingReviewOrderable {
 
 /// 離線覆盤(M8 C 組):AC-39 的分段純函式 + AC-38/AC-42 的 replay 管線。
 final class MeetingReplayReviewTests: XCTestCase {
+
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
 
     // MARK: - AC-39 分段策略
 
@@ -407,7 +410,7 @@ final class MeetingReplayReviewTests: XCTestCase {
     /// auto-deep **開著**(= 正式預設)。replay 仍不得碰 deep model —— 用「全域開啟」的設定測才有意義。
     @MainActor
     private func makeConfig() -> MeetingCopilotConfigStore {
-        let c = MeetingCopilotConfigStore()
+        let c = MeetingCopilotConfigStore(defaults: defaultsSuite)
         c.setPrefetchEnabled(true)
         c.setAutoDeepEnabled(true)
         c.setUseHistoryRAG(false)

@@ -11,6 +11,16 @@ private struct FixedCompleter: ChatCompleting {
     }
 }
 
+/// 查詢擴展測試用:改寫器 prompt → 回擴展 JSON;其餘(答案生成)→ 回帶引用的答案。
+/// 同一個 completer 在 `ask()` 內被呼叫兩次(先擴展、後答案),靠 system prompt 分流。
+private struct BranchingCompleter: ChatCompleting {
+    let expansionReply: String
+    let answerReply: String
+    func complete(system: String, user: String) async throws -> String {
+        system.contains("檢索查詢改寫器") ? expansionReply : answerReply
+    }
+}
+
 @MainActor
 final class AskAIAnswerTests: XCTestCase {
 
@@ -21,9 +31,10 @@ final class AskAIAnswerTests: XCTestCase {
         return ModelContext(container)
     }
 
-    private func insertChunk(_ ctx: ModelContext, tid: UUID, text: String, vector: [Float]) {
+    private func insertChunk(_ ctx: ModelContext, tid: UUID, text: String, vector: [Float],
+                             chunkIndex: Int = 0) {
         ctx.insert(EmbeddingChunk(
-            transcriptionId: tid, chunkIndex: 0, text: text,
+            transcriptionId: tid, chunkIndex: chunkIndex, text: text,
             vector: EmbeddingClient.floatsToData(EmbeddingClient.normalize(vector)), dims: 2,
             embeddingModel: EmbeddingModel.gemini001_768.tag, sourceKind: "dictation",
             categoryId: nil, timestamp: .now))
@@ -87,5 +98,70 @@ final class AskAIAnswerTests: XCTestCase {
         let messages = try ctx.fetch(FetchDescriptor<AskAIMessage>())
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(Set(messages.map(\.role)), ["user", "assistant"])
+    }
+
+    // MARK: - 查詢擴展(2026-07-15:問「山」撈不到「百岳」筆記)
+
+    /// 治本召回:原始查詢排在前 12 之外的段,靠同義擴展查詢擠進答案上下文並被引用。
+    /// 12 個 decoy 段高度匹配原始查詢([1,0.1]),把 base 前 12 佔滿;爬山段([0,1])與原始查詢
+    /// 正交(排第 13、base 撈不到),只有「百岳」擴展查詢([0,1])撈得到 → union 後以最高分擠進前 12。
+    func testQueryExpansionSurfacesChunkOriginalQueryMissed() async throws {
+        let ctx = try makeContext()
+        for i in 0..<12 {
+            insertChunk(ctx, tid: UUID(), text: "無關內容\(i)", vector: [1, 0.1], chunkIndex: i)
+        }
+        let hikingTid = UUID()
+        insertChunk(ctx, tid: hikingTid, text: "今年爬了玉山跟合歡", vector: [0, 1])
+        try ctx.save()
+
+        let embedder = FakeEmbedder(map: ["爬過哪些山": [1, 0], "百岳": [0, 1]], dims: 2)
+        let completer = BranchingCompleter(expansionReply: #"["百岳"]"#,
+                                           answerReply: "今年爬了玉山跟合歡 [1]。")
+        AskAIService.shared.configureForTesting(embedder: embedder, completer: completer)
+
+        let message = try await AskAIService.shared.ask(
+            question: "爬過哪些山", scope: .all, thread: nil, model: .gemini001_768, context: ctx)
+
+        XCTAssertTrue(message.citations.contains { $0.transcriptionId == hikingTid },
+                      "查詢擴展應讓原始查詢漏掉的爬山段進入答案上下文並可被引用")
+    }
+
+    /// 擴展失敗(改寫器回無法解析的東西)→ 退回原始檢索,絕不比現況差。
+    func testQueryExpansionFallsBackGracefullyOnGarbage() async throws {
+        let ctx = try makeContext()
+        let tid = UUID()
+        insertChunk(ctx, tid: tid, text: "承諾下週三交付。", vector: [1, 0])
+        try ctx.save()
+
+        let embedder = FakeEmbedder(map: ["誰承諾了什麼": [1, 0]], dims: 2)
+        // 改寫器回非 JSON → parseExpansions 回 [] → 只用原始檢索;答案照常。
+        let completer = BranchingCompleter(expansionReply: "這不是 JSON",
+                                           answerReply: "有人承諾下週三交付 [1]。")
+        AskAIService.shared.configureForTesting(embedder: embedder, completer: completer)
+
+        let message = try await AskAIService.shared.ask(
+            question: "誰承諾了什麼", scope: .all, thread: nil, model: .gemini001_768, context: ctx)
+        XCTAssertEqual(message.citations.count, 1)
+        XCTAssertEqual(message.citations[0].transcriptionId, tid)
+    }
+
+    // MARK: - 純函式:擴展解析 + 放寬拒答規則
+
+    func testParseExpansionsTolerant() {
+        XCTAssertEqual(AskAIService.parseExpansions(#"["百岳","登山"]"#), ["百岳", "登山"])
+        XCTAssertEqual(AskAIService.parseExpansions("不是 JSON"), [], "壞格式 → 空,退回原始檢索")
+        XCTAssertEqual(AskAIService.parseExpansions(#"["a","","  "]"#), ["a"], "空白項剔除")
+        let fenced = "```json\n[\"x\",\"y\"]\n```"
+        XCTAssertEqual(AskAIService.parseExpansions(fenced), ["x", "y"], "code fence 要剝掉")
+        XCTAssertEqual(AskAIService.parseExpansions(#"["1","2","3","4","5"]"#).count, 3, "至多 3 個")
+    }
+
+    /// 放寬拒答只放寬「字面沒對上」,反幻覺底線不動——且這是 Ask AI 專用文案。
+    func testCitationRulesSoftenedButKeepsAntiHallucination() {
+        let rules = AskAIService.citationRules
+        XCTAssertTrue(rules.contains("語意相關就據以回答"), "放寬過度拒答:語意相關即答")
+        XCTAssertTrue(rules.contains("百岳"), "帶上使用者回報的具體例子")
+        XCTAssertTrue(rules.contains("不要編造"), "反幻覺底線保留")
+        XCTAssertTrue(rules.contains("找不到相關內容"), "真無關仍要明說找不到")
     }
 }

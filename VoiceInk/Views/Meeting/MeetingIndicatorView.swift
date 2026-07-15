@@ -6,10 +6,22 @@ import AppKit
 struct MeetingIndicatorView: View {
     @ObservedObject var controller: MeetingCaptureController
     @ObservedObject private var overlayManager = CopilotOverlayWindowManager.shared
+    @ObservedObject private var copilotConfig = MeetingCopilotConfigStore.shared
     @State private var pulsing = false
     @State private var showScreenPicker = false
+    /// `Shortcut.displayString` 不是 observable —— 收到 `shortcutDidChange` 就 bump 這個
+    /// 逼 body 重算熱鍵提示(pattern 同 ShortcutRecorder)。
+    @State private var shortcutTick = 0
 
     private var multipleScreens: Bool { NSScreen.screens.count > 1 }
+
+    /// overlay 開關的熱鍵提示(接在 tooltip 後面);未設定熱鍵時回空字串。
+    private var overlayHotkeyHint: String {
+        _ = shortcutTick   // 綁定重算依賴
+        guard let display = ShortcutStore.shortcut(for: .toggleMeetingCopilotOverlay)?.displayString,
+              !display.isEmpty else { return "" }
+        return "（\(display)）"
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -31,7 +43,7 @@ struct MeetingIndicatorView: View {
                     .foregroundStyle(controller.copilotActive ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.plain)
-            .help(controller.copilotActive ? "會議即時輔助:開啟中(點擊關閉)" : "會議即時輔助:已關閉(點擊開啟)")
+            .delayedTooltip(controller.copilotActive ? "會議即時輔助:開啟中(點擊關閉)" : "會議即時輔助:已關閉(點擊開啟)")
             // 即時輔助視窗(overlay)開關 —— 與熱鍵共用釘住狀態;pipeline 沒在跑時停用。
             Button {
                 overlayManager.toggle()
@@ -44,7 +56,20 @@ struct MeetingIndicatorView: View {
             }
             .buttonStyle(.plain)
             .disabled(!controller.copilotActive)
-            .help(overlayManager.isPinned ? "隱藏即時輔助視窗" : "顯示即時輔助視窗")
+            .delayedTooltip((overlayManager.isPinned ? "隱藏即時輔助視窗" : "顯示即時輔助視窗") + overlayHotkeyHint)
+            // 即時翻譯開關 —— 與選單、設定頁共寫同一個 config flag(中途切換下一句立即生效)。
+            Button {
+                copilotConfig.setLiveTranslationEnabled(!copilotConfig.liveTranslationEnabled)
+            } label: {
+                Image(systemName: copilotConfig.liveTranslationEnabled ? "globe.badge.chevron.backward" : "globe")
+                    .font(.system(size: 13))
+                    .foregroundStyle(controller.copilotActive
+                                     ? (copilotConfig.liveTranslationEnabled ? Color.accentColor : Color.secondary)
+                                     : Color.secondary.opacity(0.4))
+            }
+            .buttonStyle(.plain)
+            .disabled(!controller.copilotActive)
+            .delayedTooltip(copilotConfig.liveTranslationEnabled ? "即時翻譯:開啟中(點擊關閉)" : "即時翻譯:已關閉(點擊開啟)")
             // 快速把錄製列 + 所有浮動視窗丟到另一個螢幕(比拖曳快;多螢幕才啟用)。
             Button {
                 showScreenPicker = true
@@ -72,7 +97,7 @@ struct MeetingIndicatorView: View {
                     .foregroundStyle(.red)
             }
             .buttonStyle(.plain)
-            .help("停止會議錄製")
+            .delayedTooltip("停止會議錄製")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -83,6 +108,9 @@ struct MeetingIndicatorView: View {
         .floatingWindowDrag(
             currentOrigin: { controller.indicatorOrigin },
             setOrigin: { controller.setIndicatorOrigin($0) })
+        .onReceive(NotificationCenter.default.publisher(for: ShortcutStore.shortcutDidChange)) { _ in
+            shortcutTick &+= 1
+        }
     }
 }
 
@@ -96,7 +124,12 @@ final class MeetingIndicatorPanel: NSPanel {
                    styleMask: [.nonactivatingPanel, .fullSizeContentView],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
-        level = .floating
+        // `.statusBar + 2`(而非舊的 `.floating` = 3):`.floating` 太低,會議 app 全螢幕時
+        // (常見於沒接外接螢幕、把會議開全螢幕)pill 被壓在底下看不到——外接螢幕時會議多為
+        // 視窗模式所以沒事,這正是「沒外接螢幕就消失」的成因之一。對齊聽寫的 NotchRecorderPanel
+        // (`.statusBar + 3`)與 copilot overlay(`.screenSaver`)這一家always-on-top 錄製 UI;
+        // 取 +2 落在 notch recorder 之下、overlay 之下,不互相搶層。
+        level = .statusBar + 2
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         // 拖曳改走 SwiftUI 手勢(整窗可拖,見 MeetingIndicatorView.body 的 floatingWindowDrag):
@@ -127,15 +160,49 @@ final class MeetingIndicatorWindowManager {
 
     init(controller: MeetingCaptureController) {
         self.controller = controller
+        // 螢幕組態變更(拔掉外接螢幕、解析度/排列改變)時重錨:否則 pill 的 frame 留在
+        // 消失的外接螢幕座標系裡 = 落到可視範圍外 → 「不見了」。copilot overlay 有這個觀察者,
+        // pill 之前漏了,這是「沒外接螢幕就消失」的另一半成因。
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleScreenParametersChange),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(
+            self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
 
     func show() {
         if panel == nil { initializeWindow() }
+        // panel 可能是上一場會議在外接螢幕上建的;若現在那個位置已不在任何螢幕內
+        // (拔了螢幕、或本來就沒接),重錨回主螢幕右上角,否則 orderFront 只是把它
+        // 重新丟到看不見的座標。
+        reanchorIfOffscreen()
         panel?.orderFrontRegardless()
     }
 
     func hide() {
         panel?.orderOut(nil)
+    }
+
+    /// panel 的中心點不落在任何螢幕的可視範圍內 → 視為離屏,重錨回主螢幕。
+    /// (保留使用者手動拖曳的位置——只要它還在某個螢幕上就不動。)
+    private func reanchorIfOffscreen() {
+        guard let panel else { return }
+        let center = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let onScreen = NSScreen.screens.contains { $0.visibleFrame.contains(center) }
+        if !onScreen, let screen = NSScreen.main {
+            panel.setFrame(Self.metrics(for: screen), display: true)
+        }
+    }
+
+    @objc private func handleScreenParametersChange() {
+        // 稍等螢幕組態穩定(與 CopilotOverlayWindowManager 同步)再判斷是否離屏。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, let panel = self.panel, panel.isVisible else { return }
+            self.reanchorIfOffscreen()
+        }
     }
 
     // MARK: - 手動拖曳 / 移到其他螢幕(MeetingIndicatorView 呼叫)
@@ -171,14 +238,14 @@ final class MeetingIndicatorWindowManager {
 
     /// 指定螢幕的右上角(選單列下方),避開聽寫 mini recorder 的螢幕底部位置。
     static func metrics(for screen: NSScreen) -> NSRect {
-        let width: CGFloat = 226   // 紅點+計時+copilot+overlay+移動螢幕+停止(各 13–16pt icon + 8 spacing)
+        let width: CGFloat = 250   // 紅點+計時+copilot+overlay+即時翻譯+移動螢幕+停止(各 13–16pt icon + 8 spacing)
         let height: CGFloat = 34
         let f = screen.visibleFrame
         return NSRect(x: f.maxX - width - 16, y: f.maxY - height - 12, width: width, height: height)
     }
 
     private static func calculateWindowMetrics() -> NSRect {
-        guard let screen = NSScreen.main else { return NSRect(x: 0, y: 0, width: 226, height: 34) }
+        guard let screen = NSScreen.main else { return NSRect(x: 0, y: 0, width: 250, height: 34) }
         return metrics(for: screen)
     }
 }

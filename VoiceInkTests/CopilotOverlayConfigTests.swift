@@ -4,6 +4,9 @@ import XCTest
 @MainActor
 final class CopilotOverlayConfigTests: XCTestCase {
 
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
+
     private let keys = [
         "meetingCopilotOverlayClickThroughV1",
         "meetingCopilotMaxCuesShownV1"
@@ -27,23 +30,23 @@ final class CopilotOverlayConfigTests: XCTestCase {
     }
 
     func testOverlayDefaults() {
-        let store = MeetingCopilotConfigStore()
+        let store = MeetingCopilotConfigStore(defaults: defaultsSuite)
         XCTAssertFalse(store.overlayClickThrough, "預設不穿透——第一次用得先能點得到")
         XCTAssertEqual(store.maxCuesShown, 5)
     }
 
     func testOverlaySettingsPersistAndReload() {
-        let store = MeetingCopilotConfigStore()
+        let store = MeetingCopilotConfigStore(defaults: defaultsSuite)
         store.setOverlayClickThrough(true)
         store.setMaxCuesShown(3)
 
-        let reloaded = MeetingCopilotConfigStore()
+        let reloaded = MeetingCopilotConfigStore(defaults: defaultsSuite)
         XCTAssertTrue(reloaded.overlayClickThrough)
         XCTAssertEqual(reloaded.maxCuesShown, 3)
     }
 
     func testMaxCuesShownIsClamped() {
-        let store = MeetingCopilotConfigStore()
+        let store = MeetingCopilotConfigStore(defaults: defaultsSuite)
         store.setMaxCuesShown(0)
         XCTAssertEqual(store.maxCuesShown, 1)
         store.setMaxCuesShown(999)

@@ -58,6 +58,13 @@ final class MeetingCopilotController: ObservableObject {
     /// 在途抽取(每個 committed 一個 Task)。測試用 `drainInflight()` 等待。
     private var inflightTasks: [Task<Void, Never>] = []
 
+    /// 最近幾段對方 committed 逐字稿(滑動窗),當作 cue 抽取的 `recentContext` ——
+    /// 讓 fast model 判斷當前片段是「前文的延續」還是「真的在問我」。只留最近數段:
+    /// 太長會稀釋「對方剛說」的焦點,也讓每次抽取的 prompt 變貴。
+    private var recentRemote: [String] = []
+    /// recentContext 保留的段數。
+    private static let recentContextWindow = 3
+
     init(
         extractor: ResponseCueExtractor,
         config: MeetingCopilotConfigStore,
@@ -114,20 +121,33 @@ final class MeetingCopilotController: ObservableObject {
             return
         }
         logger.notice("🧠 remote committed \(text.count, privacy: .public) 字 → cue 抽取")
+        // recentContext = 這段之前的滑動窗(不含當前段);抽取用它判斷語意,不從中抽 cue。
+        let recentContext = recentRemote.joined(separator: " ")
         // 先落 segment:就算抽出 0 則,「這段話當時被看過、模型怎麼回」也要留下——
-        // 漏抓只能從完整時間軸對照出來。
-        let segment = recordSegment(channel: .remote, text: text)
+        // 漏抓只能從完整時間軸對照出來。當前段之後才推進滑動窗。
+        let segment = recordSegment(channel: .remote, text: text, recentContext: recentContext)
+        pushRecentRemote(text)
 
         // 即時翻譯:committed 的**第二個獨立 consumer**,與下面的 cue 抽取 Task 平行、互不阻塞
         // (翻譯慢不該讓 cue 晚到;抽取失敗也不該讓字幕消失)。translator 自帶開關 guard——
         // 翻譯關閉時這行零成本(AC-47)。segment == nil = copilot 關閉,上面的 guard 已擋掉。
         if let segment { translator?.translate(segment: segment) }
 
+        // 抽取前守門(FR:碎片不送 LLM):連續語音被切碎的殘尾(小寫開頭/純標點)直接跳過,
+        // 不讓 fast model 把半句話腦補成問題。段落已 persist 進時間軸,只是不觸發抽取。
+        guard ResponseCueExtractor.isExtractable(text) else {
+            logger.notice("🧠 committed 未過抽取守門(疑似碎片),跳過 cue 抽取: \(text, privacy: .public)")
+            segment?.extractedCount = 0
+            segment?.extractionModel = "gated"
+            try? modelContext.save()
+            return
+        }
+
         let extractor = self.extractor
         let logger = self.logger
         let task = Task { [weak self] in
             // completeChat 為 async——await 期間讓出 main;失敗 extractor 已回空 outcome。
-            let outcome = await extractor.extract(committed: text)
+            let outcome = await extractor.extract(committed: text, recentContext: recentContext)
             guard !Task.isCancelled else { return }
             self?.recordExtraction(outcome, on: segment)
             guard !outcome.cues.isEmpty else {
@@ -139,11 +159,21 @@ final class MeetingCopilotController: ObservableObject {
         inflightTasks.append(task)
     }
 
+    /// 把一段對方 committed 推進 recentContext 滑動窗,只留最近 `recentContextWindow` 段。
+    private func pushRecentRemote(_ text: String) {
+        recentRemote.append(text)
+        if recentRemote.count > Self.recentContextWindow {
+            recentRemote.removeFirst(recentRemote.count - Self.recentContextWindow)
+        }
+    }
+
     /// 一段 committed 落入逐字稿時間軸。@MainActor(context 非 Sendable)。
+    /// `recentContext` = 抽取時一併送入的滑動窗(僅 remote 段有;供事後調校對照,診斷 JSON 用)。
     @discardableResult
-    func recordSegment(channel: MeetingSegmentChannel, text: String) -> MeetingLiveSegment? {
+    func recordSegment(channel: MeetingSegmentChannel, text: String, recentContext: String = "") -> MeetingLiveSegment? {
         guard config.copilotEnabled, let session else { return nil }
         let segment = MeetingLiveSegment(session: session, channel: channel, text: text)
+        segment.recentContext = recentContext
         modelContext.insert(segment)
         try? modelContext.save()
         return segment

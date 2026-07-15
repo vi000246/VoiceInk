@@ -228,7 +228,7 @@ private struct VoiceTableHeader: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Color.clear.frame(width: 37, height: 1)   // 對齊：勾選(15)+星號(12)欄
+            Color.clear.frame(width: 52, height: 1)   // 對齊：勾選(30)+間距(10)+星號(12)欄
             sortLabel("標題", field: .title).frame(maxWidth: .infinity, alignment: .leading)
             sortLabel("日期", field: .date).frame(width: 150, alignment: .leading)
             Text("Tag").frame(width: 110, alignment: .leading)
@@ -268,11 +268,15 @@ private struct VoiceLibraryRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // 放大點擊區(見 RecorderTableRow 同款改動):小圈圈難按、易誤觸 row 詳情;
+            // 30x30 命中框讓單選與 Shift 範圍選取都好按,glyph 靠左視覺位置不變。
             Button(action: onToggleCheck) {
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 15)).foregroundStyle(isChecked ? AppTheme.Accent.primary : .secondary)
+                    .frame(width: 30, height: 30, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).frame(width: 15)
+            .buttonStyle(.plain).frame(width: 30)
 
             Button(action: toggleFavorite) {
                 Image(systemName: transcription.recorderFavorite ? "star.fill" : "star")

@@ -49,8 +49,12 @@ enum RetrievalService {
 
     /// 取回 scope 內、與 queryVector 最相似的 k 個塊(僅比對同一 embedding 模型的向量——
     /// 不同向量空間永不混比)。
+    /// - Parameter minScore: cosine 相似度下限(向量已 L2-normalize,dot = cosine ∈ [-1,1])。
+    ///   低於此值的塊視為「不相關」而剔除。預設 0 = 不設限(向下相容)。碎片/離題 query
+    ///   在純 top-k 下仍會硬撈回 k 個不相關塊(2026-07-15 aboutMe 亂接地事故),給下限才擋得住。
     static func retrieve(queryVector: [Float], scope: AskAIScope, k: Int,
-                         model: EmbeddingModel, context: ModelContext) -> [ScoredChunk] {
+                         model: EmbeddingModel, context: ModelContext,
+                         minScore: Float = 0) -> [ScoredChunk] {
         let modelTag = model.tag
         // #Predicate 只留唯一「對所有塊都成立」的條件:embeddingModel(String ==)。
         // 日期也移到記憶體:一來筆記塊要豁免(SQL 側做不到「豁免」而不寫成 optional 判斷),
@@ -96,6 +100,38 @@ enum RetrievalService {
             vDSP_dotpr(queryVector, 1, v, 1, &dot, vDSP_Length(dims))
             scored.append(ScoredChunk(chunk: chunk, score: dot))
         }
-        return Array(scored.sorted { $0.score > $1.score }.prefix(k))
+        let relevant = minScore > 0 ? scored.filter { $0.score >= minScore } : scored
+        let ranked = relevant.sorted { $0.score > $1.score }
+        return Array(ranked.prefix(k))
+    }
+
+    // MARK: - 多查詢召回(max-score fusion)
+
+    /// 把多組檢索結果以 **chunk 身分**(`transcriptionId#chunkIndex`,同 `ScoredChunk ==`)取聯集,
+    /// 同一段保留**最高分**,重排取前 k。多查詢/同義詞檢索共用:一段只要**強配上任一查詢變體**
+    /// 就能浮上來(問「山」漏掉、但「百岳」變體撈到 → 以高分擠進前 k)。純函式(不碰索引)。
+    static func fuseByMaxScore(_ groups: [[ScoredChunk]], k: Int) -> [ScoredChunk] {
+        var bestByKey: [String: ScoredChunk] = [:]
+        for group in groups {
+            for sc in group {
+                let key = "\(sc.chunk.transcriptionId)#\(sc.chunk.chunkIndex)"
+                if let existing = bestByKey[key], existing.score >= sc.score { continue }
+                bestByKey[key] = sc
+            }
+        }
+        return Array(bestByKey.values.sorted { $0.score > $1.score }.prefix(k))
+    }
+
+    /// 多個查詢向量各自 top-k 檢索後 fuse。單一向量 → 等同 `retrieve`(零額外成本)。
+    static func retrieveUnion(queryVectors: [[Float]], scope: AskAIScope, k: Int,
+                              model: EmbeddingModel, context: ModelContext, minScore: Float = 0) -> [ScoredChunk] {
+        guard queryVectors.count > 1 else {
+            guard let v = queryVectors.first else { return [] }
+            return retrieve(queryVector: v, scope: scope, k: k, model: model, context: context, minScore: minScore)
+        }
+        let groups = queryVectors.map {
+            retrieve(queryVector: $0, scope: scope, k: k, model: model, context: context, minScore: minScore)
+        }
+        return fuseByMaxScore(groups, k: k)
     }
 }

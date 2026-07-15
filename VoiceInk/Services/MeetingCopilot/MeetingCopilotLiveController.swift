@@ -93,7 +93,8 @@ final class MeetingCopilotLiveController {
         let fast = Self.makeStreamingCompleter(provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
         let deep = Self.makeStreamingCompleter(provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
         let extractor = ResponseCueExtractor(
-            chat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config))
+            chat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config),
+            systemPrompt: config.effectiveCuePrompt)
         let controller = MeetingCopilotController(
             extractor: extractor, config: config, modelContext: modelContext,
             extractionModelLabel: fast.label)
@@ -126,6 +127,13 @@ final class MeetingCopilotLiveController {
             chat: Self.makeTranslationCompleter(config: config, aiService: aiService),
             config: config)
         controller.translator = translator
+
+        // Stage B:把 remote 流的「未定稿尾巴」接到翻譯器的 provisional 即時翻譯。
+        // 在 transcriber.start() 之前設好(start 內才建 tick task);翻譯關閉時 observePartialTail
+        // 自帶 guard,零成本。只接 remote(對方的話)——local 是我自己說的,不翻。
+        remoteStream.onProvisionalTail = { [weak translator] tail in
+            translator?.observePartialTail(tail)
+        }
 
         // 6. overlay 接線。
         CopilotOverlayWindowManager.shared.configure(
@@ -204,19 +212,19 @@ final class MeetingCopilotLiveController {
     }
 
     private func runNotesReindex(vaultRoot: URL, includeOnly: [String], excluded: [String]) async {
-        guard let modelContext else { return }
-        do {
-            // sidecar 路徑歸位到索引服務(FR-8):設定頁的「重建筆記索引」、Ask AI 的 autoIndex 與
-            // 這裡的背景掃描**必須共用同一份**——各記各的 hash 表會讓每邊都看到「全新 vault」,
-            // 每次全量重嵌(純燒 embedding 錢)。
-            let index = ObsidianNoteIndexService(
-                modelContext: modelContext, stateURL: try ObsidianNoteIndexService.defaultStateURL())
-            let count = try await index.reindex(
-                vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
-            logger.notice("🗂️ 筆記增量索引完成(重嵌 \(count, privacy: .public) 檔)")
-        } catch {
-            logger.notice("🗂️ 筆記增量索引失敗: \(error.localizedDescription, privacy: .public)")
-        }
+        guard let modelContext,
+              let stateURL = try? ObsidianNoteIndexService.defaultStateURL() else { return }
+        // sidecar 路徑歸位到索引服務(FR-8):設定頁的「重建筆記庫索引」、Ask AI 的 autoIndex 與
+        // 這裡的背景掃描**必須共用同一份**——各記各的 hash 表會讓每邊都看到「全新 vault」,
+        // 每次全量重嵌(純燒 embedding 錢)。
+        //
+        // 走 autoIndex(→ NoteIndexCoordinator)而非自己 new 一個 service:in-flight 是全app
+        // 共用的。以前這裡跟 Ask AI 頁各跑各的,「開著 Ask AI 又開會」= 兩份 reindex 同時掃
+        // 同一份 sidecar、互相覆蓋 hash 表、同一批檔重複打 embedding API。撞到就 no-op 是對的:
+        // 已經有一輪在掃了,這輪本來就沒有新東西可做。失敗照舊靜默 log-only(在 coordinator 內)。
+        await ObsidianNoteIndexService.autoIndex(
+            vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded,
+            stateURL: stateURL, modelContext: modelContext)
     }
 
     // MARK: - Helpers
@@ -244,21 +252,21 @@ final class MeetingCopilotLiveController {
 
     /// 翻譯用的 completer。
     ///
-    /// **非串流**(`MeetingFastChatCompleter`,不是 `LiveStreamingChatCompleter`):一句字幕就那麼
-    /// 幾十個字,整段回來即可——逐 token 打出來的字幕反而更難讀(讀者的眼睛會追著游標跑)。
+    /// **串流**(`LiveStreamingChatCompleter`,M8 延遲優化 option 3):使用者要求逐字冒出的即時字幕。
+    /// 長句一次回來要等整段(實測十幾秒),串流讓譯文第一秒就開始顯示、逐字補齊——感知延遲差很多。
     ///
     /// model 解析與 fast/deep 走**同一套** `MeetingCopilotModels.resolve`:使用者移掉某 provider
     /// 的 API key 後,翻譯也必須跟著回退預設,不得繼續拿失效 provider 發請求。
     private static func makeTranslationCompleter(
         config: MeetingCopilotConfigStore, aiService: AIService
-    ) -> ChatCompleting {
+    ) -> StreamingChatCompleting {
         let resolved = MeetingCopilotModels.resolve(
             storedProvider: config.translationProviderName,
             storedModel: config.translationModelName,
             defaultProvider: aiService.selectedProvider.rawValue,
             available: aiService.connectedProviders.map(\.rawValue))
         let provider = AIProvider(rawValue: resolved.provider) ?? aiService.selectedProvider
-        return MeetingFastChatCompleter(
+        return LiveStreamingChatCompleter(
             aiService: aiService, provider: provider, modelName: resolved.model)
     }
 }

@@ -5,6 +5,9 @@ import SwiftData
 @MainActor
 final class MeetingCopilotControllerTests: XCTestCase {
 
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
+
     private let keys = [
         "meetingCopilotEnabledV1",
         "meetingCopilotShowInformationalCuesV1",
@@ -39,14 +42,14 @@ final class MeetingCopilotControllerTests: XCTestCase {
     private func makeController() throws -> MeetingCopilotController {
         MeetingCopilotController(
             extractor: ResponseCueExtractor(chat: FakeChatCompleting()),
-            config: MeetingCopilotConfigStore(),
+            config: MeetingCopilotConfigStore(defaults: defaultsSuite),
             modelContext: try makeContext())
     }
 
     /// AC-4:30 秒窗內兩句相似 committed → 只 persist 一則 cue。
     func testDedupesSimilarCuesWithinWindow() async throws {
         let ctx = try makeContext()
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setCopilotEnabled(true)
         defer { config.setCopilotEnabled(false) }
 
@@ -75,7 +78,7 @@ final class MeetingCopilotControllerTests: XCTestCase {
     /// AC-5:informational persist 但預設不暴露;打開開關後出現。
     func testInformationalPersistedButHiddenByDefault() async throws {
         let ctx = try makeContext()
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setCopilotEnabled(true)
         defer { config.setCopilotEnabled(false) }
         XCTAssertFalse(config.showInformationalCues)
@@ -102,7 +105,7 @@ final class MeetingCopilotControllerTests: XCTestCase {
     /// AC-9:kill switch——extractor 未被呼叫、store 無新 cue、cues 為空。
     func testDisabledCopilotExtractsNothing() async throws {
         let ctx = try makeContext()
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setCopilotEnabled(false)
 
         let fake = FakeChatCompleting(
@@ -152,7 +155,7 @@ final class MeetingCopilotControllerTests: XCTestCase {
     /// 熱鍵端零邏輯(只呼叫 `toggleExpansion()`),所以「最新有內容者」的判斷在這裡驗。
     func testToggleExpansionSemantics() throws {
         let ctx = try makeContext()
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setCopilotEnabled(true)
         defer { config.setCopilotEnabled(false) }
 

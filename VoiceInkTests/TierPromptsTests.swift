@@ -135,4 +135,29 @@ final class TierPromptsTests: XCTestCase {
             XCTAssertTrue(s.contains(key), "JSON 契約三鍵不變(parser 零改動),缺:\(key)")
         }
     }
+
+    // MARK: - 風格守則注入(2026-07-15 可調 prompt)
+
+    /// 非空 guidance 注入 tier1 / tier1AboutMe / tier2 的 system,且不動 persona/格式契約。
+    func testGuidanceInjectedIntoAllAnswerPrompts() {
+        let guide = "只講軟體與我的專案,口語淺白"
+        let t1 = TierPrompts.tier1System(persona: "p", guidance: guide)
+        let t1a = TierPrompts.tier1SystemAboutMe(persona: "p", guidance: guide)
+        let t2 = TierPrompts.tier2System(persona: "p", guidance: guide, style: .bullets)
+        for s in [t1, t1a, t2] {
+            XCTAssertTrue(s.contains(guide), "風格守則應注入 system prompt:\(s)")
+            XCTAssertTrue(s.contains("p"), "persona 仍在")
+        }
+        XCTAssertTrue(t1.contains("OPENER:"), "格式契約不受 guidance 影響")
+        XCTAssertTrue(t2.contains("analysis"), "JSON 契約不受 guidance 影響")
+    }
+
+    /// 空 guidance(預設)→ 輸出與不帶 guidance 時**逐字相同**(不加空行)——
+    /// 這是 legacy 契約測試不必改的前提。
+    func testEmptyGuidanceIsByteIdenticalToNoGuidance() {
+        XCTAssertEqual(TierPrompts.tier1System(persona: "p", guidance: ""),
+                       TierPrompts.tier1System(persona: "p"))
+        XCTAssertEqual(TierPrompts.tier2System(persona: "p", guidance: "", style: .detailed),
+                       TierPrompts.tier2System(persona: "p", style: .detailed))
+    }
 }

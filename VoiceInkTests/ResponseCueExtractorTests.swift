@@ -15,6 +15,7 @@ final class FakeChatCompleting: ChatCompleting, @unchecked Sendable {
 
     var callCount: Int { lock.lock(); defer { lock.unlock() }; return users.count }
     var lastUser: String? { lock.lock(); defer { lock.unlock() }; return users.last }
+    var lastSystem: String? { lock.lock(); defer { lock.unlock() }; return systems.last }
 
     init(reply: String = #"{"cues":[]}"#, shouldThrow: Bool = false) {
         self.reply = reply
@@ -155,5 +156,63 @@ final class ResponseCueExtractorTests: XCTestCase {
         XCTAssertEqual(ResponseCueExtractor.parse(fenced),
                        [ExtractedCue(text: "x?", kind: .directQuestion)],
                        "模型包 code fence 要能剝掉")
+    }
+
+    // MARK: - 抽取前守門(2026-07-15 碎片誤判事故)
+
+    /// 連續語音被切碎的英文殘尾以小寫開頭 → 擋掉,不送 LLM 腦補成問題。
+    func testGateBlocksLowercaseLatinFragments() {
+        XCTAssertFalse(ResponseCueExtractor.isExtractable("e conflict."))
+        XCTAssertFalse(ResponseCueExtractor.isExtractable("utes."))
+        XCTAssertFalse(ResponseCueExtractor.isExtractable("ile the diplomatic efforts"))
+    }
+
+    /// 純標點/空白(切段接縫殘渣)→ 擋掉。
+    func testGateBlocksPunctuationOnly() {
+        XCTAssertFalse(ResponseCueExtractor.isExtractable("..."))
+        XCTAssertFalse(ResponseCueExtractor.isExtractable("   "))
+        XCTAssertFalse(ResponseCueExtractor.isExtractable("—— "))
+    }
+
+    /// 完整句子放行:CJK 短句(無大小寫)、大寫開頭英文、數字開頭都是合法輸入。
+    func testGateAllowsCompleteUtterances() {
+        XCTAssertTrue(ResponseCueExtractor.isExtractable("你負責哪一塊?"))
+        XCTAssertTrue(ResponseCueExtractor.isExtractable("How would you design it?"))
+        XCTAssertTrue(ResponseCueExtractor.isExtractable("3 個服務怎麼拆?"))
+        XCTAssertTrue(ResponseCueExtractor.isExtractable("Redis 快取要怎麼設計?"))
+    }
+
+    /// 反腦補:cue.text 必須確實出自 committed;模型虛構(committed 裡沒有)→ 丟棄。
+    func testGroundingRejectsHallucinatedCue() {
+        let committed = "我們上週把服務上線了"
+        XCTAssertTrue(ResponseCueExtractor.isGrounded("我們上週把服務上線了", in: committed))
+        XCTAssertFalse(ResponseCueExtractor.isGrounded("你最有成就感的專案是什麼?", in: committed),
+                       "committed 裡完全沒有的內容 = 腦補,應丟棄")
+        XCTAssertFalse(ResponseCueExtractor.isGrounded("a", in: committed), "過短丟棄")
+    }
+
+    /// grounded 過濾實際生效:模型回一則出自 committed、一則虛構 → 只留前者。
+    func testExtractFiltersUngroundedCues() async {
+        let reply = #"{"cues":[{"text":"你會怎麼設計 rate limiter","kind":"directQuestion"},{"text":"完全無關的虛構問題","kind":"aboutMe"}]}"#
+        let extractor = ResponseCueExtractor(chat: FakeChatCompleting(reply: reply))
+        let outcome = await extractor.extract(committed: "你會怎麼設計 rate limiter")
+        XCTAssertEqual(outcome.cues.map(\.text), ["你會怎麼設計 rate limiter"],
+                       "只留確實出自 committed 的 cue,虛構的丟棄")
+        XCTAssertEqual(outcome.rawReply, reply, "rawReply 保留原樣供診斷比對")
+    }
+
+    // MARK: - 分類器 prompt 覆寫(2026-07-15 可調 prompt)
+
+    /// 建構時注入的 systemPrompt 覆寫要真的送到 LLM;不傳(或空)則用內建預設。
+    func testSystemPromptOverrideIsSentToLLM() async {
+        let fake = FakeChatCompleting(reply: #"{"cues":[]}"#)
+        let extractor = ResponseCueExtractor(chat: fake, systemPrompt: "我的自訂分類器 prompt")
+        _ = await extractor.extract(committed: "你好")
+        XCTAssertEqual(fake.lastSystem, "我的自訂分類器 prompt", "覆寫的 system prompt 應原樣送出")
+
+        let fakeDefault = FakeChatCompleting(reply: #"{"cues":[]}"#)
+        let defaultExtractor = ResponseCueExtractor(chat: fakeDefault)   // 不傳 → 內建
+        _ = await defaultExtractor.extract(committed: "你好")
+        XCTAssertEqual(fakeDefault.lastSystem, ResponseCueExtractor.systemPrompt, "未覆寫 → 內建分類器 prompt")
     }
 }

@@ -13,6 +13,11 @@ struct CopilotOverlayView: View {
     /// 只有「有 translator」時才建立那個子視圖,feed 更新照樣即時重繪。
     var translator: MeetingLiveTranslator?
     @ObservedObject private var config = MeetingCopilotConfigStore.shared
+    /// 已錄時長。錄製列上本來就有,但開會時眼睛在 overlay 上 —— 錄了多久這件事
+    /// 要在你正在看的那個視窗裡看得到,否則「忘了關」根本不會被發現。
+    @ObservedObject private var capture = MeetingCaptureController.shared
+    /// 翻譯字幕展開狀態的來源(Stage B):展開鈕與 `.toggleTranslationExpansion` 熱鍵共用。
+    @ObservedObject private var overlayManager = CopilotOverlayWindowManager.shared
     /// 點「深度分析」→ 觸發 Tier 2(接 M3 AnswerCoordinator;click-through 開啟時自然不會觸發)。
     var onCueTapped: ((MeetingLiveCue) -> Void)?
 
@@ -50,8 +55,8 @@ struct CopilotOverlayView: View {
             //
             // 翻譯關閉(預設)→ 整段不渲染:沒有小標、沒有分隔線,佈局與 M8 之前**完全相同**。
             if config.liveTranslationEnabled, let translator {
-                sectionHeader("即時翻譯")
-                TranslationFeedLines(translator: translator)
+                translationHeader
+                TranslationFeedLines(translator: translator, expanded: overlayManager.translationExpanded)
                 Divider().padding(.vertical, 2)
                 sectionHeader("問題與回應")
             }
@@ -101,6 +106,24 @@ struct CopilotOverlayView: View {
             Image(systemName: "line.3.horizontal").font(.system(size: 10, weight: .semibold))
             Text("會議輔助").font(.system(size: 10, weight: .semibold))
             Spacer()
+            if capture.isRecording {
+                // 等寬數字:每秒跳動時字不會左右抖。
+                Text(capture.elapsedText)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+            }
+            // 關閉浮動視窗:只 hide + 取消釘住,live pipeline(轉錄/AI/翻譯)照跑,
+            // 可再從 Live Pill、選單或熱鍵叫回。用 hideAndUnpin 而非 toggle——關閉的
+            // 語意就是「無條件收起」,不該因狀態而意外重開。
+            Button {
+                CopilotOverlayWindowManager.shared.hideAndUnpin()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("關閉即時輔助視窗（可再從錄製列或熱鍵開啟）")
         }
         .foregroundStyle(.secondary)
     }
@@ -113,6 +136,29 @@ struct CopilotOverlayView: View {
         Text(title)
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.secondary)
+    }
+
+    /// 即時翻譯區塊的標題列 + 展開鈕(Stage B)。按鈕在標題列 —— 也就是字幕行的**上方**,
+    /// 展開字幕(5→30 句)時字幕往下長,標題列位置不動,所以按鈕位置固定、可原地 toggle。
+    /// 與 `.toggleTranslationExpansion` 熱鍵共用同一個入口。
+    private var translationHeader: some View {
+        HStack(spacing: 6) {
+            sectionHeader("即時翻譯")
+            Spacer()
+            Button {
+                CopilotOverlayWindowManager.shared.toggleTranslationExpansion()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: overlayManager.translationExpanded ? "chevron.up" : "chevron.down")
+                    Text(overlayManager.translationExpanded ? "收合" : "最近 30 句")
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(overlayManager.translationExpanded ? "收合翻譯(回最近 5 句)" : "展開翻譯(最近 30 句)")
+        }
     }
 
     // MARK: - 常駐螢幕分享警告(誠實邊界,不得省略)
@@ -236,24 +282,69 @@ struct CopilotOverlayView: View {
 /// 獨立成子視圖的唯一理由:`@ObservedObject` 不接受 optional,而 translator 只有 live 路徑才有。
 /// 把觀察關進「有 translator 才會被建立」的子視圖,父層就能維持 optional 注入,
 /// 又不失去 `feed` 變動時的即時重繪。
+/// 一行可顯示的字幕(committed 定稿或 provisional 在途)。
+private struct TranslationDisplayLine: Identifiable, Equatable {
+    let id: UUID
+    let text: String
+    /// 正在講、還沒定稿(顯示得淡一點,示意「還會變」)。
+    let provisional: Bool
+}
+
 private struct TranslationFeedLines: View {
     @ObservedObject var translator: MeetingLiveTranslator
+    /// 收合 = 最近 5 句;展開 = 最近 30 句(可捲動)。
+    let expanded: Bool
+
+    /// committed 字幕(依 committedAt 遞增,**舊在前**)+ 最下方的 provisional(正在講、未定稿)。
+    /// 舊在上、新在下(使用者指定的字幕方向);取尾 N 句。
+    private var lines: [TranslationDisplayLine] {
+        var out = translator.feed.map {
+            TranslationDisplayLine(id: $0.id, text: $0.translated, provisional: false)
+        }
+        if let p = translator.provisional {
+            out.append(TranslationDisplayLine(id: p.id, text: p.translated, provisional: true))
+        }
+        return Array(out.suffix(expanded ? 30 : 5))
+    }
 
     var body: some View {
-        // 自帶 VStack(而不是把 ForEach 攤進父層):父層 spacing 是 10pt,那是**區塊之間**的節奏;
-        // 字幕的行與行是同一段連續的話,要 4pt 的緊密行距才讀得像一段字幕,不是四個獨立段落。
+        if expanded {
+            // 展開最近 30 句 → 捲動區(高度上限,不擠掉下面的問題與回應),自動貼齊最新那行。
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    rows.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 240)
+                .onChange(of: lines.last?.id) { _, id in
+                    if let id { proxy.scrollTo(id, anchor: .bottom) }
+                }
+                .onChange(of: lines.last?.text) { _, _ in
+                    if let id = lines.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                }
+                .onAppear {
+                    if let id = lines.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                }
+            }
+        } else {
+            rows.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// 自帶 VStack(而不是把 ForEach 攤進父層):父層 spacing 是 10pt,那是**區塊之間**的節奏;
+    /// 字幕行與行是同一段連續的話,要 4pt 緊密行距才讀得像一段字幕。
+    /// 譯文優先於原文:看得懂的那一份才有用;翻譯失敗時 `translated` 本來就等於原文。
+    private var rows: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // 只留最近 4 句:overlay 回答的是「對方**現在**在講什麼」,不是逐字稿捲軸
-            // (往前翻的需求由覆盤頁承接——那裡才有完整的 segment 時間軸)。
-            // 譯文優先於原文:看得懂的那一份才有用;翻譯失敗時 `translated` 本來就等於原文。
-            ForEach(translator.feed.suffix(4)) { line in
-                Text(line.translated)
+            ForEach(lines) { line in
+                Text(line.text)
                     .font(.system(size: 12))
+                    .foregroundStyle(line.provisional ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    .opacity(line.provisional ? 0.75 : 1)   // 在途譯文淡一點:示意「還會變」
                     .lineLimit(2)   // 長句截尾,不讓字幕把下面的開口稿擠出畫面
                     .fixedSize(horizontal: false, vertical: true)
+                    .id(line.id)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

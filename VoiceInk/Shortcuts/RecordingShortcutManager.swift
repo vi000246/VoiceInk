@@ -353,6 +353,9 @@ class RecordingShortcutManager: ObservableObject {
         case .toggleCopilotCueExpansion:
             // overlay 內的展開/收合(AC-36)。keyUp-only,狀態在 controller,不碰視窗開關。
             CopilotOverlayWindowManager.shared.toggleCueExpansion()
+        case .toggleTranslationExpansion:
+            // 即時翻譯字幕的 5 句↔30 句展開(Stage B)。keyUp-only,狀態在 overlay manager。
+            CopilotOverlayWindowManager.shared.toggleTranslationExpansion()
         default:
             break
         }

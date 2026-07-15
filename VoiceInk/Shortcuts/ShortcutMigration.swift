@@ -270,7 +270,7 @@ enum ShortcutMigration {
             return ["mode_\(id.uuidString)", "powerMode_\(id.uuidString)"]
         case .recorderPanelEscape, .recorderPanelMode, .toggleMeetingRecording,
              .toggleMeetingCopilotOverlay, .peekMeetingCopilotOverlay, .togglePresenterScript,
-             .toggleCopilotCueExpansion:
+             .toggleCopilotCueExpansion, .toggleTranslationExpansion:
             // 會議相關動作皆為新動作,不存在 legacy KeyboardShortcuts 鍵。
             return []
         }

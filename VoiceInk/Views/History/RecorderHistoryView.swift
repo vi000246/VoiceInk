@@ -820,7 +820,7 @@ private struct RecorderTableHeader: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Color.clear.frame(width: 37, height: 1)   // 對齊：勾選(15)+星號(12)欄
+            Color.clear.frame(width: 52, height: 1)   // 對齊：勾選(30)+間距(10)+星號(12)欄
             sortLabel("標題", field: .title).frame(maxWidth: .infinity, alignment: .leading)
             sortLabel("日期", field: .date).frame(width: 150, alignment: .leading)
             Text("來源").frame(width: 90, alignment: .leading)
@@ -870,11 +870,16 @@ private struct RecorderTableRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // 放大點擊區(15pt 字型 → 30x30 命中框):原本要正中那顆小圈圈才選得到,
+            // 稍微偏一點就打到 row 的 onTapGesture 彈出詳情。glyph 靠左對齊,視覺位置不變。
+            // 命中框加大也讓 Shift 範圍選取(toggle 內讀 NSEvent.modifierFlags)更好按。
             Button(action: onToggleCheck) {
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 15)).foregroundStyle(isChecked ? AppTheme.Accent.primary : .secondary)
+                    .frame(width: 30, height: 30, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain).frame(width: 15)
+            .buttonStyle(.plain).frame(width: 30)
 
             Button(action: toggleFavorite) {
                 Image(systemName: transcription.recorderFavorite ? "star.fill" : "star")

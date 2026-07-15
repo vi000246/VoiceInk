@@ -15,6 +15,9 @@ import AVFoundation
 @MainActor
 final class MeetingCopilotReplayTests: XCTestCase {
 
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
+
     private var tmpDir: URL!
 
     override func setUpWithError() throws {
@@ -275,18 +278,10 @@ final class MeetingCopilotReplayTests: XCTestCase {
     /// 時 `MeetingCaptureService` 不建 ring buffer、`pcmSink` 為 nil,realtime thread 的 seam
     /// 只剩一次 nil 檢查 —— 零 ASR、零 LLM、零成本。所以預設開不開是產品取捨,不是安全紅線。
     func testConfigStoreDefaultsToEnabled() {
+        // 後端是 in-memory（起點必定空）→ 不必再手動備份/清掉 `.standard` 的 key。
+        // 原本那套 bracket 反而是紅燈的來源:它**寫**全域 domain，會跨 process 汙染其他測試。
         let key = "meetingCopilotEnabledV1"
-        let original = UserDefaults.standard.object(forKey: key)
-        defer {
-            if let original {
-                UserDefaults.standard.set(original, forKey: key)
-            } else {
-                UserDefaults.standard.removeObject(forKey: key)
-            }
-        }
-
-        UserDefaults.standard.removeObject(forKey: key)
-        let store = MeetingCopilotConfigStore()
+        let store = MeetingCopilotConfigStore(defaults: defaultsSuite)
 
         XCTAssertTrue(store.copilotEnabled, "未設定 → 預設開啟")
         XCTAssertTrue(store.transcribeLocalMic, "預設轉錄我的麥克風")
@@ -294,7 +289,7 @@ final class MeetingCopilotReplayTests: XCTestCase {
 
         // 寫**與預設相反**的值才鎖得住 persist:寫 true 再讀 true,連「根本沒寫進去」都會通過。
         store.setCopilotEnabled(false)
-        XCTAssertEqual(UserDefaults.standard.object(forKey: key) as? Bool, false,
-                       "關閉必須寫進 UserDefaults(而不是退回預設的 true)")
+        XCTAssertEqual(defaultsSuite.object(forKey: key) as? Bool, false,
+                       "關閉必須寫進設定後端(而不是退回預設的 true)")
     }
 }

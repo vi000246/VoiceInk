@@ -25,7 +25,14 @@ final class TranscriptIndexService: ObservableObject {
     private var modelContext: ModelContext?
     private var embedder: EmbeddingProviding = LiveEmbedder()
     private var observers: [NSObjectProtocol] = []
-    @Published private(set) var isBackfilling = false
+
+    /// 回填進度（nil = 沒在跑）。**持有在 service 上而非 view 的 `@State`**：回填動輒幾分鐘，
+    /// 使用者一定會切走去做別的事；進度掛在 view 上的話，一離開 Ask AI 頁進度就消失，
+    /// 回來只看得到一片空白（工作其實還在跑）——鏡射 `NoteIndexCoordinator` 的理由。
+    @Published private(set) var backfillProgress: Progress?
+    /// 回填的 in-flight 真相；由 service 持有 → view 生命週期碰不到它。
+    private var backfillTask: Task<Void, Never>?
+    var isBackfilling: Bool { backfillTask != nil }
 
     /// 目前使用的 embedding 模型(向量空間標籤)。換模型需全量重嵌。
     var model: EmbeddingModel {
@@ -137,28 +144,38 @@ final class TranscriptIndexService: ObservableObject {
         return all.reduce(0) { $0 + TokenEstimator.estimate($1.enhancedText ?? $1.text) }
     }
 
-    /// 回填所有既有轉錄。冪等(重跑不產生重複塊)、可中斷。回傳進度串流。
-    func backfill() -> AsyncStream<Progress> {
-        AsyncStream { continuation in
-            let task = Task { @MainActor in
-                defer { self.isBackfilling = false; continuation.finish() }
-                self.isBackfilling = true
-                guard let ctx = self.modelContext else { return }
-                let all = (try? ctx.fetch(FetchDescriptor<Transcription>(
-                    sortBy: [SortDescriptor(\.timestamp, order: .reverse)]))) ?? []
-                let total = all.count
-                let estTokens = self.estimateBackfillTokens()
-                var done = 0
-                for t in all {
-                    if Task.isCancelled { return }
-                    try? await self.upsert(t)
-                    done += 1
-                    continuation.yield(Progress(done: done, total: total, estimatedTokens: estTokens))
-                }
+    /// 回填所有既有轉錄。冪等(重跑不產生重複塊)、可中斷、single-flight。
+    ///
+    /// Task 由 service 持有（不是呼叫端的 view）：離開 Ask AI 頁、切到別的分頁，回填照跑，
+    /// 回來時 `backfillProgress` 還在，畫面接得回去。重複按也只會有一輪在跑。
+    func startBackfill() {
+        guard backfillTask == nil else { return }
+        backfillProgress = Progress(done: 0, total: 0, estimatedTokens: 0)
+        backfillTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // 成功/失敗/取消都要收乾淨——漏掉任一條路徑，backfillTask 就永遠非 nil，
+            // 之後所有回填入口全部靜默 no-op。
+            defer {
+                self.backfillTask = nil
+                self.backfillProgress = nil
             }
-            continuation.onTermination = { _ in task.cancel() }
+            guard let ctx = self.modelContext else { return }
+            let all = (try? ctx.fetch(FetchDescriptor<Transcription>(
+                sortBy: [SortDescriptor(\.timestamp, order: .reverse)]))) ?? []
+            let total = all.count
+            let estTokens = self.estimateBackfillTokens()
+            var done = 0
+            self.backfillProgress = Progress(done: 0, total: total, estimatedTokens: estTokens)
+            for t in all {
+                if Task.isCancelled { return }
+                try? await self.upsert(t)
+                done += 1
+                self.backfillProgress = Progress(done: done, total: total, estimatedTokens: estTokens)
+            }
         }
     }
+
+    func cancelBackfill() { backfillTask?.cancel() }
 
     /// 換 embedding 模型 → 清空整個索引(向量空間不相容)並更新標籤。呼叫端接著觸發 backfill。
     func switchModel(to newModel: EmbeddingModel) {

@@ -5,11 +5,11 @@ import SwiftData
 /// 腳本化 LLM fake:依**原文內容**路由回覆,可指定人為延遲與第 N 次呼叫拋錯。
 ///
 /// 為什麼不依呼叫序(既有 `MeetingReplayReviewTests.ScriptedChat` 的做法):翻譯是
-/// **並行**的——兩段的 Task 幾乎同時進 `complete`,而 `complete` 是 nonisolated async
-/// (會跳離 MainActor 到 global executor),誰先拿到號碼牌由排程決定。用呼叫序綁腳本,
+/// **並行**的——兩段的 Task 幾乎同時進 `stream`,其吐值又在各自的 Task 內延遲後才發
+/// (跳離 MainActor 到 global executor),誰先譯完由排程/延遲決定。用呼叫序綁腳本,
 /// 「延遲 0.2s 的那份」會偶爾發給第二段,ordering 斷言就隨機紅燈——那測到的是 executor
 /// 排程,不是 `insertSorted`。依內容路由則與排程無關,腳本永遠跟著它該跟的那一段。
-private final class ScriptedChat: ChatCompleting, @unchecked Sendable {
+private final class ScriptedChat: StreamingChatCompleting, @unchecked Sendable {
 
     struct StubError: Error {}
 
@@ -33,14 +33,23 @@ private final class ScriptedChat: ChatCompleting, @unchecked Sendable {
         self.throwOnCall = throwOnCall
     }
 
-    func complete(system: String, user: String) async throws -> String {
+    /// 串流版:整段譯文以**單一 delta** 吐出(延遲後);throwOnCall 命中則直接 finish(throwing:)。
+    /// `callCount` 在 `stream()` 同步時遞增(呼叫發生的當下),與翻譯器實際開始迭代同步。
+    func stream(system: String, user: String) -> AsyncThrowingStream<String, Error> {
         lock.lock(); _callCount += 1; let n = _callCount; lock.unlock()
         let step = routes[user]
-        if let delay = step?.delay, delay > 0 {
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        let shouldThrow = (n == throwOnCall)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                if let delay = step?.delay, delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+                if shouldThrow { continuation.finish(throwing: StubError()); return }
+                continuation.yield(step?.reply ?? "")
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
-        if n == throwOnCall { throw StubError() }
-        return step?.reply ?? ""
     }
 }
 
@@ -53,25 +62,13 @@ private final class ScriptedChat: ChatCompleting, @unchecked Sendable {
 /// 另一半是 `MeetingLiveTranslator` 的管線行為(AC-43/44/47):有序 feed、靜默容錯、關閉零呼叫。
 final class MeetingTranslationTests: XCTestCase {
 
-    /// 翻譯開關是 UserDefaults 全域狀態——測試改了要還原,否則污染同 process 的其他測試類。
-    private let keys = ["meetingCopilotLiveTranslationV1"]
-    private var saved: [String: Any?] = [:]
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
 
-    override func setUp() {
-        super.setUp()
-        for k in keys {
-            saved[k] = UserDefaults.standard.object(forKey: k)
-            UserDefaults.standard.removeObject(forKey: k)
-        }
-    }
-
-    override func tearDown() {
-        for k in keys {
-            if let v = saved[k] ?? nil { UserDefaults.standard.set(v, forKey: k) }
-            else { UserDefaults.standard.removeObject(forKey: k) }
-        }
-        super.tearDown()
-    }
+    // 原本這裡有一組 setUp/tearDown 備份還原 `.standard` 的翻譯開關。設定後端改成注入之後
+    // 它不只是多餘,而是**有害**:那組 bracket 本身就在**寫**全域 domain,而 test target 是
+    // `parallelizable = YES`(每個 class 一個 process、共用同一個 domain)——別的 process 正在
+    // 斷言「未設定 → 預設值」時撞上這裡的 removeObject/set,就是一顆與程式碼無關的紅燈。
 
     // MARK: - AC-45:翻譯 prompt(純函式)
 
@@ -169,6 +166,49 @@ final class MeetingTranslationTests: XCTestCase {
         XCTAssertTrue(translator.feed.isEmpty)
     }
 
+    // MARK: - Stage B:provisional 即時翻譯(講者還沒停就先翻)
+
+    /// 未定稿尾巴進來(翻譯開啟)→ debounce 後串流翻出,顯示成 provisional(不進 committed feed)。
+    @MainActor
+    func testProvisionalTailTranslatesAndShows() async {
+        let chat = ScriptedChat(routes: ["還沒講完的一句": ScriptedChat.Step(reply: "半句譯文")])
+        let translator = MeetingLiveTranslator(chat: chat, config: makeConfig(enabled: true))
+
+        translator.observePartialTail("還沒講完的一句")
+        await translator.drainProvisionalForTest()
+
+        XCTAssertEqual(translator.provisional?.translated, "半句譯文", "在途尾巴要即時翻出來顯示")
+        XCTAssertTrue(translator.feed.isEmpty, "provisional 不進 committed feed")
+        XCTAssertEqual(chat.callCount, 1)
+    }
+
+    /// 尾巴清空(該句已 committed / 靜音)→ provisional 收掉(否則定稿與在途會重複顯示)。
+    @MainActor
+    func testProvisionalClearedWhenTailEmpty() async {
+        let chat = ScriptedChat(routes: ["進行中": ScriptedChat.Step(reply: "in progress")])
+        let translator = MeetingLiveTranslator(chat: chat, config: makeConfig(enabled: true))
+
+        translator.observePartialTail("進行中")
+        await translator.drainProvisionalForTest()
+        XCTAssertNotNil(translator.provisional)
+
+        translator.observePartialTail("")   // 尾巴切成 committed → 空
+        XCTAssertNil(translator.provisional, "尾巴空了要收掉 provisional")
+    }
+
+    /// AC-47:翻譯關閉時 provisional 也是零呼叫、不顯示。
+    @MainActor
+    func testProvisionalDisabledMakesZeroCalls() async {
+        let chat = ScriptedChat(routes: ["尾巴": ScriptedChat.Step(reply: "x")])
+        let translator = MeetingLiveTranslator(chat: chat, config: makeConfig(enabled: false))
+
+        translator.observePartialTail("尾巴")
+        await translator.drainProvisionalForTest()
+
+        XCTAssertEqual(chat.callCount, 0, "AC-47:翻譯關閉 → provisional 也零呼叫")
+        XCTAssertNil(translator.provisional)
+    }
+
     // MARK: - Helpers
 
     private func makeContext() throws -> ModelContext {
@@ -188,7 +228,7 @@ final class MeetingTranslationTests: XCTestCase {
 
     @MainActor
     private func makeConfig(enabled: Bool) -> MeetingCopilotConfigStore {
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setLiveTranslationEnabled(enabled)
         return config
     }

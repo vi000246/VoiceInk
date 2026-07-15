@@ -91,6 +91,46 @@ private final class StreamingMetrics: @unchecked Sendable {
     }
 }
 
+/// Tracks consecutive send failures so a dead socket can be reported once instead of
+/// logged thousands of times.
+///
+/// 2026-07-14:一場會議對著已被伺服器關掉的 WebSocket 送了 **9,640 次** audio chunk,
+/// 每次噴一行 log、沒有任何一層知道該重連。這個 tracker 是那個靜默失效的兩道補丁:
+/// 連續失敗到門檻 → 通知上層(重連);log 只印第一次與每 100 次(留下線索但不淹沒 log)。
+private final class SendFailureTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var consecutive = 0
+    private var reported = false
+
+    /// 回傳這是第幾次「連續」失敗。
+    func recordFailure() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        consecutive += 1
+        return consecutive
+    }
+
+    /// 送成功 → 歸零(下次斷線要能重新回報)。
+    func recordSuccess() {
+        lock.lock(); defer { lock.unlock() }
+        consecutive = 0
+        reported = false
+    }
+
+    /// 是否該把「這條流死了」往上報 —— 每段連續失敗只報一次。
+    func shouldReportDeath(threshold: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !reported, consecutive >= threshold else { return false }
+        reported = true
+        return true
+    }
+
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        consecutive = 0
+        reported = false
+    }
+}
+
 /// Lifecycle states for a streaming transcription session.
 enum StreamingState {
     case idle
@@ -119,7 +159,18 @@ class StreamingTranscriptionService {
     /// 每個 committed 段落抵達時即時回報(串流中途就會觸發,不等 stop)。
     /// meeting-copilot 的 cue 偵測靠這個;聽寫路徑不設定,行為不變。
     private var onCommittedSegment: ((String) -> Void)?
+    /// 這條串流死了(伺服器關掉 socket、網路斷、或連續送失敗)。**呼叫端負責重連**。
+    ///
+    /// 與 `onCommittedSegment` 同一個先例:meeting-copilot 設它(→ 重建串流),
+    /// **聽寫路徑不設 → 行為完全不變**(聽寫是一次一句、失敗就整段重錄,沒有重連語意)。
+    /// 在此之前 `.error` 事件只被 log 掉、沒有任何一層看得到,所以 socket 一死就是
+    /// 整場靜默失效(2026-07-14 的會議 copilot 全場 0 cue 就是這樣來的)。
+    var onStreamError: (@MainActor (Error) -> Void)?
     private let metrics = StreamingMetrics()
+    private let sendFailures = SendFailureTracker()
+    /// 連續送失敗幾次算「這條流死了」。單次失敗可能只是暫時性錯誤,不值得拆掉整條流;
+    /// 5 次(≈ 0.4 秒的音訊)還在失敗就不是暫時性的了。
+    private static let sendFailureDeathThreshold = 5
     private var stopStartedAt: Date?
     private var firstPartialLogged = false
     private var firstCommitLogged = false
@@ -152,6 +203,7 @@ class StreamingTranscriptionService {
         state = .connecting
         committedSegments = []
         metrics.reset()
+        sendFailures.reset()
         firstPartialLogged = false
         firstCommitLogged = false
 
@@ -282,20 +334,38 @@ class StreamingTranscriptionService {
         let source = chunkSource
         let provider = provider
         let metrics = metrics
+        let failures = sendFailures
+        let deathThreshold = Self.sendFailureDeathThreshold
 
         sendTask = Task.detached { [weak self] in
             for await chunk in source.stream {
                 do {
                     try await provider?.sendAudioChunk(chunk)
                     metrics.recordSent(chunk.count)
+                    failures.recordSuccess()
                 } catch {
                     let desc = error.localizedDescription
-                    await MainActor.run {
-                        self?.logger.error("Failed to send audio chunk: \(desc, privacy: .public)")
+                    let consecutive = failures.recordFailure()
+                    // 死 socket 每 ~85ms 就失敗一次。全印會把 log 淹掉(實測 9,640 行),
+                    // 完全不印又查不到 —— 印第一次與每 100 次。
+                    if consecutive == 1 || consecutive % 100 == 0 {
+                        await MainActor.run {
+                            self?.logger.error("Failed to send audio chunk (連續 \(consecutive, privacy: .public) 次): \(desc, privacy: .public)")
+                        }
+                    }
+                    if failures.shouldReportDeath(threshold: deathThreshold) {
+                        await MainActor.run { self?.reportStreamDeath(error) }
                     }
                 }
             }
         }
+    }
+
+    /// 這條串流死了 → 通知呼叫端(meeting-copilot 會重連;聽寫沒設這個 closure,無事發生)。
+    private func reportStreamDeath(_ error: Error) {
+        // 正在收尾/已取消的流不算「死掉」—— 那是我們自己關的。
+        guard state == .streaming else { return }
+        onStreamError?(error)
     }
 
     /// Finishes the chunk source and waits for the send loop to process all remaining buffered chunks.
@@ -363,6 +433,9 @@ class StreamingTranscriptionService {
                 case .error(let error):
                     await MainActor.run {
                         self.logger.error("Streaming event error: \(error, privacy: .public)")
+                        // 伺服器關掉 socket 時這是**最早**的死訊(送失敗要等到下一次有音訊
+                        // 才發現 —— 2026-07-14 那場是 15 秒後死、30 秒後才有音訊)。
+                        self.reportStreamDeath(error)
                     }
                 }
             }  

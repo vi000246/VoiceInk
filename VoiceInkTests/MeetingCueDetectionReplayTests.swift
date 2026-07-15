@@ -10,6 +10,9 @@ import SwiftData
 @MainActor
 final class MeetingCueDetectionReplayTests: XCTestCase {
 
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
+
     private var tmpDir: URL!
     private let keys = ["meetingCopilotEnabledV1", "meetingCopilotShowInformationalCuesV1"]
     private var saved: [String: Any?] = [:]
@@ -77,7 +80,7 @@ final class MeetingCueDetectionReplayTests: XCTestCase {
             configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = ModelContext(container)
 
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setCopilotEnabled(true)
         config.setShowInformationalCues(false)
         defer { config.setCopilotEnabled(false) }

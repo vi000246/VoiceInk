@@ -14,6 +14,7 @@ enum ShortcutAction: Hashable {
     case peekMeetingCopilotOverlay
     case togglePresenterScript
     case toggleCopilotCueExpansion
+    case toggleTranslationExpansion
     case mode(UUID)
     case recorderPanelEscape
     case recorderPanelMode(Int)
@@ -59,6 +60,8 @@ enum ShortcutAction: Hashable {
             return "togglePresenterScript"
         case .toggleCopilotCueExpansion:
             return "toggleCopilotCueExpansion"
+        case .toggleTranslationExpansion:
+            return "toggleTranslationExpansion"
         case .mode(let id):
             return "mode_\(id.uuidString)"
         case .recorderPanelEscape:
@@ -96,6 +99,8 @@ enum ShortcutAction: Hashable {
             return String(localized: "Toggle Presenter Script")
         case .toggleCopilotCueExpansion:
             return String(localized: "展開/收合分析")
+        case .toggleTranslationExpansion:
+            return String(localized: "展開/收合翻譯")
         case .mode(let id):
             if let config = ModeManager.shared.getConfiguration(with: id) {
                 return String(format: String(localized: "%@ Mode"), config.name)
@@ -123,7 +128,8 @@ enum ShortcutAction: Hashable {
         .toggleMeetingCopilotOverlay,
         .peekMeetingCopilotOverlay,
         .togglePresenterScript,
-        .toggleCopilotCueExpansion
+        .toggleCopilotCueExpansion,
+        .toggleTranslationExpansion
     ]
 
     static let recorderPanelStoredActions: [Self] = [
@@ -147,7 +153,8 @@ enum ShortcutAction: Hashable {
         .peekMeetingCopilotOverlay,
         .togglePresenterScript,
         // 同理:新動作也要進這裡,否則它的鍵對 ShortcutValidator 的衝突偵測雙向隱形。
-        .toggleCopilotCueExpansion
+        .toggleCopilotCueExpansion,
+        .toggleTranslationExpansion
     ]
 
     private static func displayNumber(forRecorderPanelIndex index: Int) -> String {

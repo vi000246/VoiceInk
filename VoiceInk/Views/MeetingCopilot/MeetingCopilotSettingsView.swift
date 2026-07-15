@@ -17,6 +17,7 @@ struct MeetingCopilotSettingsView: View {
     /// 更難掃;翻譯是**獨立的一條管線**(自己的模型、自己的語言、自己的成本),分頁比 Section 誠實。
     private enum SettingsTab: String, CaseIterable {
         case general = "一般"
+        case prompt = "Prompt"
         case translation = "即時翻譯"
     }
 
@@ -44,6 +45,7 @@ struct MeetingCopilotSettingsView: View {
 
             switch tab {
             case .general: generalForm
+            case .prompt: promptForm
             case .translation: translationForm
             }
         }
@@ -178,14 +180,66 @@ struct MeetingCopilotSettingsView: View {
         Section("答案接地") {
             Toggle("參考我的歷史逐字稿(RAG)", isOn: bind(\.useHistoryRAG, store.setUseHistoryRAG))
             Toggle("參考對方分享的畫面(OCR)", isOn: bind(\.useScreenContext, store.setUseScreenContext))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("領域 persona")
-                TextEditor(text: bind(\.domainPersona, store.setDomainPersona))
-                    .font(.system(size: 12)).frame(height: 54)
-            }
-            Text("讓答案針對你的專案,而非教科書。brief 在各場會議的詳情頁填。")
+            Text("領域 persona 與回答風格已移到「Prompt」分頁。brief 在各場會議的詳情頁填。")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Prompt 分頁(使用者可調快/深模型與分類器的 prompt)
+
+    private var promptForm: some View {
+        Form {
+            Section("領域身分(persona)") {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextEditor(text: bind(\.domainPersona, store.setDomainPersona))
+                        .font(.system(size: 12)).frame(height: 54)
+                    Text("快模型(開口稿)與深模型(深答)都以這個身分回答——讓答案針對你的領域,而非教科書。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Section("回答風格與範圍(快模型 + 深模型)") {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextEditor(text: bind(\.answerStyleGuidance, store.setAnswerStyleGuidance))
+                        .font(.system(size: 12)).frame(height: 168)
+                    HStack {
+                        Button("恢復預設") {
+                            store.setAnswerStyleGuidance(MeetingCopilotConfigStore.defaultAnswerStyleGuidance)
+                        }
+                        Button("清空(完全放開)") {
+                            store.setAnswerStyleGuidance("")
+                        }
+                        Spacer()
+                    }
+                    .buttonStyle(.borderless).font(.caption)
+                    Text("同時注入開口稿(快)與深答(深)的 prompt。預設把答案綁在「軟體 + 你的個人專案」範圍、要求口語淺白、不用你沒聽過或太難的術語。清空 = 不加任何限制。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Section("問題分類器 prompt(快模型)") {
+                VStack(alignment: .leading, spacing: 6) {
+                    if store.cuePromptOverride.isEmpty {
+                        Text("目前使用內建預設。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button("載入預設以編輯") {
+                            store.setCuePromptOverride(ResponseCueExtractor.systemPrompt)
+                        }
+                        .buttonStyle(.borderless).font(.caption)
+                    } else {
+                        TextEditor(text: bind(\.cuePromptOverride, store.setCuePromptOverride))
+                            .font(.system(size: 12)).frame(height: 220)
+                        Button("恢復內建預設(清空覆寫)") {
+                            store.setCuePromptOverride("")
+                        }
+                        .buttonStyle(.borderless).font(.caption)
+                    }
+                    Text("決定對方哪句話會被判成「需要回應的問題」並分類(directQuestion / aboutMe 等)。覆寫時務必保留輸出 {\"cues\":[…]} JSON 的格式指示,否則會解析失敗、整場抓不到 cue。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 
     // MARK: - 個人筆記 RAG（M8）
@@ -276,6 +330,9 @@ struct MeetingCopilotSettingsView: View {
             LabeledContent("展開/收合分析") {
                 ShortcutRecorder(action: .toggleCopilotCueExpansion).controlSize(.small)
             }
+            LabeledContent("展開/收合翻譯") {
+                ShortcutRecorder(action: .toggleTranslationExpansion).controlSize(.small)
+            }
             LabeledContent("開/關讀稿面板") {
                 ShortcutRecorder(action: .togglePresenterScript).controlSize(.small)
             }
@@ -293,6 +350,8 @@ struct MeetingCopilotSettingsView: View {
                 Toggle("即時翻譯對方的話", isOn: bind(\.liveTranslationEnabled, store.setLiveTranslationEnabled))
                 Text("對方每講完一段就翻成目標語言,顯示在浮動視窗的**上區**(與「問題與回應」分開,不會混淆)。這是**每段一次**的額外 LLM 呼叫(與問題偵測平行,不是取代它)——關閉時零呼叫、零成本,單語會議不必開。")
                     .font(.caption).foregroundStyle(.secondary)
+                Label("⚠️ Token 消耗提醒:為了即時,字幕改採逐字串流、且切段門檻壓低(講者一停就送翻),整場會議會產生大量、頻繁的翻譯呼叫。長會議的 token/費用可能可觀——用付費 API(如 Gemini)時請留意用量。", systemImage: "dollarsign.circle.fill")
+                    .font(.caption).foregroundStyle(.orange)
             }
 
             Section("翻譯模型") {

@@ -8,28 +8,13 @@ import SwiftData
 @MainActor
 final class MeetingCopilotObservabilityTests: XCTestCase {
 
-    private let keys = [
-        "meetingCopilotEnabledV1",
-        "meetingCopilotShowInformationalCuesV1",
-        "meetingCopilotPersonaV1",
-    ]
-    private var saved: [String: Any?] = [:]
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
 
-    override func setUp() {
-        super.setUp()
-        for k in keys {
-            saved[k] = UserDefaults.standard.object(forKey: k)
-            UserDefaults.standard.removeObject(forKey: k)
-        }
-    }
-
-    override func tearDown() {
-        for k in keys {
-            if let v = saved[k] ?? nil { UserDefaults.standard.set(v, forKey: k) }
-            else { UserDefaults.standard.removeObject(forKey: k) }
-        }
-        super.tearDown()
-    }
+    // 原本這裡有一組 setUp/tearDown 備份還原 `.standard` 的 copilot 設定 key。設定後端改成注入
+    // 之後它不只是多餘,而是**有害**:那組 bracket 本身就在**寫**全域 domain,而 test target 是
+    // `parallelizable = YES`(每個 class 一個 process、共用同一個 domain)——別的 process 正在
+    // 斷言「未設定 → 預設值」時撞上這裡的 removeObject/set,就是一顆與程式碼無關的紅燈。
 
     private func makeContext() throws -> ModelContext {
         let container = try ModelContainer(
@@ -39,7 +24,7 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
     }
 
     private func makeEnabledConfig() -> MeetingCopilotConfigStore {
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setCopilotEnabled(true)
         return config
     }
@@ -185,7 +170,7 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
 
     /// 設定快照:模型/開關/persona/prompt/去重參數全帶到,JSON round-trip 不掉欄位。
     func testRunConfigCaptureRoundTrips() {
-        let config = MeetingCopilotConfigStore()
+        let config = MeetingCopilotConfigStore(defaults: defaultsSuite)
         config.setDomainPersona("你是資深 iOS 工程師。")
         let snapshot = MeetingCopilotRunConfig.capture(
             config: config, asrModelDisplayName: "Nemotron Multilingual",
@@ -230,7 +215,7 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
     /// 覆盤頁就從結構化設定退回 configRaw 純文字,舊 session 的變因全變不可讀。
     func testRunConfigDecodesLegacySnapshotMissingM8Fields() throws {
         let snapshot = MeetingCopilotRunConfig.capture(
-            config: MeetingCopilotConfigStore(), asrModelDisplayName: "m",
+            config: MeetingCopilotConfigStore(defaults: defaultsSuite), asrModelDisplayName: "m",
             fastModelLabel: "groq/x", deepModelLabel: "d")
 
         // 從現行快照剝掉 M8 欄位 = 模擬 M8 之前的 JSON(其餘欄位齊全)。
@@ -258,7 +243,7 @@ final class MeetingCopilotObservabilityTests: XCTestCase {
         let session = MeetingLiveSession(appName: "zoom", brief: "系統設計面試")
         session.remoteTranscriptRaw = "對方逐字稿全文"
         session.configSnapshotRaw = MeetingCopilotRunConfig.capture(
-            config: MeetingCopilotConfigStore(), asrModelDisplayName: "m",
+            config: MeetingCopilotConfigStore(defaults: defaultsSuite), asrModelDisplayName: "m",
             fastModelLabel: "f", deepModelLabel: "d").encodedJSON()
         ctx.insert(session)
 

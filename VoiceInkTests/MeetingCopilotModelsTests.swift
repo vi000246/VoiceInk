@@ -3,6 +3,9 @@ import XCTest
 
 final class MeetingCopilotModelsTests: XCTestCase {
 
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
+
     // MARK: - resolve（fast/deep 純函式）
 
     func testFallsBackWhenProviderDisconnected() {
@@ -35,7 +38,7 @@ final class MeetingCopilotModelsTests: XCTestCase {
         for k in keys { saved[k] = UserDefaults.standard.object(forKey: k); UserDefaults.standard.removeObject(forKey: k) }
         defer { for k in keys { if let v = saved[k] ?? nil { UserDefaults.standard.set(v, forKey: k) } else { UserDefaults.standard.removeObject(forKey: k) } } }
 
-        let s = MeetingCopilotConfigStore()
+        let s = MeetingCopilotConfigStore(defaults: defaultsSuite)
         XCTAssertNil(s.deepProviderName, "未設定 → nil = 跟隨預設")
         XCTAssertTrue(s.prefetchEnabled, "FR-15 預跑預設 true")
         // 接地開關預設 **false**(2026-07-13 依使用者要求翻轉,見 MeetingCopilotConfigStore
@@ -51,7 +54,7 @@ final class MeetingCopilotModelsTests: XCTestCase {
         // 連「根本沒 persist」都會通過 —— 那樣的斷言什麼也沒鎖住。
         s.setUseScreenContext(true)
 
-        let reloaded = MeetingCopilotConfigStore()
+        let reloaded = MeetingCopilotConfigStore(defaults: defaultsSuite)
         XCTAssertEqual(reloaded.deepProviderName, "Anthropic")
         XCTAssertEqual(reloaded.deepModelName, "claude-sonnet-4")
         XCTAssertFalse(reloaded.prefetchEnabled)

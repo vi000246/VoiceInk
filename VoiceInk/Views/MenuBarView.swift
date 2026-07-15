@@ -67,6 +67,11 @@ struct MenuBarView: View {
                 get: { copilotConfig.copilotEnabled },
                 set: { MeetingCaptureController.shared.setCopilotEnabled($0) }))
 
+            // 即時翻譯對方的話 —— 與 Live Pill、設定頁共寫同一 flag;可先開好等下場會議。
+            Toggle("即時翻譯對方的話", isOn: Binding(
+                get: { copilotConfig.liveTranslationEnabled },
+                set: { copilotConfig.setLiveTranslationEnabled($0) }))
+
             // 即時輔助視窗(overlay)—— 熱鍵之外的按鈕入口;pipeline 沒在跑時停用。
             Toggle("即時輔助視窗", isOn: Binding(
                 get: { overlayManager.isPinned },

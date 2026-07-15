@@ -49,6 +49,22 @@ enum MeetingCueDeduplicator {
         return union == 0 ? 0 : Double(inter) / Double(union)
     }
 
+    /// 相似度 = **max(Jaccard, 包含度)**,包含度 = 交集 / 較短一方的 bigram 數。
+    ///
+    /// 純 Jaccard 的分母是聯集,長句把聯集撐大 → 短碎片就算完全被長句涵蓋也壓不過門檻
+    /// (「e conflict.」⊂「…efforts to resolve the conflict.」的 Jaccard ≈ 0.2)。切碎的殘尾
+    /// 因此躲過去重、被當成新問題(2026-07-15 事故)。包含度正是「短片是否被涵蓋」的量,
+    /// 取 max 保留 Jaccard 對等長句的判斷力。與 `MeetingReviewSweep.similarity` 同一公式。
+    static func similarity(_ a: String, _ b: String) -> Double {
+        let ta = tokens(normalize(a))
+        let tb = tokens(normalize(b))
+        guard !ta.isEmpty, !tb.isEmpty else { return 0 }
+        let inter = Double(ta.intersection(tb).count)
+        let jaccard = inter / Double(ta.union(tb).count)
+        let containment = inter / Double(min(ta.count, tb.count))
+        return max(jaccard, containment)
+    }
+
     /// FR-10:與時間窗內任一既有 cue 相似度 >= threshold → 重覆(呼叫端丟棄,不 persist)。
     static func isDuplicate(
         text: String,
@@ -59,7 +75,7 @@ enum MeetingCueDeduplicator {
     ) -> Bool {
         guard !text.isEmpty else { return false }
         for prior in existing where abs(time.timeIntervalSince(prior.askedAt)) <= window {
-            if jaccard(text, prior.text) >= threshold { return true }
+            if similarity(text, prior.text) >= threshold { return true }
         }
         return false
     }

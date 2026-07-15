@@ -30,6 +30,8 @@ struct AskAIView: View {
 
     @ObservedObject private var sidebarModel = LibrarySidebarModel.shared
     @ObservedObject private var notesConfig = ObsidianRAGConfigStore.shared
+    /// 筆記索引的 in-flight／進度（單例持有 → 離開頁面照跑，回來還接得回進度）。
+    @ObservedObject private var noteIndex = NoteIndexCoordinator.shared
 
     // Scope
     /// 知識庫兩大來源，各自獨立開關（可同時開）。持久化以免每次回到頁面都要重選。
@@ -47,9 +49,6 @@ struct AskAIView: View {
     // 答案模型（Ask AI 專用，與 embedding／enhancement 預設分離）。
     @AppStorage(AskAIAnswerModel.providerKey) private var answerProviderRaw = ""
     @AppStorage(AskAIAnswerModel.modelKey) private var answerModelRaw = ""
-
-    // Backfill
-    @State private var backfillProgress: TranscriptIndexService.Progress?
 
     // Citation sheet
     @State private var focusTranscription: Transcription?
@@ -79,13 +78,14 @@ struct AskAIView: View {
                 emptyState(icon: "key.slash",
                            title: "尚未設定 embedding 金鑰",
                            detail: "Ask AI 需要 \(indexService.model.displayName) 的 API 金鑰。請到「Transcription & AI Models」設定 \(indexService.model.providerName) 金鑰。")
-            } else if let progress = backfillProgress {
+            } else if let progress = indexService.backfillProgress {
+                // 進度來自 service（不是 view 的 @State）→ 切走再回來，畫面接得回去。
                 backfillBanner(progress)
             } else if indexIsEmpty {
                 emptyState(icon: "tray",
-                           title: "索引是空的",
-                           detail: "先建立索引，才能對你的語音庫提問。",
-                           action: ("建立索引", startBackfill))
+                           title: "語音庫索引是空的",
+                           detail: "先建立索引，才能對你的語音庫提問。（Obsidian 筆記的索引是分開的，在齒輪的「筆記來源設定」）",
+                           action: ("建立語音庫索引", indexService.startBackfill))
             } else {
                 conversation
             }
@@ -107,7 +107,7 @@ struct AskAIView: View {
         }
         .sheet(isPresented: $showNotesSettings) {
             AskAINotesSettingsSheet()
-                .frame(width: 560, height: 520)
+                .frame(width: 640, height: 700)   // 覆蓋率表要放得下（原本 560×520 只裝得下設定）
         }
         .centeredModal(item: $citationTarget) { ctx in
             CitationPopup(context: ctx,
@@ -131,12 +131,15 @@ struct AskAIView: View {
                 Button("清空並重建索引（\(allChunks.count) 個片段）", role: .destructive) {
                     indexService.switchModel(to: target)
                     pendingModelSwitch = nil
-                    startBackfill()
+                    indexService.startBackfill()
+                    // switchModel 刪光**所有**塊（含筆記）。只回填逐字稿的話，筆記索引會就此消失，
+                    // 而且是無聲的——所以順手把筆記也重建回來（sidecar 的 model tag 已不符 → 全量重嵌）。
+                    rebuildNotesIndex()
                 }
             }
             Button("取消", role: .cancel) { pendingModelSwitch = nil }
         } message: {
-            Text("不同模型的向量空間互不相容，切換後現有索引會被清空並以新模型重新嵌入。")
+            Text("不同模型的向量空間互不相容，切換後現有索引（逐字稿＋筆記）會被清空並以新模型重新嵌入。")
         }
     }
 
@@ -144,34 +147,105 @@ struct AskAIView: View {
 
     private var headerControls: some View {
         HStack(spacing: 8) {
+            // 筆記索引在背景跑時的常駐提示：進度不再綁在設定 sheet 上，關掉 sheet 也看得到。
+            if let progress = noteIndex.progress { notesIndexPill(progress) }
+
             if !indexIsEmpty {
-                Button {
-                    thread = nil; messages = []
-                } label: { Label("新對話", systemImage: "square.and.pencil") }
-                Button(action: startBackfill) {
-                    Label("重建索引", systemImage: "arrow.clockwise")
-                }.help("重新索引所有轉錄（新增的會自動索引，這裡用於一次性回填舊資料）")
+                Button(action: clearConversation) {
+                    Label("清除對話", systemImage: "square.and.pencil")
+                }
+                // 提問進行中不給清:`ask()` 手上還抓著這個 thread（要往裡面插 user／assistant 訊息）。
+                // 這時把它從 store 刪掉,就是對一個已刪除的 SwiftData 物件寫入。
+                .disabled(messages.isEmpty || isAsking)
+                .help("清空目前這串對話，開始新的一輪提問")
             }
             Menu {
+                // 兩個語料庫、兩套索引、兩顆按鈕——名字直接對上 scope bar 的「語音庫／筆記」兩顆 chip。
+                // 以前頁首那顆叫「重建索引」，但它只回填逐字稿；筆記沒索引的人按它一百次也不會有用。
+                Section("索引") {
+                    Button {
+                        indexService.startBackfill()
+                    } label: {
+                        Label("重建語音庫索引", systemImage: "waveform")
+                    }
+                    .disabled(indexService.isBackfilling)
+                    Button(action: rebuildNotesIndex) {
+                        Label("重建筆記庫索引", systemImage: "doc.richtext")
+                    }
+                    .disabled(notesVaultMissing || noteIndex.isRunning)
+                    Button("筆記來源設定…") { showNotesSettings = true }
+                }
+                Divider()
+                // 索引跑到一半不准換模型。換模型 = `switchModel` 清光**所有**塊、然後重新回填;
+                // 但兩條回填路徑都是 single-flight 的（已經有一輪在跑 → 新的請求直接 no-op），
+                // 於是「清空」照做、「重建」被吞掉 → 已經掃過的那幾百筆再也沒有人會回頭補，
+                // 索引就此永久缺一角，而且全程沒有任何錯誤訊息。索引期間不給換是最誠實的解法。
                 Picker("Embedding 模型", selection: embeddingModelBinding) {
                     ForEach(EmbeddingModel.allCases, id: \.self) { m in
                         Text(m.displayName).tag(m)
                     }
                 }
+                .disabled(indexService.isBackfilling || noteIndex.isRunning)
                 Picker("回答模型", selection: answerChoiceBinding) {
                     Text("預設（跟隨 AI Models：\(aiService.selectedProvider.rawValue)）").tag(RecorderModelChoice?.none)
                     ForEach(recorderModelChoices(aiService), id: \.self) { c in
                         Text(c.label).tag(RecorderModelChoice?.some(c))
                     }
                 }
-                Divider()
-                Button("筆記來源設定…") { showNotesSettings = true }
             } label: {
                 Image(systemName: "gearshape")
             }
             .menuIndicator(.hidden)
-            .help("Embedding／回答模型／筆記來源設定")
+            .help("重建索引／Embedding／回答模型／筆記來源設定")
         }
+    }
+
+    /// 筆記索引進度膠囊（點一下開設定看細節；右側 ✕ 取消）。
+    private func notesIndexPill(_ progress: NoteIndexCoordinator.Progress) -> some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small).scaleEffect(0.7)
+            Button { showNotesSettings = true } label: {
+                Text("索引筆記 \(progress.scanned)/\(max(progress.total, 1))")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .help("已重嵌 \(progress.reembedded) 檔\(progress.currentFile.map { "\n目前：\($0)" } ?? "")　—　點擊查看筆記索引設定")
+            Button { noteIndex.cancel() } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .help("取消索引")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Capsule().fill(AppTheme.Accent.fill))
+        .foregroundStyle(AppTheme.Accent.primary)
+    }
+
+    /// 齒輪選單的「重建筆記庫索引」：與設定 sheet 那顆同一條路（單例 single-flight）。
+    private func rebuildNotesIndex() {
+        guard let vault = notesConfig.effectiveVaultRoot(),
+              let stateURL = try? ObsidianNoteIndexService.defaultStateURL() else { return }
+        noteIndex.start(vaultRoot: vault,
+                        includeOnly: notesConfig.includeOnlyFolders,
+                        excluded: notesConfig.excludedFolders,
+                        stateURL: stateURL,
+                        modelContext: modelContext,
+                        force: false,
+                        announce: true)
+    }
+
+    /// 清除目前這串對話：連 thread 一起從 index store 刪掉（messages 是 cascade）。
+    ///
+    /// 為什麼真的刪而不只是清畫面：這個頁面沒有「歷史對話」入口——`thread` 一旦被丟掉就再也回不去,
+    /// 留在 store 裡只是永遠長大的死資料（每次進頁面問第一個問題都會生一個新 thread）。
+    /// index store 本來就是衍生資料（可整顆砍掉重建），對話不是需要保護的資產。
+    private func clearConversation() {
+        if let thread {
+            modelContext.delete(thread)
+            try? modelContext.save()
+        }
+        thread = nil
+        messages = []
     }
 
     /// 換 embedding 模型:若索引非空,先確認(需全量重嵌);空索引直接切換。
@@ -587,15 +661,6 @@ struct AskAIView: View {
         citationTarget = CitationContext(ref: ref, title: title, transcription: match)
     }
 
-    private func startBackfill() {
-        Task {
-            for await progress in indexService.backfill() {
-                backfillProgress = progress
-            }
-            backfillProgress = nil
-            reloadMessages()
-        }
-    }
 }
 
 // MARK: - Citation popup（出處）

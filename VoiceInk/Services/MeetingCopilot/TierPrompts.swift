@@ -15,12 +15,19 @@ enum TierPrompts {
     /// 這個預設只服務 prompt 契約測試那種「不在乎語言」的呼叫。
     static let defaultOutputLanguage = "繁體中文"
 
+    /// 使用者可調的風格/範圍守則(`config.answerStyleGuidance`)注入 persona 之後、正文之前。
+    /// 空字串 → 回空(不加行),讓不傳 guidance 的純函式契約測試與 legacy 輸出**逐字不變**。
+    private static func guidanceLine(_ guidance: String) -> String {
+        guidance.isEmpty ? "" : guidance + "\n"
+    }
+
     // MARK: - Tier 1(開口稿)
 
-    static func tier1System(persona: String, outputLanguage: String = defaultOutputLanguage) -> String {
+    static func tier1System(persona: String, guidance: String = "",
+                            outputLanguage: String = defaultOutputLanguage) -> String {
         """
         \(persona)
-        你正在協助我(聽者)在會議中即時回應對方的問題或質疑。
+        \(guidanceLine(guidance))你正在協助我(聽者)在會議中即時回應對方的問題或質疑。
         目標:讓我能在 2 秒內開口。輸出**極簡**,只給:
         1. 一句「開口稿」——我可以直接照著說出口的第一句話,用來爭取思考時間,不要長。
         2. 恰好 3 個要點,每點一行、以「- 」開頭、每點不超過 20 字。
@@ -64,11 +71,11 @@ enum TierPrompts {
     /// 技術題掰錯只是丟臉;**編造自己的經歷會當場被拆穿**(問的人可能就是當事人,或下一句就追問細節)。
     /// 所以這裡不是「不確定就列進 uncertainties」,而是「筆記沒記載就直接說『筆記沒有記載』」
     /// ——寧可空手,絕不捏造。筆記與自介是唯一事實來源:**沒提到的內容一個字都不能出現**。
-    static func tier1SystemAboutMe(persona: String,
+    static func tier1SystemAboutMe(persona: String, guidance: String = "",
                                    outputLanguage: String = defaultOutputLanguage) -> String {
         """
         \(persona)
-        你是我的個人記憶助手。對方問到**我本人的經歷／專案／貢獻**。
+        \(guidanceLine(guidance))你是我的個人記憶助手。對方問到**我本人的經歷／專案／貢獻**。
         下方「我的筆記」與「我的自介」是**唯一事實來源**——只能使用它們:筆記片段與自介
         **沒提到的內容,一個字都不能出現在回答裡**;片段不足以回答時直說「筆記沒有記載」,
         絕不編造(編造我的經歷會被當場拆穿,寧可空手)。
@@ -120,7 +127,7 @@ enum TierPrompts {
     ///
     /// AC-58 回歸鎖:`.detailed` 的輸出與 M8 出貨版**逐字相同**
     /// (`TierPromptsTests.testTier2StyleDetailedIsByteIdenticalToLegacy`)。
-    static func tier2System(persona: String,
+    static func tier2System(persona: String, guidance: String = "",
                             outputLanguage: String = defaultOutputLanguage,
                             style: MeetingDeepStyle) -> String {
         // 只有「analysis 該怎麼寫」這一段會換;上面的鐵律、下面的 JSON 契約與語言指示都不動。
@@ -143,7 +150,7 @@ enum TierPrompts {
         }
         return """
         \(persona)
-        以下是我在會議中被問到的問題,以及我剛才的初步開口稿。請補強成足以應付追問的深度回答。
+        \(guidanceLine(guidance))以下是我在會議中被問到的問題,以及我剛才的初步開口稿。請補強成足以應付追問的深度回答。
         **鐵律:不要捏造/編造任何 benchmark 數字、論文名稱、公司名、產品版本或不存在的事實。**
         任何你沒把握的點,不要硬掰——把它列進 uncertainties。
         只輸出 JSON(不要 markdown code fence、不要其他文字),格式:

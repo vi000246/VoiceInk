@@ -40,30 +40,53 @@ final class MeetingGroundingProvider {
         self.ragK = ragK
     }
 
+    /// 把檢索 query 拆成多個同義詞:aboutMe 的 searchHint 由分類器以 `|` 分隔多個同義/相關詞
+    /// (例:`"團隊衝突|earn trust|協作分歧"`)。沒有 `|`(技術 cue 的整句 query)→ 回單一元素,
+    /// 多查詢聯集退化成單一查詢,行為不變。去重、去空白、上限 4 個(避免 prompt 亂塞爆嵌入批次)。
+    static func queryTerms(_ query: String) -> [String] {
+        let parts = query.split(separator: "|").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var seen = Set<String>()
+        var terms: [String] = []
+        for p in parts where !p.isEmpty && !seen.contains(p) {
+            seen.insert(p)
+            terms.append(p)
+        }
+        if terms.isEmpty {
+            let whole = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            return whole.isEmpty ? [] : [whole]
+        }
+        return Array(terms.prefix(4))
+    }
+
     /// 組接地快照。任何來源失敗都靜默(回空),不阻斷答案。
     /// - Parameters:
     ///   - query: 檢索用查詢文字(呼叫端按 cue 種類決定:aboutMe 用 searchHint 改寫詞,其他用 cue 原句)。
     ///   - includeRAG: 技術 cue = `config.useHistoryRAG`;aboutMe = `config.useNotesRAG`(呼叫端決定)。
     ///   - includeScreen: 通常 Tier 2 才為 true(= `config.useScreenContext`)
     ///   - sources: 檢索來源白名單(`EmbeddingChunk.sourceKind`);nil = 不限來源。
+    /// - Parameter minScore: RAG cosine 相似度下限(0 = 不設限)。aboutMe 傳非 0,避免碎片/離題
+    ///   query 在純 top-k 下硬撈回不相關筆記,再被當成「事實」生成自信亂答(2026-07-15 事故)。
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         var ragExcerpts: [String] = []
         var ragError: String?
 
         if includeRAG {
             let model = TranscriptIndexService.shared.model
             do {
-                let vectors = try await embedder.embed(texts: [query], model: model)
-                if let vector = vectors.first {
-                    // retrieve 為 @MainActor 同步;本類已在 @MainActor,直接呼叫。
-                    // 檢索來源由呼叫端按 cue 種類決定(M8 FR-47:aboutMe 限個人筆記、技術 cue 限
-                    // 逐字稿三來源);sources == nil 不限來源,等同原本寫死的 `.all` 行為(向下相容)。
-                    let scored = RetrievalService.retrieve(
-                        queryVector: vector, scope: AskAIScope(sources: sources), k: ragK,
-                        model: model, context: modelContext)
-                    ragExcerpts = scored.map { String($0.chunk.text.prefix(800)) }
-                }
+                // 同義詞多查詢召回:query 以 `|` 分隔多個同義/相關檢索詞時(aboutMe 的 searchHint,
+                // 由分類器順手產生——**零額外 LLM 呼叫、零開口延遲**),各自嵌入後檢索取聯集,
+                // 讓「講同一件事但字面沒對上」的筆記也被撈到(問「衝突」撈到「earn trust」)。
+                // 技術 cue 的 query 是整句、沒有 `|` → 單一查詢,行為與之前完全一致。
+                let terms = Self.queryTerms(query)
+                let vectors = try await embedder.embed(texts: terms, model: model)
+                // retrieve 為 @MainActor 同步;本類已在 @MainActor,直接呼叫。
+                // 檢索來源由呼叫端按 cue 種類決定(M8 FR-47:aboutMe 限個人筆記、技術 cue 限
+                // 逐字稿三來源);sources == nil 不限來源,等同原本寫死的 `.all` 行為(向下相容)。
+                let scored = RetrievalService.retrieveUnion(
+                    queryVectors: vectors, scope: AskAIScope(sources: sources), k: ragK,
+                    model: model, context: modelContext, minScore: minScore)
+                ragExcerpts = scored.map { String($0.chunk.text.prefix(800)) }
             } catch {
                 // 無 embedding key / 網路失敗 → 靜默,回無 RAG 接地(FR-19)。
                 // 原因記進 grounding(→ cue.groundingNote),否則「為什麼沒接地」事後無從查起。

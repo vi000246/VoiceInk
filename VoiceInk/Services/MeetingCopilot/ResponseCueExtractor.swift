@@ -32,9 +32,13 @@ final class ResponseCueExtractor {
 
     private let chat: ChatCompleting
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MeetingCopilot")
+    /// 實際送出的分類器 system prompt。使用者在設定頁覆寫時由 live controller 注入
+    /// (`config.effectiveCuePrompt`);nil/空 → 內建 `systemPrompt`。
+    private let effectiveSystemPrompt: String
 
-    init(chat: ChatCompleting) {
+    init(chat: ChatCompleting, systemPrompt: String? = nil) {
         self.chat = chat
+        self.effectiveSystemPrompt = (systemPrompt?.isEmpty == false) ? systemPrompt! : Self.systemPrompt
     }
 
     // MARK: - Prompt(純函式,FR-12)
@@ -63,14 +67,54 @@ final class ResponseCueExtractor {
     判斷基準:「需要軟體/系統/程式專業知識才能答好」的歸前三類;「需要回憶我個人的經歷\
     /貢獻/觀點」的歸 aboutMe;兩者皆非才歸 informational。
     注意:**不要只靠問號判斷**——質疑與指派常以陳述句出現,漏抓它們是最嚴重的錯誤。
+    輸入是**連續語音被即時切成的片段**,可能只是半句話的中段或結尾(例:「e conflict.」\
+    「utes.」是新聞句被切碎的殘尾,不是問題)。若某段本身**不是語意完整、能獨立成立**的\
+    問句/質疑/指派/關於我的問題,**不要硬湊成 cue**——寧可漏,不要把破碎的半句腦補成問題。
     沒有任何 cue 時回空陣列。
     只輸出 JSON,不要任何其他文字、不要 markdown code fence,格式:
-    {"cues":[{"text":"<cue 原句>","kind":"directQuestion|impliedChallenge|assignedToMe|aboutMe|informational","searchHint":"<僅 aboutMe 給:把問題改寫成筆記檢索詞(專案名/動詞/名詞);其他類給空字串>"}]}
+    {"cues":[{"text":"<cue 原句>","kind":"directQuestion|impliedChallenge|assignedToMe|aboutMe|informational","searchHint":"<僅 aboutMe 給:把問題改寫成 2-4 個**同義/相關的筆記檢索詞**,用半形 | 分隔(涵蓋同義詞、上位詞、具體實例——例:團隊衝突→『團隊衝突|意見分歧|earn trust|跨團隊協作』);其他類給空字串>"}]}
     """
 
+    // MARK: - 抽取前守門(2026-07-15 碎片誤判事故)
+
+    /// 這段 committed 值不值得送 fast model 抽 cue。擋掉連續語音被切碎的「壞碎片」,
+    /// 避免模型把半句話腦補成問題;**只擋結構上明顯不完整的**,多語安全。
+    ///
+    /// - 純標點/符號(切段接縫殘渣,如 `"..."`)→ 無語意,跳過。
+    /// - **以小寫 ASCII 字母開頭** = 被切在英文詞/句中間的碎片(`"e conflict."`、`"utes."`)。
+    ///   ElevenLabs Scribe V2 對句首一律大寫,完整英文 cue 不會小寫開頭;CJK 無大小寫,
+    ///   不受影響(中文短句仍是合法 cue,不以長度硬擋)。代價:極少數以小寫品牌名
+    ///   (`"iOS ..."`)開頭的真 cue 會被漏——由 recentContext + prompt + parse 三層補網。
+    static func isExtractable(_ committed: String) -> Bool {
+        let trimmed = committed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let hasLetterOrDigit = trimmed.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+        guard hasLetterOrDigit else { return false }
+        if let first = trimmed.unicodeScalars.first,
+           first.isASCII, CharacterSet.lowercaseLetters.contains(first) {
+            return false
+        }
+        return true
+    }
+
+    /// cue.text 是否**確實出自** committed(反腦補)+ 夠長。fast model 應回原句,故 cue 的
+    /// bigram 應大部分被 committed 涵蓋;涵蓋度過低 = 模型自行虛構,丟棄。用 dedup 同一套
+    /// 正規化/bigram,標準一致。
+    static func isGrounded(_ cueText: String, in committed: String) -> Bool {
+        let t = cueText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.count >= 2 else { return false }
+        let cueTokens = MeetingCueDeduplicator.tokens(MeetingCueDeduplicator.normalize(t))
+        guard !cueTokens.isEmpty else { return false }
+        let srcTokens = MeetingCueDeduplicator.tokens(MeetingCueDeduplicator.normalize(committed))
+        let containment = Double(cueTokens.intersection(srcTokens).count) / Double(cueTokens.count)
+        return containment >= 0.5
+    }
+
     /// 組 prompt。純函式:不讀 UserDefaults、不發網路、同輸入同輸出(FR-12)。
-    /// `recentContext` 是留給 M3 調校的滑動窗 seam,M2 預設空字串。
-    static func buildPrompt(committed: String, recentContext: String = "") -> (system: String, user: String) {
+    /// `recentContext` = 最近數段對方逐字稿(僅供理解語意,不從中抽 cue),讓模型判斷
+    /// 當前片段是「新聞句的延續」還是「真的在問我」——M8 前恆空,碎片事故後接線。
+    static func buildPrompt(committed: String, recentContext: String = "",
+                            system: String = systemPrompt) -> (system: String, user: String) {
         var lines: [String] = []
         if !recentContext.isEmpty {
             lines.append("先前上下文(僅供理解,不要從這裡抽 cue):")
@@ -79,7 +123,7 @@ final class ResponseCueExtractor {
         }
         lines.append("對方剛說:")
         lines.append(committed)
-        return (systemPrompt, lines.joined(separator: "\n"))
+        return (system, lines.joined(separator: "\n"))
     }
 
     // MARK: - JSON 契約(golden test 鎖定;M3 依賴)
@@ -116,12 +160,15 @@ final class ResponseCueExtractor {
     // MARK: - 抽取(一次非串流呼叫,FR-8)
 
     func extract(committed: String, recentContext: String = "") async -> CueExtractionOutcome {
-        let (system, user) = Self.buildPrompt(committed: committed, recentContext: recentContext)
+        let (system, user) = Self.buildPrompt(committed: committed, recentContext: recentContext,
+                                              system: effectiveSystemPrompt)
         let start = Date()
         do {
             let reply = try await chat.complete(system: system, user: user)
+            // 反腦補守門:只留確實出自 committed 的 cue(rawReply 保留原樣供診斷比對)。
+            let grounded = Self.parse(reply).filter { Self.isGrounded($0.text, in: committed) }
             return CueExtractionOutcome(
-                cues: Self.parse(reply),
+                cues: grounded,
                 rawReply: reply,
                 elapsedMs: Int(Date().timeIntervalSince(start) * 1000))
         } catch {

@@ -5,7 +5,7 @@ import SwiftData
 /// 接地 noop（回空，不碰網路/索引/螢幕）。
 private struct NoopGrounding: MeetingGroundingProviding {
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         .empty
     }
 }
@@ -16,7 +16,7 @@ private final class SpyGrounding: MeetingGroundingProviding {
     private(set) var lastIncludeRAG = false
     private(set) var lastSources: Set<String>?
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         lastQuery = query
         lastIncludeRAG = includeRAG
         lastSources = sources
@@ -31,7 +31,7 @@ private final class SpyGrounding: MeetingGroundingProviding {
 /// tier1 正常走完 LLM 路徑之後**,deep 仍然不被拉起來,所以接地必須非空。
 private struct GroundingWithOneExcerpt: MeetingGroundingProviding {
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         MeetingGrounding(brief: brief, ragExcerpts: ["《訂單分庫》我主導了快取重構，P99 800→120ms"],
                          screenText: nil)
     }
@@ -42,7 +42,7 @@ private struct GroundingWithOneExcerpt: MeetingGroundingProviding {
 /// 前者是使用者沒寫筆記,後者是索引壞了,只有 `ragError` 分得出來。
 private struct DegradedGrounding: MeetingGroundingProviding {
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding {
+                sources: Set<String>?, minScore: Float = 0) async -> MeetingGrounding {
         MeetingGrounding(brief: brief, ragExcerpts: [], screenText: nil, ragError: "索引壞了")
     }
 }
@@ -120,6 +120,9 @@ private final class GatedStreamingChatCompleting: StreamingChatCompleting, @unch
 @MainActor
 final class AnswerCoordinatorTests: XCTestCase {
 
+    /// 每個測試一份 in-memory 設定後端（見 TestDefaults.swift）——測試不得碰 `.standard`。
+    private let defaultsSuite = InMemoryDefaults()
+
     private var ctx: ModelContext!
 
     override func setUpWithError() throws {
@@ -144,7 +147,7 @@ final class AnswerCoordinatorTests: XCTestCase {
     ///   「手動 requestDeep」路徑,若 tier1 順手掛出一條 auto-deep,那個在途 task 會再打一次
     ///   grounding/deep fake,把 spy 斷言變成競態。auto 行為由下面專屬的 auto-deep 測試明確開啟驗證。
     private func makeConfig(autoDeep: Bool = false) -> MeetingCopilotConfigStore {
-        let c = MeetingCopilotConfigStore()
+        let c = MeetingCopilotConfigStore(defaults: defaultsSuite)
         c.setUseHistoryRAG(false)
         c.setUseScreenContext(false)
         c.setPrefetchEnabled(true)

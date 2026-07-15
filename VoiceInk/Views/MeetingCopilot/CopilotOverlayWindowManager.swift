@@ -53,6 +53,10 @@ final class CopilotOverlayWindowManager: ObservableObject {
     /// 釘住狀態(toggle 熱鍵/UI 按鈕共用)。peek 放開時只在「未釘住」才隱藏。
     @Published private(set) var isPinned = false
 
+    /// 即時翻譯字幕的展開狀態(Stage B):收合 = 顯示最近 5 句,展開 = 最近 30 句。
+    /// overlay 上的按鈕與熱鍵共用同一份狀態(overlay view 觀察它)。
+    @Published private(set) var translationExpanded = false
+
     /// 接線點:M2/M3 建立 `MeetingCopilotController` 之處呼叫。
     /// (原本還掛 transcriber.onLocalLevel 做「說話淡出」——2026-07-13 依使用者要求整個移除,
     /// overlay 恆為不透明;onLocalLevel 無訂閱者時 transcriber 端零成本。)
@@ -77,6 +81,7 @@ final class CopilotOverlayWindowManager: ObservableObject {
     /// 避免會議結束後 overlay 還掛在螢幕上。
     func hideAndUnpin() {
         isPinned = false
+        translationExpanded = false   // 下次開 overlay 從收合的 5 句起(不殘留上一場的展開)
         hide()
     }
 
@@ -136,6 +141,14 @@ final class CopilotOverlayWindowManager: ObservableObject {
     func toggleCueExpansion() {
         guard panel?.isVisible == true else { return }
         controller?.toggleExpansion()
+    }
+
+    /// `.toggleTranslationExpansion` 熱鍵(keyUp-only)與 overlay 上的展開鈕共用入口:
+    /// 即時翻譯字幕在「最近 5 句 ↔ 最近 30 句」之間切換。overlay 沒顯示時 no-op(理由同
+    /// `toggleCueExpansion`:看不見的展開等於沒發生)。
+    func toggleTranslationExpansion() {
+        guard panel?.isVisible == true else { return }
+        translationExpanded.toggle()
     }
 
     // MARK: - 視窗生命週期

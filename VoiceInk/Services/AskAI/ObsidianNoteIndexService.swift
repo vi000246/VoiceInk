@@ -35,6 +35,9 @@ enum ObsidianNoteChunking {
 /// 形狀鏡射 `TranscriptIndexService`（injectable embedder／modelContext），但身分鍵改用
 /// `ObsidianNoteChunking.noteId(relativePath:)` 的確定性 UUID——同一路徑永遠算出同一 id，
 /// 「先刪同 id 舊塊、再插新塊」就成了天然的取代式 upsert：重跑冪等、不會產生重複塊。
+///
+/// **in-flight 與進度不歸這裡管**：誰在跑、跑到哪、能不能取消，全部由 `NoteIndexCoordinator`
+/// 持有（見該檔的說明）。這個 class 只負責「掃一次、嵌一次」這件事本身。
 @MainActor
 final class ObsidianNoteIndexService {
 
@@ -60,24 +63,53 @@ final class ObsidianNoteIndexService {
 
     /// 全量／增量重建索引。回傳本次真正重嵌（有打 embedding）的檔數。
     /// - `excluded` 的第一層目錄一律跳過；`includeOnly` 非空時第一層目錄名必須命中。
+    /// - `force`: 無視 sidecar，當作沒有任何狀態 → 全量重嵌（使用者手動「強制全量重嵌」的入口）。
+    /// - `onProgress`: 每處理完一個檔回報一次（含跳過未變更的檔）。純觀察,不影響索引結果。
     /// - embed／save 失敗直接 throw 給呼叫端（設定頁顯示錯誤；背景掃描要吞錯由呼叫端決定，
     ///   與 `MeetingGroundingProvider` 的靜默紀律一致）。
-    func reindex(vaultRoot: URL, includeOnly: [String], excluded: [String]) async throws -> Int {
+    /// - 取消：每個檔的邊界檢查一次。取消時**照樣寫回 sidecar**（未處理的檔沿用舊 hash）——
+    ///   已經花錢嵌好的檔就此記帳，下次不用重嵌；改過但還沒輪到的檔因為 hash 仍是舊的，
+    ///   下次比對照樣會發現它變了。取消不該讓已付出的成本白費，也不該掩蓋還沒做的事。
+    @discardableResult
+    func reindex(vaultRoot: URL, includeOnly: [String], excluded: [String],
+                 force: Bool = false,
+                 onProgress: ((NoteIndexCoordinator.Progress) -> Void)? = nil) async throws -> Int {
         // 非沙盒 app 下是 no-op，照 house 慣例包 security-scope（鏡射 VaultExportService.export）。
         let accessing = vaultRoot.startAccessingSecurityScopedResource()
         defer { if accessing { vaultRoot.stopAccessingSecurityScopedResource() } }
 
         let model = TranscriptIndexService.shared.model
         // 空 = 全量重嵌（首次索引、**換過 embedding 模型**，或 sidecar 版本過舊——見 loadState）。
-        let oldState = loadState(currentModelTag: model.tag)
-        if oldState.isEmpty { discardAllNoteChunks() }
-        let files = scanMarkdownFiles(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+        let oldState = force ? [:] : loadState(currentModelTag: model.tag)
+        if oldState.isEmpty {
+            // 🔴 順序不可對調：**先讓 sidecar 失效，再清塊。**
+            //
+            // 反過來寫（先清塊、留著一份仍然「有效」的 sidecar）會製造出最惡毒的一種狀態:塊全沒了，
+            // 但 hash 表還在。只要這一輪中途死掉（網路斷、金鑰過期、使用者關掉 app）——而 sidecar
+            // 是**最後**才寫的，中途死掉就等於沒寫——下一次增量掃描會看到「每個檔的 hash 都命中」
+            // → 全部跳過 → **筆記索引就此永久空著，而且沒有任何錯誤訊息**：重建按鈕回報「已是最新
+            // （0 檔變動）」，覆蓋率表每一列都寫「無內容」。使用者只會發現 AI 突然不知道自己寫過什麼。
+            // （`force` 才碰得到這條路:非 force 的全量重嵌是因為 schema/model tag 不符，那份 sidecar
+            // 本來就已經不可信，下次照樣回空 → 自然會重嵌。force 的 sidecar 卻是有效的。）
+            //
+            // 先寫空 state：即使接著整個爆掉，下一輪的 `loadState` 也會回空 → 重新全量嵌回來。
+            try saveState([:], modelTag: model.tag)
+            discardAllNoteChunks()
+        }
+        let files = Self.scanMarkdownFiles(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+            .sorted { $0.relativePath < $1.relativePath }   // 處理順序（與中斷點）可重現。
 
         var newState: [String: String] = [:]
         var reembedded = 0
+        var cancelled = false
 
-        // 依相對路徑排序：處理順序（與中斷點）可重現。
-        for file in files.sorted(by: { $0.relativePath < $1.relativePath }) {
+        for (i, file) in files.enumerated() {
+            // 取消點：在「還沒開始這個檔」時退出，不會留下嵌到一半的檔。
+            if Task.isCancelled { cancelled = true; break }
+            onProgress?(NoteIndexCoordinator.Progress(
+                scanned: i, total: files.count, reembedded: reembedded,
+                currentFile: file.relativePath))
+
             guard let data = try? Data(contentsOf: file.url),
                   let content = String(data: data, encoding: .utf8) else {
                 // 讀不到就沿用舊 hash（若有）：塊保留，等下次可讀時再依 hash 差異重建。
@@ -103,7 +135,20 @@ final class ObsidianNoteIndexService {
                 continue
             }
 
-            let vectors = try await embedder.embed(texts: drafts.map(\.text), model: model)
+            // 🔴 取消**不會**以 CancellationError 的形式從這裡冒出來。這個 await 是整個迴圈唯一的
+            // 懸掛點（其餘都是同步的檔案讀取/hash/save），所以使用者按取消時，任務幾乎必然正懸在
+            // 這裡；而 URLSession 被取消時丟的是 `URLError(.cancelled)`，`EmbeddingClient` 的通用
+            // catch 又把它包成 `.http(0, "已取消")`。直接 `catch is CancellationError` 永遠抓不到，
+            // 下面那整套「取消也要記帳」的邏輯就會變成死碼:sidecar 不寫 → 已經花錢嵌好的檔沒記到
+            // hash → 下次全部重嵌（重複付錢），而且使用者看到的是紅色「索引失敗」而不是「已取消」。
+            // 所以判斷依據是 `Task.isCancelled`，不是錯誤型別。
+            let vectors: [[Float]]
+            do {
+                vectors = try await embedder.embed(texts: drafts.map(\.text), model: model)
+            } catch {
+                if Task.isCancelled { cancelled = true; break }
+                throw error
+            }
             guard vectors.count == drafts.count else {
                 throw EmbeddingError.countMismatch(expected: drafts.count, got: vectors.count)
             }
@@ -125,24 +170,44 @@ final class ObsidianNoteIndexService {
             reembedded += 1
         }
 
-        // state 有記錄但磁碟上已消失（刪除或改名）的檔：回收它的塊。
-        // 改名＝新路徑＝新 noteId，舊路徑的塊就是在這裡以「消失檔」身分被清掉。
-        let present = Set(files.map(\.relativePath))
-        let vanished = oldState.keys.filter { !present.contains($0) }
-        if !vanished.isEmpty {
-            for rel in vanished { deleteChunks(noteId: ObsidianNoteChunking.noteId(relativePath: rel)) }
-            try modelContext.save()
+        if cancelled {
+            // 沿用**所有**還沒處理到的舊記錄 —— 注意是走 `oldState`，不是走 `files`。
+            //
+            // 只補 `files`（= 磁碟上還在的檔）會悄悄弄丟一種記錄：**已經從磁碟上消失的檔**。
+            // 那些 key 只存在於 oldState，不在 files 裡，於是不會被補回 newState → 寫回 sidecar 後
+            // 它們就從帳本上蒸發了。而下一輪的「消失檔清理」是靠 `oldState.keys - 磁碟上的檔` 算出來的
+            // ——帳本上沒有記錄，就永遠算不出它消失過 → **它的塊變成永久幽靈**：檢索照樣撈得到，
+            // AI 於是拿一篇早就刪掉的筆記回答你。取消一次，幽靈跟著你一輩子。
+            //
+            // 改過但還沒輪到的檔：補回去的是**舊** hash，跟磁碟上的新內容對不上 → 下次照樣判定要重嵌。
+            // 所以這裡不會把「還沒做的事」蓋成「做完了」。
+            for (path, hash) in oldState where newState[path] == nil { newState[path] = hash }
+        } else {
+            // state 有記錄但磁碟上已消失（刪除或改名）的檔：回收它的塊。
+            // 改名＝新路徑＝新 noteId，舊路徑的塊就是在這裡以「消失檔」身分被清掉。
+            // 取消時**不做**這步：掃描雖然完整，但半途而廢的一輪不該順手做破壞性清理。
+            let present = Set(files.map(\.relativePath))
+            let vanished = oldState.keys.filter { !present.contains($0) }
+            if !vanished.isEmpty {
+                for rel in vanished { deleteChunks(noteId: ObsidianNoteChunking.noteId(relativePath: rel)) }
+                try modelContext.save()
+            }
         }
 
         // GOTCHA：sidecar 一定最後寫——先 persist 後記 hash。中途中斷時 sidecar 仍是舊狀態，
         // 下次重掃會重做未記錄的檔；因 upsert 冪等，重做只是多花錢、不會壞資料。
         try saveState(newState, modelTag: model.tag)
+
+        onProgress?(NoteIndexCoordinator.Progress(
+            scanned: files.count, total: files.count, reembedded: reembedded, currentFile: nil))
+        if cancelled { throw CancellationError() }
         return reembedded
     }
 
     // MARK: - 掃描
 
-    private struct ScannedFile {
+    /// 掃到的一個 .md 檔。
+    struct ScannedFile {
         let url: URL
         let relativePath: String
         let modifiedAt: Date
@@ -150,7 +215,11 @@ final class ObsidianNoteIndexService {
 
     /// 收 vault 下所有 .md（含子目錄）。第一層目錄過濾：excluded 跳過；includeOnly 非空必須命中
     /// （vault 根目錄的散檔沒有第一層目錄名，只受 includeOnly 約束）。
-    private func scanMarkdownFiles(vaultRoot: URL, includeOnly: [String], excluded: [String]) -> [ScannedFile] {
+    ///
+    /// `nonisolated` 是為了讓覆蓋率檢查能在背景執行緒跑（純檔案 IO，不碰 modelContext）——
+    /// 幾千個檔的 walk＋hash 掛在 MainActor 上會讓 UI 卡住。呼叫端自行負責 security-scope。
+    nonisolated static func scanMarkdownFiles(vaultRoot: URL, includeOnly: [String],
+                                             excluded: [String]) -> [ScannedFile] {
         let rootPath = vaultRoot.standardizedFileURL.path
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
         guard let enumerator = FileManager.default.enumerator(
@@ -180,6 +249,34 @@ final class ObsidianNoteIndexService {
         return result
     }
 
+    /// 掃描 ＋ 逐檔算內容 hash 與「切得出塊嗎」（覆蓋率比對用；`reindex` 自己在讀檔時順手算，不走這條）。
+    /// 讀不到的檔直接略過——它本來就進不了索引，列在覆蓋率表上只會製造假的「待索引」。
+    ///
+    /// 這裡**必須用與 `reindex` 完全相同的切塊規則**（去 frontmatter → `ObsidianNoteChunking.chunks`）
+    /// 來判斷「有沒有可索引內容」。兩邊規則一旦分岔，覆蓋率就會宣稱某個檔該有塊、而索引器永遠不會
+    /// 給它塊 —— 一個按幾次「重建」都消不掉的假警報。
+    nonisolated static func scanNotesWithHashes(vaultRoot: URL, includeOnly: [String],
+                                                excluded: [String]) -> [ScannedNote] {
+        let accessing = vaultRoot.startAccessingSecurityScopedResource()
+        defer { if accessing { vaultRoot.stopAccessingSecurityScopedResource() } }
+        return scanMarkdownFiles(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
+            .compactMap { file in
+                guard let data = try? Data(contentsOf: file.url) else { return nil }
+                let title = file.url.deletingPathExtension().lastPathComponent
+                let hasContent: Bool
+                if let text = String(data: data, encoding: .utf8) {
+                    let body = ObsidianNoteChunking.stripFrontmatter(text)
+                    hasContent = !ObsidianNoteChunking.chunks(title: title, body: body).isEmpty
+                } else {
+                    hasContent = false   // 解不成 UTF-8 → reindex 也讀不了它 → 本來就不會有塊
+                }
+                return ScannedNote(relativePath: file.relativePath,
+                                   contentHash: sha256Hex(data),
+                                   modifiedAt: file.modifiedAt,
+                                   hasIndexableContent: hasContent)
+            }
+    }
+
     // MARK: - 塊刪除（不落盤；save 時機由呼叫點統一掌控，維持先 persist 後記 hash 的順序）
 
     private func deleteChunks(noteId: UUID) {
@@ -190,7 +287,7 @@ final class ObsidianNoteIndexService {
 
     // MARK: - Sidecar 狀態
 
-    private static func sha256Hex(_ data: Data) -> String {
+    nonisolated private static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -212,7 +309,7 @@ final class ObsidianNoteIndexService {
     /// 🔴 tag 不符時必須回空（2026-07-14 修 FR-44 後半）：`TranscriptIndexService.switchModel`
     /// 換模型時會刪光**所有** `EmbeddingChunk`（含筆記塊），但 vault 的檔案內容一個字都沒改。
     /// 只比對內容 hash 的話，下次掃描會全部命中、全部跳過 → **筆記塊永遠回不來**，而且設定頁的
-    /// 「重建筆記索引」還會回報「0 檔」，看起來一切正常。使用者只會發現 aboutMe 突然開始說
+    /// 「重建筆記庫索引」還會回報「0 檔」，看起來一切正常。使用者只會發現 aboutMe 突然開始說
     /// 「筆記沒記」——**失效是靜默的**，這是最糟的失敗模式。
     /// tag 不符 = 向量空間不相容 = 全量重嵌，正是 `switchModel` 的語意。
     ///
@@ -221,12 +318,19 @@ final class ObsidianNoteIndexService {
     ///
     /// 兩道 guard **各自獨立**：`schema` 管「塊的產法變了」（例如塊開始帶出處欄位——內容 hash
     /// 一個字沒變，只有版本號看得出來），`embeddingModel` 管「向量空間變了」。任一不符都回空。
-    private func loadState(currentModelTag: String) -> [String: String] {
+    ///
+    /// 覆蓋率檢查也走這裡（`nonisolated`）：它必須看到**和索引一模一樣的信任判斷**，否則會出現
+    /// 「覆蓋率說全都索引好了、實際上換過模型一個都查不到」的謊報。
+    nonisolated static func loadSidecar(stateURL: URL, currentModelTag: String) -> [String: String] {
         guard let data = try? Data(contentsOf: stateURL),
               let state = try? JSONDecoder().decode(IndexState.self, from: data),
               state.schema == Self.sidecarSchema,
               state.embeddingModel == currentModelTag else { return [:] }
         return state.files
+    }
+
+    private func loadState(currentModelTag: String) -> [String: String] {
+        Self.loadSidecar(stateURL: stateURL, currentModelTag: currentModelTag)
     }
 
     /// 全量重嵌的起點：清掉**所有**筆記塊（不分 model tag）。
@@ -250,7 +354,7 @@ final class ObsidianNoteIndexService {
         try JSONEncoder().encode(state).write(to: stateURL, options: .atomic)
     }
 
-    // MARK: - 自動增量觸發（Ask AI 頁 onAppear／筆記 chip 開啟；attach 觸發沿用 scheduleNotesReindex）
+    // MARK: - 自動增量觸發（Ask AI 頁 onAppear／筆記 chip 開啟；會議 attach 走 scheduleNotesReindex）
 
     /// sidecar 路徑（原本住在 `MeetingCopilotLiveController`，FR-8 搬家不搬檔——路徑一字不差，
     /// 否則兩邊各記各的 hash，互看都是「全新 vault」，每次全量重嵌純燒錢）。
@@ -261,24 +365,19 @@ final class ObsidianNoteIndexService {
         return dir.appendingPathComponent("obsidian-index-state.json")
     }
 
-    @MainActor private static var autoIndexInFlight = false
-
-    /// 背景增量掃（single-flight、失敗靜默 log-only——與 scheduleNotesReindex 同紀律）。
+    /// 背景增量掃（single-flight、失敗靜默 log-only）。
+    ///
+    /// single-flight 現在歸 `NoteIndexCoordinator` 管——它是**全app 唯一**的 in-flight 擁有者，
+    /// 所以「Ask AI 頁 onAppear」「筆記 chip 開啟」「會議 attach」「設定頁手動重建」四個入口
+    /// 彼此之間也互斥（以前只有前兩者互斥,開著 Ask AI 又開會就是兩份 reindex 同時掃同一份
+    /// sidecar、互相覆蓋 hash 表、重複燒 embedding 錢）。
     @MainActor
     static func autoIndex(vaultRoot: URL, includeOnly: [String], excluded: [String],
                           stateURL: URL, modelContext: ModelContext,
                           embedder: EmbeddingProviding = LiveEmbedder()) async {
-        guard !autoIndexInFlight else { return }
-        autoIndexInFlight = true
-        defer { autoIndexInFlight = false }
-        do {
-            let svc = ObsidianNoteIndexService(embedder: embedder, modelContext: modelContext, stateURL: stateURL)
-            let count = try await svc.reindex(vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded)
-            Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AskAI")
-                .notice("🗂️ Ask AI 筆記增量索引完成（重嵌 \(count, privacy: .public) 檔）")
-        } catch {
-            Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AskAI")
-                .notice("🗂️ Ask AI 筆記增量索引失敗: \(error.localizedDescription, privacy: .public)")
-        }
+        await NoteIndexCoordinator.shared.run(
+            vaultRoot: vaultRoot, includeOnly: includeOnly, excluded: excluded,
+            stateURL: stateURL, modelContext: modelContext, embedder: embedder,
+            force: false, announce: false)
     }
 }

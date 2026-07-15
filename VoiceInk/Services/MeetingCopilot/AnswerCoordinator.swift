@@ -8,8 +8,9 @@ protocol MeetingGroundingProviding {
     /// - Parameters:
     ///   - query: 檢索用查詢文字(呼叫端按 cue 種類決定:aboutMe 用 searchHint 改寫詞,其他用 cue 原句)。
     ///   - sources: 檢索來源白名單(`EmbeddingChunk.sourceKind`);nil = 不限來源(M8 FR-47)。
+    ///   - minScore: RAG cosine 相似度下限(0 = 不設限;aboutMe 傳非 0 擋離題接地)。
     func gather(query: String, brief: String, includeRAG: Bool, includeScreen: Bool,
-                sources: Set<String>?) async -> MeetingGrounding
+                sources: Set<String>?, minScore: Float) async -> MeetingGrounding
 }
 
 extension MeetingGroundingProvider: MeetingGroundingProviding {}
@@ -28,6 +29,11 @@ extension MeetingGroundingProvider: MeetingGroundingProviding {}
 final class AnswerCoordinator: ObservableObject {
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MeetingCopilot")
+
+    /// aboutMe 接地的 RAG cosine 相似度下限。向量已 L2-normalize(dot = cosine)。0.2 很保守——
+    /// 只砍掉近乎正交(明顯不相關)的塊,真正沾邊的筆記仍留得住。碎片/離題 query 撈回的
+    /// 通常落在 0.1 上下,設 0.2 讓 `零接地守門` 有機會生效,而不是硬吞 top-k 個垃圾塊。
+    static let aboutMeRAGMinScore: Float = 0.2
 
     private let fast: StreamingChatCompleting
     private let deep: StreamingChatCompleting
@@ -134,7 +140,9 @@ final class AnswerCoordinator: ObservableObject {
         let g = await grounding.gather(
             query: plan.query, brief: cue.session?.brief ?? "",
             includeRAG: plan.includeRAG, includeScreen: false,   // Tier1 不抓螢幕
-            sources: plan.sources)
+            sources: plan.sources,
+            // aboutMe 對接地相關性最敏感(接錯筆記 = 自信亂答);給 cosine 下限只砍近乎不相關的。
+            minScore: cue.kind == .aboutMe ? Self.aboutMeRAGMinScore : 0)
 
         // M9 FR-65:aboutMe 零接地守門——沒有筆記片段就沒有事實可依,呼叫模型只會拿到編的。
         // 不呼叫 LLM 是唯一的**結構性**保證(prompt 紅線只能降低機率)。ragError(RAG 降級)與
@@ -159,8 +167,10 @@ final class AnswerCoordinator: ObservableObject {
         // 記憶錨點而非論述句。既有函式簽章不動,純 if/else 分支(技術 cue 行為零改變)。
         let system = cue.kind == .aboutMe
             ? TierPrompts.tier1SystemAboutMe(persona: config.domainPersona,
+                                             guidance: config.answerStyleGuidance,
                                              outputLanguage: outputLanguage)
             : TierPrompts.tier1System(persona: config.domainPersona,
+                                      guidance: config.answerStyleGuidance,
                                       outputLanguage: outputLanguage)
         let user = cue.kind == .aboutMe
             ? TierPrompts.tier1UserAboutMe(cue: cue.text, grounding: g, aboutMeBrief: config.aboutMeBrief)
@@ -306,7 +316,8 @@ final class AnswerCoordinator: ObservableObject {
         let g = await grounding.gather(
             query: plan.query, brief: cue.session?.brief ?? "",
             includeRAG: plan.includeRAG, includeScreen: config.useScreenContext,   // Tier2 才抓螢幕
-            sources: plan.sources)
+            sources: plan.sources,
+            minScore: cue.kind == .aboutMe ? Self.aboutMeRAGMinScore : 0)
         let groundingElapsed = Date().timeIntervalSince(groundingStart)
         logger.notice("🫆 tier2 接地完成 elapsed=\(groundingElapsed, format: .fixed(precision: 1), privacy: .public)s → deep model 串流開始")
         // M9 FR-67 之後這裡不再分支:aboutMe 在 runAutoDeep / requestDeep 兩處就被擋下,走不到 Tier 2,
@@ -314,6 +325,7 @@ final class AnswerCoordinator: ObservableObject {
         // aboutMe 還有 deep 這條路。
         // M9 FR-73:深答風格跟著 config 走(預設 `.bullets`)——會議進行中讀得完才算數。
         let system = TierPrompts.tier2System(persona: config.domainPersona,
+                                             guidance: config.answerStyleGuidance,
                                              outputLanguage: outputLanguage,
                                              style: config.deepStyle)
         let user = TierPrompts.tier2User(cue: cue.text, draft: draft, grounding: g)

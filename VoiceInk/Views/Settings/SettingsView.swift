@@ -106,6 +106,14 @@ struct SettingsView: View {
                         .controlSize(.small)
                 }
 
+                // 即時翻譯字幕的 5 句↔30 句展開(Stage B)。同樣在「會議copilot設定」頁有鏡射列。
+                LabeledContent("展開/收合翻譯（會議 copilot）") {
+                    ShortcutRecorder(action: .toggleTranslationExpansion) {
+                        recordingShortcutManager.updateShortcutStatus()
+                    }
+                        .controlSize(.small)
+                }
+
                 LabeledContent("Cancel Recording") {
                     HStack(spacing: 8) {
                         ShortcutRecorder(

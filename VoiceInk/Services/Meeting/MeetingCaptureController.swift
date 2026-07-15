@@ -22,6 +22,14 @@ final class MeetingCaptureController: ObservableObject {
     private var sourceLabel = "會議"
     /// 本場會議產生過的 copilot session(中途開關會產生多個);匯入時回填 importFingerprint。
     private var copilotSessionIds: [UUID] = []
+    private var watchdogTask: Task<Void, Never>?
+
+    // MARK: - 忘了關的保險
+
+    /// 錄滿這麼久 → 跳確認視窗問要不要繼續。按「繼續」後重新計時,再滿 2 小時會再問一次。
+    static let continuePromptInterval: TimeInterval = 2 * 60 * 60
+    /// 確認視窗沒人回應這麼久 → 自動停止並匯入(人不在位子上,不該繼續錄下去)。
+    static let unattendedStopTimeout: TimeInterval = 5 * 60
 
     private init() {
         // quit 途中盡力保檔:willTerminate 是同步 context,用短暫 runloop spin 等 async 收尾。
@@ -63,6 +71,7 @@ final class MeetingCaptureController: ObservableObject {
         elapsedText = "00:00"
         copilotSessionIds = []
         startTimer()
+        startWatchdog()
         if indicator == nil { indicator = MeetingIndicatorWindowManager(controller: self) }
         indicator?.show()
 
@@ -110,6 +119,7 @@ final class MeetingCaptureController: ObservableObject {
     func stopAndImport() async {
         guard isRecording else { return }
         timer?.invalidate(); timer = nil
+        watchdogTask?.cancel(); watchdogTask = nil
         indicator?.hide()
         isRecording = false
 
@@ -140,6 +150,72 @@ final class MeetingCaptureController: ObservableObject {
         indicator?.move(to: screen)
         CopilotOverlayWindowManager.shared.move(to: screen)
         PresenterScriptWindowManager.shared.move(to: screen)
+    }
+
+    // MARK: - 忘了關的保險(2 小時確認 → 無人回應自動停止)
+
+    /// 每滿 `continuePromptInterval` 問一次「還要繼續嗎」。按繼續 → 重新計時再問;
+    /// 按停止、或 `unattendedStopTimeout` 內沒人理它 → 停止並匯入。
+    ///
+    /// 為什麼需要:會議錄製沒有時間上限,而 copilot 開著時,對方 app 只要在出聲
+    /// (忘了關又剛好在看影片),每一段都會走 cue 抽取 → Tier 1 → 自動深答,
+    /// 無人看管地燒 token。
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.continuePromptInterval))
+                guard let self, !Task.isCancelled, self.isRecording else { return }
+
+                let keepRecording = await self.askWhetherToContinue()
+                guard self.isRecording else { return }   // 期間使用者自己按了停止
+
+                if !keepRecording {
+                    await self.stopAndImport()
+                    return
+                }
+                self.logger.notice("Meeting recording: 使用者確認繼續錄製")
+            }
+        }
+    }
+
+    /// 確認視窗。回傳 true = 繼續錄。
+    ///
+    /// ⚠️ 這個對話框在**分享螢幕時會被對方看到**(overlay 之外唯一會露臉的 UI)。
+    /// 文案刻意不提「會議輔助 / copilot」,只說錄音 —— 但它終究是可見的,這是
+    /// 「忘了關會一直燒錢」與「完全隱蔽」之間的取捨,使用者明確選了前者。
+    private func askWhetherToContinue() async -> Bool {
+        let hours = Int(Self.continuePromptInterval / 3600)
+        let minutes = Int(Self.unattendedStopTimeout / 60)
+
+        let alert = NSAlert()
+        alert.messageText = "VoiceInk 錄音仍在進行(已錄 \(elapsedText))"
+        alert.informativeText = "已經連續錄製超過 \(hours) 小時。要繼續嗎?\n\(minutes) 分鐘內沒有回應會自動停止並匯入這段錄音。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "繼續錄製")
+        alert.addButton(withTitle: "停止並匯入")
+        NSApp.activate(ignoringOtherApps: true)
+
+        // `runModal` 跑的是 `.modalPanel` 模式的巢狀 run loop —— 計時器**必須註冊在同一個
+        // 模式**才會 fire。用 `Timer.scheduledTimer`(只進 .default)的話,人不在位子上時
+        // 這個 alert 會永遠停在螢幕上,「無人回應自動停止」的保險等於不存在。
+        let timeout = Timer(timeInterval: Self.unattendedStopTimeout, repeats: false) { _ in
+            NSApp.abortModal()
+        }
+        RunLoop.main.add(timeout, forMode: .modalPanel)
+        defer { timeout.invalidate() }
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return true
+        case .abort:   // 計時器打斷 = 沒人回應
+            logger.notice("Meeting recording: 2 小時確認視窗無人回應 → 自動停止")
+            NotificationManager.shared.showNotification(
+                title: "錄音已自動停止(2 小時無回應)", type: .info, duration: 6)
+            return false
+        default:
+            return false
+        }
     }
 
     private func startTimer() {

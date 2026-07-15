@@ -17,6 +17,15 @@ private struct StubEmbedder: EmbeddingProviding {
     }
 }
 
+/// 逐字對應向量（測同義詞多查詢:每個 term 各自嵌成不同向量）。未映射 → 零向量。
+private struct MapEmbedder: EmbeddingProviding {
+    let map: [String: [Float]]
+    let dims: Int
+    func embed(texts: [String], model: EmbeddingModel) async throws -> [[Float]] {
+        texts.map { EmbeddingClient.normalize(map[$0] ?? [Float](repeating: 0, count: dims)) }
+    }
+}
+
 /// 記錄呼叫次數的螢幕 fake。
 private final class FakeScreen: MeetingScreenCapturing {
     private(set) var callCount = 0
@@ -51,6 +60,48 @@ final class GroundingTests: XCTestCase {
         let g = MeetingGroundingProvider(embedder: StubEmbedder(), screen: FakeScreen(), modelContext: ctx)
         let out = await g.gather(query: "x", brief: "", includeRAG: true, includeScreen: false, sources: nil)
         XCTAssertTrue(out.ragExcerpts.isEmpty)
+    }
+
+    // MARK: - 同義詞多查詢召回(2026-07-15:會議 copilot 也放寬同義詞檢索)
+
+    /// aboutMe 的 searchHint 由分類器以 `|` 分隔多個同義詞 → gather 拆開後各自檢索取聯集,
+    /// 讓「字面沒對上但講同一件事」的筆記也被撈到(零額外 LLM 呼叫、零開口延遲)。
+    func testGatherSynonymMultiQueryUnionSurfacesBothNotes() async throws {
+        let ctx = try makeContext()
+        let tag = TranscriptIndexService.shared.model.tag
+        func seed(_ text: String, _ vec: [Float]) {
+            ctx.insert(EmbeddingChunk(
+                transcriptionId: UUID(), chunkIndex: 0, text: text,
+                vector: EmbeddingClient.floatsToData(EmbeddingClient.normalize(vec)), dims: 2,
+                embeddingModel: tag, sourceKind: "obsidian", categoryId: nil, timestamp: Date()))
+        }
+        seed("衝突筆記", [1, 0])
+        seed("earn trust 筆記", [0, 1])
+        try ctx.save()
+
+        let embedder = MapEmbedder(map: ["衝突": [1, 0], "earn trust": [0, 1]], dims: 2)
+        let g = MeetingGroundingProvider(embedder: embedder, screen: FakeScreen(), modelContext: ctx)
+
+        // 單一同義詞 + 相似度下限 → 只撈到字面對上的那則。
+        let single = await g.gather(query: "衝突", brief: "", includeRAG: true, includeScreen: false,
+                                    sources: ["obsidian"], minScore: 0.5)
+        XCTAssertEqual(single.ragExcerpts, ["衝突筆記"], "單查詢 + 下限 → 只撈字面對上的")
+
+        // 多同義詞(| 分隔)聯集 → 兩則都撈到,字面沒對上的 earn trust 筆記也進來。
+        let union = await g.gather(query: "衝突|earn trust", brief: "", includeRAG: true, includeScreen: false,
+                                   sources: ["obsidian"], minScore: 0.5)
+        XCTAssertEqual(Set(union.ragExcerpts), ["衝突筆記", "earn trust 筆記"],
+                       "同義詞多查詢聯集應把字面沒對上的筆記也撈進來")
+    }
+
+    func testQueryTermsSplitsOnPipe() {
+        XCTAssertEqual(MeetingGroundingProvider.queryTerms("團隊衝突|earn trust|協作"),
+                       ["團隊衝突", "earn trust", "協作"])
+        XCTAssertEqual(MeetingGroundingProvider.queryTerms("設計短網址服務"), ["設計短網址服務"],
+                       "無 | → 單一查詢(技術 cue 整句)")
+        XCTAssertEqual(MeetingGroundingProvider.queryTerms(" a | a |  | b "), ["a", "b"], "去空白、去重、去空項")
+        XCTAssertEqual(MeetingGroundingProvider.queryTerms("a|b|c|d|e").count, 4, "上限 4")
+        XCTAssertEqual(MeetingGroundingProvider.queryTerms("   "), [], "全空白 → 空")
     }
 
     /// M8 FR-47/AC-32:sources 白名單必須傳進檢索 scope——只回指定 sourceKind 的塊;
