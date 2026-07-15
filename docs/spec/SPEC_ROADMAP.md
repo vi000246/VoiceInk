@@ -1,6 +1,6 @@
 # Spec Roadmap
 
-> Auto-updated index. Last updated: 2026-07-14
+> Auto-updated index. Last updated: 2026-07-15
 >
 > **AI Agents**: Read this file first to decide which specs to load. Load only what's relevant to
 > your task to avoid context bloat.
@@ -28,6 +28,7 @@
 
 | Date | Module | Feature SRS | One-line Summary |
 |------|--------|-------------|-----------------|
+| 2026-07-15 | ask-ai | [ask-ai-rag-retrieval-accuracy.srs.md](../srs/ask-ai-rag-retrieval-accuracy.srs.md) | **RAG 檢索精準度 spec'd** — 提升筆記（尤其日記）檢索命中率與多輪上下文。①索引端塊標頭語意化（檔名＋內文`標題::`＋標籤＋heading 麵包屑）＋ heading-aware 切塊，`sidecarSchema` 2→3 全 vault 重嵌（逐字稿不動）；②查詢改寫（當前日期＋最近 N 輪對話＋問句 → 完整查詢＋同義詞，零新增呼叫、best-effort 退回）；③回答注入對話歷史。起因：「今年爬過哪些山」引用全錯＋follow-up 被當獨立問題。棄 reranker/BM25/結構化日期過濾。會議 copilot 即時紀律不碰。 |
 | 2026-07-14 | meeting-copilot + ask-ai | [m9-aboutme-replay-lifecycle.srs.md](../srs/completed/meeting-copilot-m9-aboutme-replay-lifecycle.srs.md) ＋ [ask-ai-obsidian-notes-rag.srs.md](../srs/completed/ask-ai-obsidian-notes-rag.srs.md) | **✅ 兩份皆 implemented（330 測試綠 / build 綠）** — 平行 worktree 實作後 merge。報告：`docs/reports/ask-ai-obsidian-notes-rag-and-m9-report.md`。**對抗性 SRS drift 審計（逐條 AC 追「哪個測試會因它壞掉而紅」）揪出四個測試照不到的真缺陷，全數已修**：(1) 🔴 FR-11 根本沒做 —— 會議設定頁的筆記區沒瘦身，導致該頁 vault 繞過 `effectiveVaultRoot()`（設了 override 後兩頁指向不同 vault、該頁「重建索引」建到錯的地方），且兩頁寫同一組 UserDefaults 鍵、該頁 TextField 只在 onAppear 種一次 @State → 在 Ask AI 勾完資料夾後，會議頁一個按鍵就把選擇整組覆寫掉；(2) 🔴 `MeetingSessionReconciler` 的通知 closure 寫死 `.shared` 而非捕獲 self → instance 路徑永久 no-op、AC 的測試證明不了接線、block observer 洩漏；(3) 🔴 `AskAIScope.all` 仍是 `sources = nil` ＝ 原漏洞的第二條路（`AskAISourceFilter.all` 修了，但這個同名「不過濾」常數還掛在介面上）；(4) 🟠 `MeetingReplayQueue` 缺依賴時靜默 return（按了產生覆盤 → badge 閃一下、什麼都沒發生、log 零行）。另在 merge/驗證階段補修：Task 11 的 `emptyRetrievalMessage` 實作從未落地（測試已寫）、`.all` 非 nil 化讓「篩選太窄」訊息恆真、舊測試把 `.all.sources == nil` 這個漏洞當契約鎖住。**剩餘 `implemented_no_test` 全在 SwiftUI view 層**（無 ViewInspector 基建），已列入報告的人工驗證清單。 |
 | 2026-07-14 | ask-ai | [ask-ai-obsidian-notes-rag.srs.md](../srs/ask-ai-obsidian-notes-rag.srs.md) | **Obsidian 筆記升級 Ask AI 一級語料庫 spec'd** — 修 `.all` sources=nil 漏筆記的現有漏洞（回歸鎖）；「語音庫／Obsidian 筆記」雙 chip scope（facet 只套轉錄塊、筆記豁免 category/date）；新 ObsidianRAGConfigStore（vault override＋資料夾 multi-checkbox、鍵沿用零遷移）；頁 onAppear／chip 開啟自動增量索引；EmbeddingChunk/ChunkRef 加出處 metadata（sidecar schema:2 自癒回填＋防幽靈塊）；引用「在 Obsidian 開啟」；meeting-copilot 設定頁筆記 section 瘦身＋導航連結。 |
 | 2026-07-14 | meeting-copilot + ask-ai | [m8-notes-rag-auto-deep.srs.md](../srs/meeting-copilot-m8-notes-rag-auto-deep.srs.md) | **M8 implemented（19 commits / 302 測試綠 / build 綠）+ code-sync** — 四組全數落地。實作階段的關鍵翻案（已寫回 spec Decisions Log）:漏抓匹配改用 `max(Jaccard, 包含度)`（純 Jaccard 對短改寫系統性低估 → 假漏抓）；replay **合成時間軸**（否則去重 30 秒窗退化成全場去重，live/replay 不可比）；觀測快照的 M8 欄位一律 optional（Swift 合成 Decodable 不套預設值 → 舊快照會整份 decode 失敗）；auto-deep 的世代守門（防被取消的舊 deep 抹掉新 deep 的在途標記）。**code-sync 揪出兩個缺口,當天修掉**（commit `1a38f53`,TDD 先紅後綠）:(1) 🔴 `switchModel` 換 embedding 模型後筆記索引**永遠不會重建**（sidecar 只比對檔案 hash、不看 model tag）→ 筆記 RAG 靜默死掉但「重建索引」回報 0 檔說一切正常 = FR-44 後半未落地;(2) 🟠 aboutMe 的片段標題寫「僅供參考,可能過時」與 system prompt 的「唯一事實來源」自打嘴巴。兩者皆已補回歸鎖。 |

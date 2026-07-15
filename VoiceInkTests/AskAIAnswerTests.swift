@@ -21,6 +21,19 @@ private struct BranchingCompleter: ChatCompleting {
     }
 }
 
+/// 同 BranchingCompleter 分流(改寫 vs 答案),另**記錄答案呼叫收到的 user block**——
+/// 驗證對話歷史是否被注入回答 prompt。改寫分支不觸發記錄。
+private struct RecordingBranchingCompleter: ChatCompleting {
+    let expansionReply: String
+    let answerReply: String
+    let onAnswerUser: (@Sendable (String) -> Void)?
+    func complete(system: String, user: String) async throws -> String {
+        if system.contains("檢索查詢改寫器") { return expansionReply }
+        onAnswerUser?(user)
+        return answerReply
+    }
+}
+
 @MainActor
 final class AskAIAnswerTests: XCTestCase {
 
@@ -153,7 +166,7 @@ final class AskAIAnswerTests: XCTestCase {
         XCTAssertEqual(AskAIService.parseExpansions(#"["a","","  "]"#), ["a"], "空白項剔除")
         let fenced = "```json\n[\"x\",\"y\"]\n```"
         XCTAssertEqual(AskAIService.parseExpansions(fenced), ["x", "y"], "code fence 要剝掉")
-        XCTAssertEqual(AskAIService.parseExpansions(#"["1","2","3","4","5"]"#).count, 3, "至多 3 個")
+        XCTAssertEqual(AskAIService.parseExpansions(#"["1","2","3","4","5"]"#).count, 4, "至多 4 個（改寫上限 3→4）")
     }
 
     /// 放寬拒答只放寬「字面沒對上」,反幻覺底線不動——且這是 Ask AI 專用文案。
@@ -163,5 +176,71 @@ final class AskAIAnswerTests: XCTestCase {
         XCTAssertTrue(rules.contains("百岳"), "帶上使用者回報的具體例子")
         XCTAssertTrue(rules.contains("不要編造"), "反幻覺底線保留")
         XCTAssertTrue(rules.contains("找不到相關內容"), "真無關仍要明說找不到")
+    }
+
+    // MARK: - 回答注入對話歷史(AC-7:follow-up 的回答 prompt 看得到上文)
+
+    /// 純函式:帶歷史 → 回答 prompt 含上一輪問句並標示「先前對話」;
+    /// 空歷史 → **不**加「先前對話」字樣(回歸:與現況逐字相容)。
+    func testBuildUserBlockIncludesHistoryButOmitsWhenEmpty() {
+        let withHistory = AskAIService.buildUserBlock(
+            question: "哪一次最累", chunks: [],
+            history: [(role: "user", text: "今年爬過哪些山"), (role: "assistant", text: "玉山")])
+        XCTAssertTrue(withHistory.contains("今年爬過哪些山"), "回答 prompt 應帶入上一輪問句")
+        XCTAssertTrue(withHistory.contains("先前對話"), "非空歷史應標示先前對話段")
+
+        let noHistory = AskAIService.buildUserBlock(question: "哪一次最累", chunks: [])
+        XCTAssertFalse(noHistory.contains("先前對話"), "空歷史不得加先前對話段(與現況逐字相容)")
+    }
+
+    /// 端到端:同一 thread 第二輪提問時,第一輪的問句要被注入回答 user block。
+    /// completer 分流——改寫器回 `[]`(不擴展、退回 base),答案分支記錄收到的 user block。
+    func testAskInjectsPriorThreadHistoryIntoAnswerPrompt() async throws {
+        let ctx = try makeContext()
+        let tid = UUID()
+        insertChunk(ctx, tid: tid, text: "最累的是嘉明湖那次。", vector: [1, 0])
+
+        // 模擬第一輪:thread 內先塞 user/assistant 訊息(createdAt 保證 user 早於 assistant)。
+        let thread = AskAIThread(title: "山")
+        ctx.insert(thread)
+        ctx.insert(AskAIMessage(thread: thread, role: "user", text: "今年爬過哪些山",
+                                createdAt: Date(timeIntervalSince1970: 1)))
+        ctx.insert(AskAIMessage(thread: thread, role: "assistant", text: "玉山、合歡、嘉明湖。",
+                                createdAt: Date(timeIntervalSince1970: 2)))
+        try ctx.save()
+
+        var capturedAnswerUser = ""
+        let embedder = FakeEmbedder(map: ["哪一次最累": [1, 0]], dims: 2)
+        let completer = RecordingBranchingCompleter(
+            expansionReply: "[]", answerReply: "最累的是嘉明湖那次 [1]。",
+            onAnswerUser: { capturedAnswerUser = $0 })
+        AskAIService.shared.configureForTesting(embedder: embedder, completer: completer)
+
+        _ = try await AskAIService.shared.ask(
+            question: "哪一次最累", scope: .all, thread: thread, model: .gemini001_768, context: ctx)
+
+        XCTAssertTrue(capturedAnswerUser.contains("先前對話"), "第二輪回答 prompt 應含先前對話段")
+        XCTAssertTrue(capturedAnswerUser.contains("今年爬過哪些山"), "第二輪回答應看得到第一輪問句")
+    }
+
+    /// 第一輪(thread=nil):當前問句不得混進歷史 → 回答 user block 無「先前對話」,
+    /// 但當前問句仍出現在問題行。守住 priorMessages「插入前擷取」的擷取順序。
+    func testFirstRoundHasNoPriorHistoryInAnswerPrompt() async throws {
+        let ctx = try makeContext()
+        insertChunk(ctx, tid: UUID(), text: "承諾下週三交付。", vector: [1, 0])
+        try ctx.save()
+
+        var capturedAnswerUser = ""
+        let embedder = FakeEmbedder(map: ["誰承諾了什麼": [1, 0]], dims: 2)
+        let completer = RecordingBranchingCompleter(
+            expansionReply: "[]", answerReply: "有人承諾下週三交付 [1]。",
+            onAnswerUser: { capturedAnswerUser = $0 })
+        AskAIService.shared.configureForTesting(embedder: embedder, completer: completer)
+
+        _ = try await AskAIService.shared.ask(
+            question: "誰承諾了什麼", scope: .all, thread: nil, model: .gemini001_768, context: ctx)
+
+        XCTAssertFalse(capturedAnswerUser.contains("先前對話"), "第一輪無歷史;當前問句不得混進上文")
+        XCTAssertTrue(capturedAnswerUser.contains("誰承諾了什麼"), "當前問句仍在問題行")
     }
 }

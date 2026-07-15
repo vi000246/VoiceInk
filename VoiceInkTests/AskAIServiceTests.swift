@@ -160,3 +160,91 @@ final class AskAIRetrievalTests: XCTestCase {
         XCTAssertEqual(results[0].chunk.categoryId, cat)
     }
 }
+
+/// 查詢改寫純函式(2026-07-15 治本召回):日期絕對化、改寫 user block、JSON 解析、prompt 內容鎖。
+/// 全部是 static 純函式,不碰 store / UserDefaults / 網路。
+@MainActor
+final class AskAIQueryRewriteTests: XCTestCase {
+
+    /// 造固定日期(當地時區、正午避開 DST / 日界邊界)。iso8601Day 與 rewriteUserBlock 皆以
+    /// TimeZone.current 格式化,以同一時區、正午建構可穩定對回同一天,勿用即時 Date()。
+    private func fixedDate(year: Int, month: Int, day: Int) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone.current
+        var comps = DateComponents()
+        comps.year = year; comps.month = month; comps.day = day; comps.hour = 12
+        return cal.date(from: comps)!
+    }
+
+    // MARK: - rewriteUserBlock
+
+    /// AC-5/AC-6:改寫器看得到「今天日期」與「上一輪對話」,才可能把「今年」絕對化、
+    /// 把 follow-up「哪一次最累」接回「爬山」脈絡。
+    func testRewriteUserBlockIncludesDateHistoryAndQuestion() {
+        let now = fixedDate(year: 2026, month: 7, day: 15)
+        let history: [(role: String, text: String)] = [
+            (role: "user", text: "今年爬過哪些山"),
+            (role: "assistant", text: "玉山、嘉明湖…")
+        ]
+        let block = AskAIService.rewriteUserBlock(question: "哪一次最累", now: now, history: history)
+        XCTAssertTrue(block.contains("2026-07-15"))
+        XCTAssertTrue(block.contains("今年爬過哪些山"))
+        XCTAssertTrue(block.contains("哪一次最累"))
+    }
+
+    /// 空 history → 不輸出「最近對話」段,但日期與問句仍在。
+    func testRewriteUserBlockEmptyHistoryOmitsConversationSection() {
+        let now = fixedDate(year: 2026, month: 7, day: 15)
+        let block = AskAIService.rewriteUserBlock(question: "哪一次最累", now: now, history: [])
+        XCTAssertFalse(block.contains("最近對話"))
+        XCTAssertTrue(block.contains("2026-07-15"))
+        XCTAssertTrue(block.contains("哪一次最累"))
+    }
+
+    // MARK: - iso8601Day
+
+    func testISO8601DayFormatsFixedDate() {
+        let date = fixedDate(year: 2026, month: 3, day: 16)
+        XCTAssertEqual(AskAIService.iso8601Day(date), "2026-03-16")
+    }
+
+    // MARK: - parseExpansions
+
+    func testParseExpansionsPlainArray() {
+        let out = AskAIService.parseExpansions(#"["2026 爬山","登山"]"#)
+        XCTAssertEqual(out, ["2026 爬山", "登山"])
+    }
+
+    /// 模型常把 JSON 包在 ```json fence 裡——要剝掉 fence 再解析。
+    func testParseExpansionsStripsJSONFence() {
+        let raw = "```json\n[\"2026 爬山\",\"登山\"]\n```"
+        XCTAssertEqual(AskAIService.parseExpansions(raw), ["2026 爬山", "登山"])
+    }
+
+    /// 壞 JSON → [](沿用 repo try? 容錯慣例,退回原始檢索而非崩)。
+    func testParseExpansionsBadJSONReturnsEmpty() {
+        XCTAssertEqual(AskAIService.parseExpansions("not json at all"), [])
+    }
+
+    /// 上限 4:超過只取前 4,避免擴展查詢無限膨脹嵌入成本。
+    func testParseExpansionsCapsAtFour() {
+        let out = AskAIService.parseExpansions(#"["a","b","c","d","e","f"]"#)
+        XCTAssertEqual(out.count, 4)
+        XCTAssertEqual(out, ["a", "b", "c", "d"])
+    }
+
+    /// 空白 / 空字串項剔除。
+    func testParseExpansionsDropsBlankItems() {
+        let out = AskAIService.parseExpansions(#"["登山","  ","","健行"]"#)
+        XCTAssertEqual(out, ["登山", "健行"])
+    }
+
+    // MARK: - queryRewriteSystemPrompt 內容鎖
+
+    func testQueryRewriteSystemPromptContainsBranchingMarkerAndIntent() {
+        // 「檢索查詢改寫器」:BranchingCompleter 靠這字串分流,拿掉會讓改寫請求誤走一般回答分支。
+        XCTAssertTrue(AskAIService.queryRewriteSystemPrompt.contains("檢索查詢改寫器"))
+        // 相對時間絕對化是改寫器核心意圖(今年 → 2026),不可從 prompt 移除。
+        XCTAssertTrue(AskAIService.queryRewriteSystemPrompt.contains("相對時間絕對化"))
+    }
+}

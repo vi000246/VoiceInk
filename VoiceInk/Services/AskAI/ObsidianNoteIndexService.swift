@@ -16,11 +16,104 @@ enum ObsidianNoteChunking {
         return body.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// 每塊前綴《標題》供 LLM 引用出處；切塊沿用 TranscriptChunker（段落、CJK-aware）。
-    static func chunks(title: String, body: String) -> [ChunkDraft] {
-        TranscriptChunker.chunks(for: body).map {
-            ChunkDraft(index: $0.index, text: "《\(title)》\n\($0.text)")
+    /// 內文的 Dataview 行內標題（`標題::<值>` / `標題 :: <值>`）。日記檔名是日期，真正的語意標題
+    /// 寫在這行——不抽出來的話，「爬過哪些山」這種問題在向量空間裡對不上任何塊（2026-07-15 事故）。
+    /// 這些欄位住在 **body**（Obsidian Dataview inline field，非 YAML frontmatter；日記檔實測無 `---`
+    /// frontmatter），故 `stripFrontmatter` 之後仍在。找不到 → nil。
+    static func inlineTitle(of body: String) -> String? {
+        // 逐行掃到命中即 return（O(命中行)）——不設 maxSplits：標題行若落在檔案較後面（如先有一段
+        // 長 frontmatter-like 欄位），設上限會把它吞進尾段大 blob → 前綴比對失敗、標題被靜默丟掉。
+        for line in body.split(separator: "\n", omittingEmptySubsequences: true) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("標題") else { continue }
+            let after = t.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            guard after.hasPrefix("::") else { continue }
+            let value = after.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
         }
+        return nil
+    }
+
+    /// body 裡的 `#tag`（含 Dataview `標籤 :: #A/B/C` 與內文散落的 `#郊山`）。取末段
+    /// （`#Diary/Tag/爬山健行` → `爬山健行`），濾掉純 emoji/符號，去重、上限 6。
+    /// 反例佐證：日記「大同大禮兩日」無「山」字，靠 `#Diary/Tag/爬山健行` 才標得出是爬山。
+    static func noteTags(of body: String) -> [String] {
+        var out: [String] = []
+        var seen = Set<String>()
+        // 分隔集含**全形空格 U+3000** 與不換行空格 U+00A0：CJK 筆記常用全形空格分隔 Dataview 欄位
+        // （`標籤　::　#Diary/Tag/爬山健行`）；漏了它整行變單一 token、tag 被丟，且與 inlineTitle
+        // （用 `.whitespaces`＝含 U+3000）不對稱 → 同一篇「留住標題、丟掉標籤」，打爆 AC-2。
+        for token in body.split(whereSeparator: { " \n\t,，、\u{3000}\u{00A0}".contains($0) }) {
+            guard token.hasPrefix("#"), token.count > 1 else { continue }
+            let raw = token.dropFirst().prefix(while: { $0 != "#" })   // 一 token 只取第一個 tag
+            let last = raw.split(separator: "/").last.map(String.init) ?? String(raw)
+            let v = last.trimmingCharacters(in: CharacterSet(charactersIn: " 。.!?！？：:；;、"))
+            guard v.contains(where: { $0.isLetter || $0.isNumber }) else { continue }   // 濾純 emoji/符號
+            if seen.insert(v).inserted { out.append(v) }
+        }
+        return Array(out.prefix(6))
+    }
+
+    /// 塊標頭用標題：檔名 +（行內標題，若有且不與檔名重複）。
+    static func displayTitle(filename: String, body: String) -> String {
+        guard let inline = inlineTitle(of: body), inline != filename else { return filename }
+        return "\(filename) \(inline)"
+    }
+
+    /// 塊標頭全文：`檔名 [行內標題] · tag1 tag2`。檔名（日期）、語意標題、標籤**都**進每一塊的嵌入。
+    static func headerText(filename: String, body: String) -> String {
+        var parts = [displayTitle(filename: filename, body: body)]
+        let tags = noteTags(of: body)
+        if !tags.isEmpty { parts.append(tags.joined(separator: " ")) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// markdown ATX heading（`# ` ~ `###### `，井號後必須有空白）→ 標題文字；否則 nil。
+    /// 純字元掃描（不用 Regex）：`#tag`（井號後無空白）不會被誤判成 heading。
+    static func headingText(of line: Substring) -> String? {
+        var hashes = 0
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx] == "#" { hashes += 1; idx = line.index(after: idx) }
+        guard hashes >= 1, hashes <= 6, idx < line.endIndex, line[idx] == " " else { return nil }
+        let title = line[idx...].trimmingCharacters(in: .whitespaces)
+        return title.isEmpty ? nil : title
+    }
+
+    /// 依 markdown heading 分節：回傳 [(heading, sectionBody)]。無 heading → 單一 `("", body)`
+    /// （退化為現行整篇段落切塊）。讓塊不跨 heading 邊界、每塊帶所屬 heading。
+    static func sections(of body: String) -> [(heading: String, body: String)] {
+        var result: [(String, String)] = []
+        var currentHeading = ""
+        var buf: [String] = []
+        func flush() {
+            let t = buf.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { result.append((currentHeading, t)) }
+            buf = []
+        }
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let h = headingText(of: line) {
+                flush()
+                currentHeading = h
+            } else {
+                buf.append(String(line))
+            }
+        }
+        flush()
+        return result.isEmpty ? [("", body)] : result
+    }
+
+    /// 每塊前綴《語意標頭》供 LLM 引用出處與檢索；heading-aware 分節後各節分別切塊、塊身前置
+    /// heading 麵包屑。切塊仍沿用 TranscriptChunker（段落、CJK-aware）。
+    static func chunks(title: String, body: String) -> [ChunkDraft] {
+        let header = headerText(filename: title, body: body)
+        var drafts: [ChunkDraft] = []
+        for (heading, sectionBody) in sections(of: body) {
+            let crumb = heading.isEmpty ? "" : "[\(heading)]\n"
+            for piece in TranscriptChunker.chunks(for: sectionBody) {
+                drafts.append(ChunkDraft(index: drafts.count, text: "《\(header)》\n\(crumb)\(piece.text)"))
+            }
+        }
+        return drafts
     }
 
     /// vault 相對路徑 → 確定性 UUID（SHA-256 前 16 bytes）。改名＝新 id＝舊塊變孤兒由 diff 清。
@@ -48,7 +141,9 @@ final class ObsidianNoteIndexService {
     /// 沒有狀態 → 全量重嵌，舊塊在起點被清光（見 `discardAllNoteChunks`）。這是筆記索引唯一的
     /// 自癒機制：檔案內容 hash 沒變，只有「我們產塊的方式」變了，靠版本號才追得回來。
     /// 2 = 塊帶 `sourceTitle` / `sourcePath` 出處欄位（1 = M8 首版，塊沒有出處）。
-    static let sidecarSchema = 2
+    /// 3 = 塊標頭語意化（檔名＋內文 `標題::`＋標籤）＋ heading-aware 切塊（2026-07-15）——塊 `text`
+    ///     的組成規則變了，向量會不同，必須升版讓 `loadState` 判舊 sidecar 不可信 → 全 vault 重嵌。
+    static let sidecarSchema = 3
 
     private let embedder: EmbeddingProviding
     private let modelContext: ModelContext

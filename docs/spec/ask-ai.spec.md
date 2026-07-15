@@ -10,12 +10,13 @@
 - **Owner**: TBD (personal fork — vi000246/VoiceInk)
 - **Status**: ACTIVE — living document
 - **Created**: 2026-07-06
-- **Last Updated**: 2026-07-14
+- **Last Updated**: 2026-07-15
 
 ## Change History
 
 | Date | Source PRD | Feature SRS | Summary |
 |------|------------|-------------|---------|
+| 2026-07-15 | N/A（使用者實測回報） | `docs/srs/ask-ai-rag-retrieval-accuracy.srs.md` | **RAG 檢索精準度：標頭語意化 + 查詢改寫 + 多輪上下文（spec'd）** — 起因：問「今年爬過哪些山」引用全錯、follow-up 被當獨立問題。根因是筆記塊標頭零語意（日記檔名是日期，山名/標籤只在內文，向量對不上）＋查詢端只看當前一句、不做時間/上下文推理。三主軸：①**索引端標頭語意化**——`ObsidianNoteChunking` 塊標頭從 `《檔名》` 擴為 `《檔名 + 內文標題(`標題::`) + 標籤(`標籤::`/`#tag`)》`，並 heading-aware 切塊（依 markdown heading 分節、塊不跨節、前置 heading 麵包屑）；`sidecarSchema` 2→3 觸發全 vault 一次性重嵌（自癒機制，逐字稿不動）。②**查詢端改寫**——把上週的「同義詞擴展」單一 fast 呼叫升級成「當前日期＋最近 N 輪對話＋當前問句 → 獨立完整查詢＋同義變體」，零新增呼叫、best-effort 退回。③**回答端**——`ask` 注入最近 N 輪對話，follow-up 能理解上文。棄 reranker/BM25/結構化日期過濾（筆記日期是 mtime 不可信，改寫把「2026」放進查詢文字達成等價）。會議 copilot 即時接地/拒答不碰。 |
 | 2026-07-14 | N/A（使用者需求） | N/A（直接實作） | **索引 UX 重整：背景索引 + 進度 + 覆蓋率（已實作）** — ①「重建索引」從頁首搬進齒輪，並依語料庫拆成兩顆：`重建語音庫索引`（逐字稿 backfill）與 `重建筆記庫索引`（Obsidian）。舊名「重建索引」只回填逐字稿，筆記沒索引的人按它一百次也不會有用——名字對不上語料庫就是誤導。②新 `NoteIndexCoordinator`（@MainActor 單例）成為筆記索引**唯一的 in-flight 擁有者**：Task 歸單例持有 → 關掉設定 sheet／離開 Ask AI 頁，索引照跑；`@Published progress/lastRun` 讓 view 只當觀察者（進度不再隨 view 陪葬）。四個入口（頁 onAppear／筆記 chip 開啟／會議 attach／設定頁手動）全部收斂到這裡 → 修掉一個真實的 latent race：「開著 Ask AI 又開會」以前會有**兩份 reindex 同時掃同一份 sidecar**，hash 表互相覆蓋、同一批檔重複打 embedding API。③`reindex` 加 `onProgress` 回報與 `force`（強制全量重嵌，逃生門）＋取消點；取消時**照樣寫回 sidecar**（未處理的檔沿用舊 hash → 已花的錢不白費、還沒做的事也不會被蓋成做完）。④`TranscriptIndexService.backfill()` 的 AsyncStream 改成 service 持有的 Task ＋ `@Published backfillProgress`（同理：回填幾分鐘，使用者一定會切走）。⑤**新 `NoteIndexCoverage`（索引覆蓋率）**：把「vault 現在有什麼」對上「索引裡真的有什麼」（權威來源是 `EmbeddingChunk` 本身，不是 sidecar）→ 每個檔一個狀態：`indexed`／`stale`(改過待重嵌)／`pending`(**新檔還沒進索引**)／`empty`(沒內容，不是漏索引)／`ghost`(檔案沒了但塊還在 → 檢索得到 = AI 拿刪掉的筆記回答)。這是使用者唯一看得見「增量索引靜默失效」的地方。⑥頁首「新對話」→「清除對話」：真的把 thread 從 index store 刪掉（cascade），不再只是清畫面留一堆永遠回不去的死 thread。⑦切換 embedding 模型後順手重建筆記索引（`switchModel` 刪光**所有**塊含筆記，只回填逐字稿的話筆記索引會靜默消失）。 |
 | 2026-07-14 | N/A（對抗式審查） | N/A | **索引 UX 的七個缺陷（審查揪出，已修＋回歸鎖）** — 🔴 **取消契約整段是死碼**：迴圈唯一的懸掛點是 embedding 請求，取消時 URLSession 丟的是 `URLError(.cancelled)`（再被 `EmbeddingClient` 包成 `.http(0,…)`），**不是** `CancellationError` → 只認型別的話「取消也要把已嵌好的檔記進 sidecar」永遠不會執行 → 已付費的檔下次全部重嵌，且使用者看到紅色「索引失敗」而非「已取消」。改以 `Task.isCancelled` 為準（service ＋ coordinator 兩端）。🔴 **`force` 全量重嵌先清塊、後失效 sidecar**：sidecar 是最後才寫的，force 那輪中途死掉（斷網／金鑰過期）就等於「塊全沒了、hash 表卻仍有效」→ 下次增量掃描 hash 全命中 → 全部跳過 → **筆記索引永久空著且完全無聲**（重建鈕回報「已是最新」）。改成**先寫空 state、再清塊**。🔴 **取消時弄丟「已消失檔案」的 sidecar 記錄**：消失檔的 key 只存在於 sidecar，取消時只補「磁碟上還在的檔」會讓它蒸發 → 下輪算不出它消失過 → 塊變**永久幽靈**（檢索撈得到 → AI 拿刪掉的筆記回答）。改成沿用**所有** oldState 未處理的 key。🔴 **換 embedding 模型時 backfill 靜默被吞**：`switchModel` 清光所有塊後呼叫的重建撞上新的 single-flight → no-op → 索引永久缺一角。索引期間 disable 模型 picker。🔴 **`清除對話` 刪掉 in-flight `ask()` 手上的 thread** → 寫入已刪除的 SwiftData 物件；提問中 disable。🟠 **覆蓋率謊報「無內容」**：零塊但 hash 命中就判 `.empty` → 上面那個 force 失敗情境下會給出一整排無害的「無內容」＋綠色「都已進索引」，而實際上索引是空的。改成掃描時實際切一次塊（與索引器同一套規則）判斷有無內容；**有內容卻零塊一律 `pending`，不看 hash**（塊是權威，sidecar 只是帳本）。🟠 覆蓋率掃描加世代標記（慢的舊掃描不得覆蓋新 scope 的結果）。 |
 | 2026-07-14 | N/A（測試基建） | N/A | **測試不得碰 `UserDefaults.standard`（修 flaky 紅燈）** — `MeetingCopilotConfigStore` 的設定後端抽成 `MeetingCopilotDefaults` protocol（正式 = `UserDefaults.standard`，測試注入 `InMemoryDefaults`）。起因：新增一個 test class 後 `MeetingCopilotConfigStoreTests.testNotesRAGSettingsRoundTrip` 開始隨機紅。根因有二，缺一不可：(a) test target 是 `parallelizable = YES` —— 每個 class 一個 process 但**共用同一個 UserDefaults domain**，`MeetingReplayReviewTests` 寫 `useNotesRAG = false` 的瞬間，另一個 process 正在斷言「未設定 → 預設 true」；(b) 就算改用 `UserDefaults(suiteName:)` 也救不了——suite 只是**加進** search list，讀取仍會 fallthrough 到 app 自己的 domain，於是測試讀到的是**開發機上 VoiceInk 的真實偏好設定**。所以隔離必須換掉整個後端。順手刪掉三處「setUp 備份 / tearDown 還原 `.standard`」的 bracket：它們本身就是在**寫**全域 domain，正是污染源。 |
@@ -164,6 +165,7 @@ See `docs/srs/ask-ai-semantic-qa.srs.md` for field-level detail. Keys: `Embeddin
 - **Backward**: deleting `index.store` (or removing the config) loses only derived data; rebuildable via backfill.
 - **Backfill**: explicit user-triggered job (cost/quota estimate shown first); resumable; idempotent by chunk identity.
 - **Coexistence**: index absent ⇒ page shows empty-state with backfill CTA; core app unaffected.
+- **筆記塊內容格式版本（`ObsidianNoteIndexService.sidecarSchema`）**：塊 `text` 的組成規則改變時必須升版（不是欄位變更，是**塊內容**變更 → 向量會不同）。升版讓 `loadState` 判定舊 sidecar 不可信 → 回空 → `discardAllNoteChunks` + 全 vault 重嵌（自癒，見 `reindex` 對 `oldState.isEmpty` 的處理）。逐字稿索引（`TranscriptIndexService`）獨立、不受筆記 schema 影響。2026-07-15 標頭語意化 + heading-aware 切塊 → **2 升 3**。
 
 ---
 
@@ -288,6 +290,9 @@ Inert until an embedding key is configured + backfill run. Kill switch: none nee
 | 舊塊 metadata 回填（notes-rag SRS） | sidecar `schema` 版號 → 全量重嵌一次 | 免重嵌的 metadata-only 回填 pass | 三行實作、自癒、鏡射既有 model-tag 檢查；回填 pass 是一次性遷移碼，個人規模重嵌成本可忽略 |
 | 筆記管線設定的家（notes-rag SRS） | 新 `ObsidianRAGConfigStore`（ask-ai 側） | 留在 MeetingCopilotConfigStore | 索引成為兩功能共用資產；掛在 meeting 設定下逼 Ask AI-only 使用者翻不相干頁面；鍵沿用零遷移 |
 | 點回筆記的 URL（notes-rag SRS） | `obsidian://open?path=`（絕對路徑） | `vault=&file=` 參數對 | path 免 vault 名匹配、Obsidian 自行解析所屬 vault；限制（vault 需在 Obsidian 註冊過）記入 Open Questions |
+| 筆記塊語意標頭（rag-accuracy SRS） | 塊標頭嵌入「檔名＋內文標題＋標籤＋heading 麵包屑」 | 只留檔名（現況）；或改用結構化 metadata 欄位另存 | 日記檔名是日期、語意在內文；把語意塞進**塊 text**（會被嵌入）零查詢期成本、直接進向量空間；另存欄位還要改檢索路徑 |
+| 時間問句（「今年」）（rag-accuracy SRS） | 查詢改寫把「2026」放進查詢文字 | 從檔名 parse 日期做結構化 dateRange 過濾 | 筆記 `timestamp` 是檔案 mtime（既有註解已對筆記豁免日期過濾＝不可信）；文字錨定更穩更簡、且與同義詞擴展共用同一次呼叫 |
+| 多輪上下文（rag-accuracy SRS） | 檢索端靠改寫濃縮上文 + 回答端注入對話歷史（雙路） | 只做其一 | 改寫治「撈錯塊」、歷史注入治「答錯理解」；follow-up 兩種病都有，缺一則另一半仍錯 |
 
 ---
 

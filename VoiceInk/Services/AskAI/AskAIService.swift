@@ -74,15 +74,32 @@ final class AskAIService: ObservableObject {
         """
     }
 
-    static func buildUserBlock(question: String, chunks: [ScoredChunk]) -> String {
+    static func buildUserBlock(question: String, chunks: [ScoredChunk],
+                               history: [(role: String, text: String)] = []) -> String {
         var lines: [String] = []
         for (i, scored) in chunks.enumerated() {
             let excerpt = String(scored.chunk.text.prefix(800))
             lines.append("[\(i + 1)] \(excerpt)")
         }
         lines.append("")
+        // 先前對話讓 follow-up 有上文(「哪一次最累」要知道上一輪在問山);引用仍只依片段。
+        // 空歷史 → 不加行,輸出與現況逐字相同。
+        if !history.isEmpty {
+            lines.append("先前對話(僅供理解上下文,不是引用來源):")
+            for m in history.suffix(6) {
+                lines.append("\(m.role == "assistant" ? "AI" : "我"):\(Self.strippedHistory(m.text))")
+            }
+            lines.append("")
+        }
         lines.append("問題:\(question)")
         return lines.joined(separator: "\n")
+    }
+
+    /// 注入對話歷史前的清洗：剝掉舊的 `[n]` 引用標記（那是上一輪**不同檢索集**的編號，模型若覆誦
+    /// 進新答案會被 `extractCitations` 映到當前語意無關卻在界內的片段 → 接地漂移），再截斷 200 字。
+    static func strippedHistory(_ text: String) -> String {
+        let stripped = text.replacingOccurrences(of: #"\[\d+\]"#, with: "", options: .regularExpression)
+        return String(stripped.prefix(200))
     }
 
     /// 從回答抽出 [n] 引用,只保留 1...retrieved.count 範圍內的(越界＝幻覺,剔除),去重、保序。
@@ -106,17 +123,21 @@ final class AskAIService: ObservableObject {
         return refs
     }
 
-    // MARK: - 查詢擴展(多查詢召回;2026-07-15)
+    // MARK: - 查詢改寫 + 多查詢召回(2026-07-15)
 
-    /// 分類器/改寫器 prompt。要求模型吐 2-3 個「用詞不同但語意相近」的檢索查詢。
-    static let queryExpansionSystemPrompt = """
-    你是檢索查詢改寫器。針對使用者的問題,產生 2-3 個**用詞不同但語意相近**的檢索查詢,\
-    涵蓋同義詞、上下位詞與具體實例(例:「山」→「百岳」「登山」「玉山」;「績效」→「考核」「KPI」「年度評核」)。\
-    目的是把「講同一件事但字面沒對上」的資料也撈出來。
-    只輸出 JSON 字串陣列,例:["改寫一","改寫二"]。不要解釋、不要 markdown、不要問句以外的內容。
+    /// 檢索查詢改寫器 prompt：把口語 + 相對時間 + 對話脈絡的問句，改寫成獨立完整、時間絕對化、
+    /// 帶同義詞的檢索查詢集。取代原本「只看當前一句」的同義詞擴展——治「今年」對不上「2026」、
+    /// 以及 follow-up 失去上文兩個病。
+    static let queryRewriteSystemPrompt = """
+    你是檢索查詢改寫器。根據「今天日期 + 最近對話 + 使用者問題」,產生 2-4 個**獨立、完整、\
+    可直接向量檢索**的查詢:把口語問句補成不依賴對話也看得懂的樣子,涵蓋同義詞/上位詞/具體實例,\
+    並把**相對時間絕對化**(例:今天 2026-07-15、問「今年爬過哪些山」→ \
+    ["2026 爬山 登山 健行","2026 百岳 縱走","2026 郊山 步道"];follow-up「哪一次最累」在爬山脈絡下 → \
+    ["2026 爬山 最累 玉山 嘉明湖","登山 體力 疲累"])。
+    只輸出 JSON 字串陣列,不要解釋、不要 markdown、不要問句以外的內容。
     """
 
-    /// 解析擴展查詢 JSON 陣列。任何失敗 → [](沿用 repo `try? JSONDecoder` 容錯慣例)。純函式。
+    /// 解析改寫查詢 JSON 陣列。任何失敗 → [](沿用 repo `try? JSONDecoder` 容錯慣例)。純函式。
     static func parseExpansions(_ raw: String) -> [String] {
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.hasPrefix("```") {
@@ -128,29 +149,56 @@ final class AskAIService: ObservableObject {
               let arr = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Array(arr.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .prefix(3))
+            .prefix(4))
     }
 
-    /// 用快模型把問題改寫成 2-3 個同義查詢。best-effort:未設定 completer / 呼叫失敗 / 解析失敗 → []。
-    private func queryExpansions(for question: String) async -> [String] {
+    /// ISO-8601 的「年-月-日」(供改寫器把相對時間絕對化)。
+    static func iso8601Day(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone.current
+        return f.string(from: date)
+    }
+
+    /// 改寫器 user block：今天日期 + 最近對話 + 當前問句。純函式(供測試)。
+    static func rewriteUserBlock(question: String, now: Date,
+                                 history: [(role: String, text: String)]) -> String {
+        var lines = ["今天日期:\(iso8601Day(now))"]
+        if !history.isEmpty {
+            lines.append("最近對話:")
+            for m in history.suffix(6) {
+                lines.append("\(m.role == "assistant" ? "AI" : "我"):\(Self.strippedHistory(m.text))")
+            }
+        }
+        lines.append("使用者問題:\(question)")
+        return lines.joined(separator: "\n")
+    }
+
+    /// 用快模型把問句改寫成帶時間與脈絡的檢索查詢集。best-effort:未設 completer/呼叫失敗/解析失敗 → []。
+    private func rewriteQueries(question: String, now: Date,
+                               history: [(role: String, text: String)]) async -> [String] {
         guard let completer else { return [] }
         do {
-            let reply = try await completer.complete(system: Self.queryExpansionSystemPrompt, user: question)
+            let reply = try await completer.complete(
+                system: Self.queryRewriteSystemPrompt,
+                user: Self.rewriteUserBlock(question: question, now: now, history: history))
             return Self.parseExpansions(reply)
         } catch {
-            logger.error("Ask AI 查詢擴展失敗(退回原始檢索): \(error.localizedDescription, privacy: .public)")
+            logger.error("Ask AI 查詢改寫失敗(退回原始檢索): \(error.localizedDescription, privacy: .public)")
             return []
         }
     }
 
-    /// 多查詢召回:原始檢索結果 + 各擴展查詢的檢索結果,以 chunk 身分取聯集、保留最高分、取前 12。
+    /// 多查詢召回:原始檢索結果 + 各改寫查詢的檢索結果,以 chunk 身分取聯集、保留最高分、取前 12。
     ///
     /// max-score fusion:一段筆記只要**強配上任一個查詢變體**就能浮上來(問「山」時 base 撈不到,
-    /// 但「百岳」變體撈得到 → 該段以「百岳」的高分擠掉 base 裡較不相關的段)。送進答案的仍是 12 段,
+    /// 但改寫出的「2026 百岳」變體撈得到 → 該段以高分擠掉 base 裡較不相關的段)。送進答案的仍是 12 段,
     /// prompt 大小不變,只是換成更相關的 12 段。全程 best-effort,任一步失敗回 `base`。
-    private func augmentWithExpandedQueries(base: [ScoredChunk], question: String, scope: AskAIScope,
-                                            model: EmbeddingModel, context: ModelContext) async -> [ScoredChunk] {
-        let expansions = await queryExpansions(for: question)
+    private func augmentWithRewrittenQueries(base: [ScoredChunk], question: String, now: Date,
+                                             history: [(role: String, text: String)], scope: AskAIScope,
+                                             model: EmbeddingModel, context: ModelContext) async -> [ScoredChunk] {
+        let expansions = await rewriteQueries(question: question, now: now, history: history)
         guard !expansions.isEmpty else { return base }
 
         let vectors: [[Float]]
@@ -174,6 +222,11 @@ final class AskAIService: ObservableObject {
     func ask(question: String, scope: AskAIScope, thread: AskAIThread?,
              model: EmbeddingModel, context: ModelContext, persona: String? = nil) async throws -> AskAIMessage {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 先擷取**本輪問句插入前**的歷史(否則當前問句自己會混進「上文」)。用於查詢改寫與回答注入。
+        let priorMessages: [(role: String, text: String)] = (thread?.messages ?? [])
+            .sorted { $0.createdAt < $1.createdAt }
+            .map { (role: $0.role, text: $0.text) }
 
         // 持久化 user 訊息。
         let resolvedThread = thread ?? {
@@ -210,15 +263,16 @@ final class AskAIService: ObservableObject {
         // 查詢擴展(治本召回,2026-07-15):原問題撈到東西了,再用同義/具體化改寫多撈幾條、聯集後
         // 重排取前 12。字面沒對上的資料(問「山」、筆記寫「百岳」)靠這個進入答案上下文。
         // 全程 best-effort——擴展的任何一步失敗都退回原始檢索,絕不比現況差;送進答案的仍是 12 段。
-        let retrieved = await augmentWithExpandedQueries(base: base, question: trimmed,
-                                                         scope: scope, model: model, context: context)
+        let retrieved = await augmentWithRewrittenQueries(base: base, question: trimmed, now: Date(),
+                                                          history: priorMessages, scope: scope,
+                                                          model: model, context: context)
 
         guard let completer else {
             return persistAssistant(text: "尚未設定回答模型。", citations: [],
                                     thread: resolvedThread, context: context)
         }
 
-        let userBlock = Self.buildUserBlock(question: trimmed, chunks: retrieved)
+        let userBlock = Self.buildUserBlock(question: trimmed, chunks: retrieved, history: priorMessages)
         let answer: String
         do {
             answer = try await completer.complete(system: Self.systemPrompt(persona: persona), user: userBlock)

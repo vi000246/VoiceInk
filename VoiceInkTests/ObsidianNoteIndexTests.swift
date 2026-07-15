@@ -110,7 +110,8 @@ final class ObsidianNoteIndexTests: XCTestCase {
                       "重嵌後的塊必須標新的向量空間")
     }
 
-    /// 🔴 AC-7：舊 sidecar（無 schema）→ 全量重嵌＋metadata 回填＋幽靈塊清理＋sidecar 寫回 schema:2。
+    /// 🔴 AC-7：舊 sidecar（無 schema）→ 全量重嵌＋metadata 回填＋幽靈塊清理＋sidecar 寫回 schema:3
+    ///（2026-07-15 標頭語意化把 sidecarSchema 2→3；寫回值跟著現行常數走）。
     @MainActor
     func testSchemaBumpForcesFullReembedBackfillsMetadataAndClearsGhosts() async throws {
         let (ctx, embedder) = try makeInMemoryContextAndFakeEmbedder()
@@ -134,7 +135,7 @@ final class ObsidianNoteIndexTests: XCTestCase {
         XCTAssertFalse(chunks.contains { $0.text.contains("幽靈") }, "全量起點清掉幽靈塊")
         XCTAssertTrue(chunks.allSatisfy { $0.sourceTitle == "專案A" && $0.sourcePath == "工作/專案A.md" })
         let written = try String(contentsOf: stateURL, encoding: .utf8)
-        XCTAssertTrue(written.contains(#""schema":2"#))
+        XCTAssertTrue(written.contains(#""schema":3"#))
     }
 
     // MARK: - 自動增量觸發
@@ -178,5 +179,100 @@ final class ObsidianNoteIndexTests: XCTestCase {
         }
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return root
+    }
+
+    // MARK: - Chunking 純函式（schema:3 標頭語意化 + heading-aware 切塊，2026-07-15）
+
+    /// inlineTitle：日記語意標題寫在 body 的 Dataview `標題::` 行——抽不出來，「爬過哪些山」
+    /// 就對不上任何塊（AC-1 的事故起點）。雜訊欄位（`心情 ::`）不可誤判成標題。
+    func testInlineTitleExtractsDataviewTitleAndRejectsNoise() {
+        XCTAssertEqual(
+            ObsidianNoteChunking.inlineTitle(of: "心情 :: #Diary/Moon/😄\n標題::去爬小觀音山，約會吃串燒\n內文"),
+            "去爬小觀音山，約會吃串燒")
+        XCTAssertEqual(
+            ObsidianNoteChunking.inlineTitle(of: "標題 :: 玉山主峰登頂失敗"),
+            "玉山主峰登頂失敗")
+        XCTAssertNil(ObsidianNoteChunking.inlineTitle(of: "內文沒有任何標題行"), "無標題行 → nil")
+        XCTAssertNil(ObsidianNoteChunking.inlineTitle(of: "標題::   "), "空值 → nil")
+        XCTAssertNil(ObsidianNoteChunking.inlineTitle(of: "標題欄位說明"), "非 Dataview（無 ::）→ nil")
+    }
+
+    /// noteTags：Dataview `標籤 ::` 與內文散落 `#郊山` 都要抓，取末段、去純 emoji、markdown heading 不算 tag。
+    /// 反例佐證：日記「大同大禮兩日」無「山」字，靠 `#Diary/Tag/爬山健行` 才標得出是爬山（AC-2）。
+    func testNoteTagsExtractsLastSegmentAndFiltersEmojiAndHeading() {
+        let tags = ObsidianNoteChunking.noteTags(of: "標籤 :: #Diary/Tag/爬山健行\n今天走了 #郊山")
+        XCTAssertTrue(tags.contains("爬山健行"))
+        XCTAssertTrue(tags.contains("郊山"))
+        XCTAssertFalse(ObsidianNoteChunking.noteTags(of: "#Diary/Moon/😄").contains("😄"), "純 emoji 濾掉")
+        XCTAssertTrue(ObsidianNoteChunking.noteTags(of: "#Diary/Category/每日隨筆").contains("每日隨筆"))
+        XCTAssertTrue(ObsidianNoteChunking.noteTags(of: "## solution").isEmpty, "markdown heading 不是 tag")
+    }
+
+    /// displayTitle：檔名（日期）＋行內標題；無行內標題只回檔名。
+    func testDisplayTitleCombinesFilenameAndInlineTitle() {
+        XCTAssertEqual(
+            ObsidianNoteChunking.displayTitle(filename: "2026-03-16", body: "標題::去爬小觀音山"),
+            "2026-03-16 去爬小觀音山")
+        XCTAssertEqual(
+            ObsidianNoteChunking.displayTitle(filename: "2026-03-16", body: "沒有行內標題的內文"),
+            "2026-03-16", "無行內標題 → 只回檔名")
+    }
+
+    /// headerText：檔名、語意標題、標籤**都**進標頭（每塊嵌入都帶）。無山字的爬山日記靠 tag 命中（AC-2）。
+    func testHeaderTextCarriesFilenameTitleAndTags() {
+        let header = ObsidianNoteChunking.headerText(
+            filename: "2026-02-22",
+            body: "標題::大同大禮兩日\n標籤 :: #Diary/Tag/爬山健行")
+        XCTAssertTrue(header.contains("大同大禮兩日"))
+        XCTAssertTrue(header.contains("爬山健行"))
+    }
+
+    /// headingText：ATX heading（`#`×1~6 後接空白）→ 標題；`#tag`（無空白）與 7 個井號與純文字 → nil。
+    func testHeadingTextRecognizesATXHeadingsOnly() {
+        XCTAssertEqual(ObsidianNoteChunking.headingText(of: "## solution"[...]), "solution")
+        XCTAssertEqual(ObsidianNoteChunking.headingText(of: "###### 深"[...]), "深")
+        XCTAssertNil(ObsidianNoteChunking.headingText(of: "#tag"[...]), "井號後無空白 → 非 heading")
+        XCTAssertNil(ObsidianNoteChunking.headingText(of: "####### 太多"[...]), "7 個井號 → 非 heading")
+        XCTAssertNil(ObsidianNoteChunking.headingText(of: "一般文字"[...]), "無井號 → nil")
+    }
+
+    /// sections：依 heading 分節、塊不跨節；無 heading 退化為單一 ("", body)。
+    func testSectionsSplitOnHeadingsAndFallbackToWhole() {
+        let secs = ObsidianNoteChunking.sections(of: "## solution\nMerge 用 participant id\n\n## 時序\n開賽前 1 秒")
+        XCTAssertEqual(secs.count, 2)
+        XCTAssertEqual(secs[0].heading, "solution")
+        XCTAssertTrue(secs[0].body.contains("participant id"))
+        XCTAssertFalse(secs[0].body.contains("開賽前"), "第一節不含第二節內容")
+
+        let whole = ObsidianNoteChunking.sections(of: "純文字沒有標題\n第二行")
+        XCTAssertEqual(whole.count, 1)
+        XCTAssertEqual(whole[0].heading, "", "無 heading → 空標頭單節")
+    }
+
+    /// chunks（heading-aware）：各節分別切塊、塊身前置 heading 麵包屑、不跨節；每塊以《…》語意標頭開頭且含檔名。
+    func testChunksAreHeadingAwareWithBreadcrumbAndHeader() {
+        let drafts = ObsidianNoteChunking.chunks(
+            title: "50 PIM-30721",
+            body: "## solution\nMerge 用 participant id\n\n## 時序\n開賽前 1 秒")
+        guard let hit = drafts.first(where: { $0.text.contains("participant id") }) else {
+            return XCTFail("找不到含 participant id 的 draft")
+        }
+        XCTAssertTrue(hit.text.contains("solution"), "帶所屬 heading 麵包屑")
+        XCTAssertFalse(hit.text.contains("開賽前"), "不跨節")
+        XCTAssertTrue(drafts.allSatisfy { $0.text.hasPrefix("《") }, "每塊以語意標頭開頭")
+        XCTAssertTrue(drafts.allSatisfy { $0.text.contains("50 PIM-30721") }, "每塊標頭含檔名")
+    }
+
+    /// chunks（無 heading 回退）：行為與現行段落切塊一致，只是標頭語意化——drafts 非空且以《T 開頭。
+    func testChunksFallBackToParagraphChunkingWithoutHeadings() {
+        let drafts = ObsidianNoteChunking.chunks(title: "T", body: "第一段\n\n第二段")
+        XCTAssertFalse(drafts.isEmpty)
+        XCTAssertTrue(drafts[0].text.hasPrefix("《T"))
+    }
+
+    /// sidecarSchema：塊內容格式變更（標頭語意化 + heading-aware）→ 必須升到 3，否則舊 sidecar 被誤信不重嵌。
+    @MainActor
+    func testSidecarSchemaIsThree() {
+        XCTAssertEqual(ObsidianNoteIndexService.sidecarSchema, 3)
     }
 }
