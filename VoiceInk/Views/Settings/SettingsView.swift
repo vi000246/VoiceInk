@@ -114,6 +114,14 @@ struct SettingsView: View {
                         .controlSize(.small)
                 }
 
+                // 熱鍵一覽表:展開/收合列出所有熱鍵的浮動視窗(HotkeyCheatSheetView)。
+                LabeledContent("熱鍵一覽表（cheat sheet）") {
+                    ShortcutRecorder(action: .toggleHotkeyCheatSheet) {
+                        recordingShortcutManager.updateShortcutStatus()
+                    }
+                        .controlSize(.small)
+                }
+
                 LabeledContent("Cancel Recording") {
                     HStack(spacing: 8) {
                         ShortcutRecorder(

@@ -7,8 +7,11 @@ struct MeetingIndicatorView: View {
     @ObservedObject var controller: MeetingCaptureController
     @ObservedObject private var overlayManager = CopilotOverlayWindowManager.shared
     @ObservedObject private var copilotConfig = MeetingCopilotConfigStore.shared
+    @ObservedObject private var scriptStore = PresenterScriptStore.shared
+    @ObservedObject private var presenterManager = PresenterScriptWindowManager.shared
     @State private var pulsing = false
     @State private var showScreenPicker = false
+    @State private var showScriptPicker = false
     /// `Shortcut.displayString` 不是 observable —— 收到 `shortcutDidChange` 就 bump 這個
     /// 逼 body 重算熱鍵提示(pattern 同 ShortcutRecorder)。
     @State private var shortcutTick = 0
@@ -70,6 +73,28 @@ struct MeetingIndicatorView: View {
             .buttonStyle(.plain)
             .disabled(!controller.copilotActive)
             .delayedTooltip(copilotConfig.liveTranslationEnabled ? "即時翻譯:開啟中(點擊關閉)" : "即時翻譯:已關閉(點擊開啟)")
+            // 預設講稿快速入口:下拉選稿 → 開讀稿面板直接跳到該稿。
+            // 讀稿面板獨立於 copilot pipeline(不 gate 在 copilotActive),會議中隨時可用。
+            Button {
+                showScriptPicker = true
+            } label: {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 13))
+                    .foregroundStyle(scriptStore.scripts.isEmpty
+                                     ? Color.secondary.opacity(0.4)
+                                     : (presenterManager.isPinned ? Color.accentColor : Color.secondary))
+            }
+            .buttonStyle(.plain)
+            .disabled(scriptStore.scripts.isEmpty)
+            .delayedTooltip(scriptStore.scripts.isEmpty
+                            ? "尚無講稿——到「會議copilot設定 → 預設講稿」新增"
+                            : "開啟預設講稿")
+            .popover(isPresented: $showScriptPicker, arrowEdge: .bottom) {
+                PresenterScriptQuickPicker { id in
+                    presenterManager.showScript(id)
+                    showScriptPicker = false
+                }
+            }
             // 快速把錄製列 + 所有浮動視窗丟到另一個螢幕(比拖曳快;多螢幕才啟用)。
             Button {
                 showScreenPicker = true
@@ -111,6 +136,40 @@ struct MeetingIndicatorView: View {
         .onReceive(NotificationCenter.default.publisher(for: ShortcutStore.shortcutDidChange)) { _ in
             shortcutTick &+= 1
         }
+    }
+}
+
+/// live pill 講稿下拉的內容:講稿標題直列,點一則 → 開讀稿面板直接跳到該稿。
+/// 樣式鏡射 `ScreenArrangementPicker`(同一顆 pill 上的另一個 popover)。
+struct PresenterScriptQuickPicker: View {
+    let onPick: (UUID) -> Void
+    @ObservedObject private var store = PresenterScriptStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("預設講稿").font(.system(size: 12, weight: .semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(store.scripts) { s in
+                    Button { onPick(s.id) } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                            Text(s.title.isEmpty ? "（未命名）" : s.title)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            Text("點一則即開啟讀稿面板").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(width: 220)
     }
 }
 
@@ -241,7 +300,7 @@ final class MeetingIndicatorWindowManager {
 
     /// 指定螢幕的右上角(選單列下方),避開聽寫 mini recorder 的螢幕底部位置。
     static func metrics(for screen: NSScreen) -> NSRect {
-        let width: CGFloat = 250   // 紅點+計時+copilot+overlay+即時翻譯+移動螢幕+停止(各 13–16pt icon + 8 spacing)
+        let width: CGFloat = 278   // 紅點+計時+copilot+overlay+即時翻譯+講稿+移動螢幕+停止(各 13–16pt icon + 8 spacing)
         let height: CGFloat = 34
         let f = screen.visibleFrame
         return NSRect(x: f.maxX - width - 16, y: f.maxY - height - 12, width: width, height: height)

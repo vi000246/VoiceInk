@@ -20,6 +20,10 @@ final class PresenterScriptWindowManager: ObservableObject {
     /// 釘住狀態(toggle 熱鍵/選單列按鈕共用)。
     @Published private(set) var isPinned = false
 
+    /// 讀稿檢視的選稿狀態。由 manager 持有(而非 view 的 @StateObject):
+    /// live pill 的講稿下拉要「選稿 → 開窗直接跳到那一稿」,選稿必須能在視窗存在之前指定。
+    let readerModel = PresenterScriptReaderModel()
+
     private init() {}
 
     // MARK: - 手動拖曳(PresenterScriptView 的把手呼叫)
@@ -62,6 +66,13 @@ final class PresenterScriptWindowManager: ObservableObject {
 
     /// 緊急隱藏後的還原:把面板重新顯示並釘住(只在 panic 前是釘住狀態時呼叫)。
     func showAndPin() {
+        show()
+        isPinned = panel != nil
+    }
+
+    /// 從外部(live pill 的講稿下拉)直接開到指定講稿:先選稿再顯示並釘住。
+    func showScript(_ id: UUID) {
+        readerModel.select(id)
         show()
         isPinned = panel != nil
     }

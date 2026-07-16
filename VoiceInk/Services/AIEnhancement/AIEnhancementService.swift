@@ -243,10 +243,12 @@ class AIEnhancementService: ObservableObject {
         try await waitForRateLimit()
 
         do {
-            let result: String
+            // 走 in-repo ChatCompletionClient(而非 LLMkit):請求/錯誤語意相同,
+            // 多拿回供應商回報的 usage → 聽寫增強的 token 用量落進 AIUsageEvent。
+            let completion: ChatCompletionClient.Completion
             switch provider {
             case .anthropic:
-                result = try await AnthropicLLMClient.chatCompletion(
+                completion = try await ChatCompletionClient.completeAnthropic(
                     apiKey: try apiKey(for: provider, modelName: modelName),
                     model: modelName,
                     messages: [.user(formattedText)],
@@ -258,7 +260,7 @@ class AIEnhancementService: ObservableObject {
                       let baseURL = URL(string: customConfiguration.baseURL) else {
                     throw EnhancementError.notConfigured
                 }
-                result = try await OpenAILLMClient.chatCompletion(
+                completion = try await ChatCompletionClient.completeOpenAI(
                     baseURL: baseURL,
                     apiKey: customConfiguration.apiKey,
                     model: customConfiguration.modelName,
@@ -280,7 +282,7 @@ class AIEnhancementService: ObservableObject {
                     for: provider,
                     modelName: modelName
                 )
-                result = try await OpenAILLMClient.chatCompletion(
+                completion = try await ChatCompletionClient.completeOpenAI(
                     baseURL: baseURL,
                     apiKey: try apiKey(for: provider, modelName: modelName),
                     model: modelName,
@@ -292,7 +294,11 @@ class AIEnhancementService: ObservableObject {
                     timeout: requestTimeout
                 )
             }
-            return AIEnhancementOutputFilter.filter(result.trimmingCharacters(in: .whitespacesAndNewlines))
+            AIUsageRecorder.shared.recordChat(
+                provider: provider, model: modelName, feature: .enhancement,
+                systemPrompt: systemMessage, messages: [.user(formattedText)],
+                responseText: completion.text, reported: completion.usage)
+            return AIEnhancementOutputFilter.filter(completion.text.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch let error as LLMKitError {
             throw mapLLMKitError(error)
         } catch let error as EnhancementError {

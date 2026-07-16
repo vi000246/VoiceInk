@@ -129,6 +129,27 @@ struct EmbeddingClient {
         return out
     }
 
+    /// 嵌入的 token 用量:OpenAI 回應帶 usage.prompt_tokens(真值);Gemini batchEmbedContents
+    /// 不回 usage → 字元估算(標 isEstimated)。嵌入只有輸入側,output 恆 0。
+    private static func recordUsage(texts: [String], model: EmbeddingModel, responseData: Data) {
+        let modelName = model == .gemini001_768 ? "gemini-embedding-001" : "text-embedding-3-small"
+        var usage: ChatUsage
+        struct OpenAIUsage: Decodable {
+            struct U: Decodable { let prompt_tokens: Int? }
+            let usage: U?
+        }
+        if model == .openaiSmall1536,
+           let tokens = (try? JSONDecoder().decode(OpenAIUsage.self, from: responseData))?.usage?.prompt_tokens {
+            usage = ChatUsage(inputTokens: tokens, outputTokens: 0)
+        } else {
+            usage = ChatUsage(
+                inputTokens: texts.reduce(0) { $0 + TokenEstimator.estimate($1) },
+                outputTokens: 0, isEstimated: true)
+        }
+        AIUsageRecorder.shared.record(
+            provider: model.providerName, model: modelName, feature: .embedding, usage: usage)
+    }
+
     private static func embedBatch(_ texts: [String], model: EmbeddingModel, apiKey: String) async throws -> [[Float]] {
         var request: URLRequest
         switch model {
@@ -154,6 +175,7 @@ struct EmbeddingClient {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 let code = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if code == 200 {
+                    recordUsage(texts: texts, model: model, responseData: data)
                     return model == .gemini001_768 ? try parseGemini(data) : try parseOpenAI(data)
                 }
                 if code == 429 || (500...599).contains(code) {

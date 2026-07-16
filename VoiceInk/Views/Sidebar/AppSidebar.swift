@@ -150,6 +150,7 @@ struct AppSidebar: View {
 private extension ViewType {
     var title: LocalizedStringKey {
         switch self {
+        case .aiUsage: return "AI 用量"
         case .modes: return "Voice Modes"
         case .prompts: return "逐字稿範本"
         case .history: return "語音管理"
@@ -172,7 +173,7 @@ private extension ViewType {
 
     /// Sidebar grouped by the two pipelines (voice input vs recorder→Obsidian) + shared/system.
     static let sidebarSections: [(title: LocalizedStringKey?, items: [ViewType])] = [
-        (nil, [.dashboard]),
+        (nil, [.dashboard, .aiUsage]),
         ("語音輸入", [.modes, .history, .voiceSettings]),
         ("錄音輸入", [.recorders, .recorderMode, .categories, .recorderLog, .transcribeAudio]),
         ("Ask AI", [.askAI, .askAITemplates, .meetingCopilot, .meetingCopilotSettings]),
@@ -189,6 +190,7 @@ private extension ViewType {
     var icon: String {
         switch self {
         case .dashboard: return "gauge.medium"
+        case .aiUsage: return "chart.bar.xaxis"
         case .transcribeAudio: return "waveform.path"
         case .history: return "doc.text.fill"
         case .voiceSettings: return "gearshape.2.fill"
@@ -215,6 +217,8 @@ private extension ViewType {
     var sidebarIconStyle: SidebarIconStyle {
         switch self {
         case .dashboard:
+            return .init(background: AppTheme.Sidebar.dashboard)
+        case .aiUsage:
             return .init(background: AppTheme.Sidebar.dashboard)
         case .modes:
             return .init(background: AppTheme.Sidebar.modes)

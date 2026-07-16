@@ -73,7 +73,8 @@ final class ClassifierDescriptionGenerator: ObservableObject {
             do {
                 let raw = try await aiService.completeChat(
                     provider: model.provider, modelName: model.modelName,
-                    messages: [ChatMessage.user(user)], systemPrompt: system, timeout: 60)
+                    messages: [ChatMessage.user(user)], systemPrompt: system, timeout: 60,
+                    usageFeature: .recorderAutomation)
                 let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !cleaned.isEmpty else {
                     errors[categoryId] = "模型未回傳內容，請重試"

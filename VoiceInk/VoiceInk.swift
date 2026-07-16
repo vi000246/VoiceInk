@@ -59,7 +59,8 @@ struct VoiceInkApp: App {
             AskAITemplate.self,
             MeetingLiveSession.self,
             MeetingLiveCue.self,
-            MeetingLiveSegment.self
+            MeetingLiveSegment.self,
+            AIUsageEvent.self
         ])
         let resolvedContainer: ModelContainer
 
@@ -141,6 +142,8 @@ struct VoiceInkApp: App {
         ICloudSourceWatcher.shared.start()
         // Ask AI: index new/deleted transcriptions (mainContext spans the index store too).
         TranscriptIndexService.shared.configure(modelContext: resolvedContainer.mainContext)
+        // AI 用量統計:注入 context 後,所有雲端 LLM/嵌入呼叫開始落 AIUsageEvent(stats.store)。
+        AIUsageRecorder.shared.configure(modelContext: resolvedContainer.mainContext)
         // meeting-copilot: 錄音刪除 → 關聯 session(live＋replay)跟著刪(FR-69)。
         MeetingSessionReconciler.shared.configure(modelContext: resolvedContainer.mainContext)
         // meeting-copilot 即時輔助:注入依賴,會議錄製啟停時建立/釋放 live pipeline。
@@ -284,7 +287,7 @@ struct VoiceInkApp: App {
             cloudKitDatabase: dictionaryCloudKit
         )
 
-        let statsSchema = Schema([SessionMetric.self])
+        let statsSchema = Schema([SessionMetric.self, AIUsageEvent.self])
         let statsConfig = ModelConfiguration(
             "stats",
             schema: statsSchema,
@@ -328,7 +331,7 @@ struct VoiceInkApp: App {
         let dictionarySchema = Schema([VocabularyWord.self, WordReplacement.self])
         let dictionaryConfig = ModelConfiguration("dictionary", schema: dictionarySchema, isStoredInMemoryOnly: true)
 
-        let statsSchema = Schema([SessionMetric.self])
+        let statsSchema = Schema([SessionMetric.self, AIUsageEvent.self])
         let statsConfig = ModelConfiguration("stats", schema: statsSchema, isStoredInMemoryOnly: true)
 
         let indexSchema = Schema([EmbeddingChunk.self, AskAIThread.self, AskAIMessage.self, AskAITemplate.self])

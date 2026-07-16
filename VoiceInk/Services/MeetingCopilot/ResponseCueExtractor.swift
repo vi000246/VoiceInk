@@ -193,6 +193,7 @@ struct MeetingFastChatCompleter: ChatCompleting {
     func complete(system: String, user: String) async throws -> String {
         try await aiService.completeChat(
             provider: provider, modelName: modelName,
-            messages: [ChatMessage.user(user)], systemPrompt: system, timeout: 30)
+            messages: [ChatMessage.user(user)], systemPrompt: system, timeout: 30,
+            usageFeature: .meetingCue)
     }
 }

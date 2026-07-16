@@ -258,7 +258,8 @@ final class MeetingCopilotLiveController {
         // 觀測 label:resolved.model nil = 跟隨該 provider 目前選定的 model——記解析後的實名,
         // 覆盤時才知道「當時真正打到哪顆模型」。
         let modelName = resolved.model ?? aiService.selectedModel(for: aiProvider)
-        return (LiveStreamingChatCompleter(aiService: aiService, provider: aiProvider, modelName: resolved.model),
+        return (LiveStreamingChatCompleter(aiService: aiService, provider: aiProvider, modelName: resolved.model,
+                                           usageFeature: .meetingAnswer),
                 "\(resolved.provider)/\(modelName)")
     }
 
@@ -279,6 +280,7 @@ final class MeetingCopilotLiveController {
             available: aiService.connectedProviders.map(\.rawValue))
         let provider = AIProvider(rawValue: resolved.provider) ?? aiService.selectedProvider
         return LiveStreamingChatCompleter(
-            aiService: aiService, provider: provider, modelName: resolved.model)
+            aiService: aiService, provider: provider, modelName: resolved.model,
+            usageFeature: .meetingTranslation)
     }
 }

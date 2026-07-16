@@ -40,6 +40,25 @@ struct Shortcut: Codable, Equatable {
         }
     }
 
+    /// 文字表示法(cheat sheet 用):修飾鍵用 ctrl / alt / shift / cmd / fn 而非 ⌃⌥⇧⌘ 符號。
+    /// 按鍵名沿用 `keyName`(依鍵盤配置解析;方向鍵等特殊鍵維持原樣)。
+    var textualDisplayString: String {
+        textualTokens.joined(separator: " + ")
+    }
+
+    var textualTokens: [String] {
+        switch kind {
+        case .key:
+            return modifierFlags.shortcutTextualTokens + [Self.keyName(for: keyCode)]
+        case .modifierOnly:
+            if let sideSpecificName = Self.sideSpecificTextualModifierName(for: keyCode, modifiers: modifierFlags) {
+                return [sideSpecificName]
+            }
+
+            return modifierFlags.shortcutTextualTokens
+        }
+    }
+
     init(kind: Kind, keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags) {
         self.kind = kind
         self.keyCode = keyCode
@@ -208,6 +227,36 @@ struct Shortcut: Codable, Equatable {
             return "Right ⌘"
         case UInt16(kVK_Function):
             return "Fn"
+        default:
+            return nil
+        }
+    }
+
+    /// `sideSpecificModifierName` 的文字版(left ctrl / right cmd …)。
+    private static func sideSpecificTextualModifierName(for keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> String? {
+        guard modifiers.shortcutSingleModifierCount == 1 else {
+            return nil
+        }
+
+        switch keyCode {
+        case UInt16(kVK_Shift):
+            return "left shift"
+        case UInt16(kVK_RightShift):
+            return "right shift"
+        case UInt16(kVK_Control):
+            return "left ctrl"
+        case UInt16(kVK_RightControl):
+            return "right ctrl"
+        case UInt16(kVK_Option):
+            return "left alt"
+        case UInt16(kVK_RightOption):
+            return "right alt"
+        case UInt16(kVK_Command):
+            return "left cmd"
+        case UInt16(kVK_RightCommand):
+            return "right cmd"
+        case UInt16(kVK_Function):
+            return "fn"
         default:
             return nil
         }
@@ -400,6 +449,33 @@ private extension NSEvent.ModifierFlags {
 
         if contains(.function) {
             tokens.append("Fn")
+        }
+
+        return tokens
+    }
+
+    /// 符號 token 的文字版(順序同 `shortcutDisplayTokens`:ctrl → alt → shift → cmd → fn)。
+    var shortcutTextualTokens: [String] {
+        var tokens: [String] = []
+
+        if contains(.control) {
+            tokens.append("ctrl")
+        }
+
+        if contains(.option) {
+            tokens.append("alt")
+        }
+
+        if contains(.shift) {
+            tokens.append("shift")
+        }
+
+        if contains(.command) {
+            tokens.append("cmd")
+        }
+
+        if contains(.function) {
+            tokens.append("fn")
         }
 
         return tokens

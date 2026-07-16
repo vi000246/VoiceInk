@@ -37,16 +37,33 @@ enum StreamingChatClient {
 
     // MARK: - OpenAI-compat(data: {json} + [DONE])
 
-    private struct OpenAIChunk: Decodable {
+    struct OpenAIChunk: Decodable {
         struct Choice: Decodable { struct Delta: Decodable { let content: String? }; let delta: Delta? }
+        struct Usage: Decodable { let prompt_tokens: Int?; let completion_tokens: Int? }
+        /// Groq 把 usage 塞在最後一個 chunk 的 `x_groq.usage`(不需要 stream_options)。
+        struct XGroq: Decodable { let usage: Usage? }
         let choices: [Choice]?
+        let usage: Usage?
+        let x_groq: XGroq?
     }
 
+    /// chunk 裡的 usage(頂層或 x_groq)→ ChatUsage;沒有 → nil。pure,可測。
+    static func usageFromOpenAIChunk(_ chunk: OpenAIChunk) -> ChatUsage? {
+        guard let u = chunk.usage ?? chunk.x_groq?.usage else { return nil }
+        return ChatUsage(inputTokens: u.prompt_tokens ?? 0, outputTokens: u.completion_tokens ?? 0)
+    }
+
+    /// - Parameters:
+    ///   - includeUsageOption: true 時送 `stream_options.include_usage`(僅對確認支援的
+    ///     provider 開,見 AIService.streamChat 的 allowlist;不支援的家會 4xx 整包失敗)。
+    ///   - onUsage: 串流結束前回報供應商 usage(最後一次看到的為準);沒看到 usage 就不呼叫。
     static func streamOpenAI(
         baseURL: URL, apiKey: String, model: String, messages: [ChatMessage],
         systemPrompt: String?, temperature: Double, reasoningEffort: String?,
         extraBody: [String: Any]?, images: [Data] = [], timeout: TimeInterval,
-        session: URLSession = StreamingChatClient.pooledSession
+        session: URLSession = StreamingChatClient.pooledSession,
+        includeUsageOption: Bool = false,
+        onUsage: (@Sendable (ChatUsage) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -67,6 +84,7 @@ enum StreamingChatClient {
                         "temperature": temperature,
                         "stream": true,
                     ]
+                    if includeUsageOption { body["stream_options"] = ["include_usage": true] }
                     if let reasoningEffort { body["reasoning_effort"] = reasoningEffort }
                     if let extraBody { for (k, v) in extraBody { body[k] = v } }
                     req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -74,16 +92,22 @@ enum StreamingChatClient {
                     let (bytes, response) = try await session.bytes(for: req)
                     try await Self.checkStatus(response, bytes: bytes)
 
+                    var reportedUsage: ChatUsage?
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data:") else { continue }
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                         if payload == "[DONE]" { break }
                         guard let data = payload.data(using: .utf8),
-                              let chunk = try? JSONDecoder().decode(OpenAIChunk.self, from: data),
-                              let piece = chunk.choices?.first?.delta?.content, !piece.isEmpty
+                              let chunk = try? JSONDecoder().decode(OpenAIChunk.self, from: data)
                         else { continue }
-                        continuation.yield(piece)
+                        // usage chunk(通常是最後一個、choices 為空)與 delta chunk 分開處理:
+                        // 舊寫法把「沒 delta 的 chunk」整個 continue,usage 永遠讀不到。
+                        if let usage = Self.usageFromOpenAIChunk(chunk) { reportedUsage = usage }
+                        if let piece = chunk.choices?.first?.delta?.content, !piece.isEmpty {
+                            continuation.yield(piece)
+                        }
                     }
+                    if let reportedUsage { onUsage?(reportedUsage) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -95,16 +119,23 @@ enum StreamingChatClient {
 
     // MARK: - Anthropic(event:<type> + data: / message_stop)
 
-    private struct AnthropicChunk: Decodable {
+    struct AnthropicChunk: Decodable {
         struct Delta: Decodable { let type: String?; let text: String? }
+        struct Usage: Decodable { let input_tokens: Int?; let output_tokens: Int? }
+        struct MessageInfo: Decodable { let usage: Usage? }
         let type: String?
         let delta: Delta?
+        /// `message_start` 帶 input_tokens。
+        let message: MessageInfo?
+        /// `message_delta` 頂層帶累計 output_tokens。
+        let usage: Usage?
     }
 
     static func streamAnthropic(
         apiKey: String, model: String, messages: [ChatMessage], systemPrompt: String?,
         maxTokens: Int, images: [Data] = [], timeout: TimeInterval,
-        session: URLSession = StreamingChatClient.pooledSession
+        session: URLSession = StreamingChatClient.pooledSession,
+        onUsage: (@Sendable (ChatUsage) -> Void)? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -138,6 +169,10 @@ enum StreamingChatClient {
                     let (bytes, response) = try await session.bytes(for: req)
                     try await Self.checkStatus(response, bytes: bytes)
 
+                    // usage 分兩處回:message_start 給 input、message_delta 給累計 output,合併回報。
+                    var inputTokens = 0
+                    var outputTokens = 0
+                    var sawUsage = false
                     for try await line in bytes.lines {
                         // Anthropic:只取 data: 行且 type==content_block_delta / delta.type==text_delta
                         guard line.hasPrefix("data:") else { continue }
@@ -145,6 +180,16 @@ enum StreamingChatClient {
                         guard let data = payload.data(using: .utf8),
                               let chunk = try? JSONDecoder().decode(AnthropicChunk.self, from: data)
                         else { continue }
+                        if let u = chunk.message?.usage {
+                            inputTokens = u.input_tokens ?? inputTokens
+                            outputTokens = max(outputTokens, u.output_tokens ?? 0)
+                            sawUsage = true
+                        }
+                        if let u = chunk.usage {
+                            inputTokens = u.input_tokens ?? inputTokens
+                            outputTokens = max(outputTokens, u.output_tokens ?? 0)
+                            sawUsage = true
+                        }
                         if chunk.type == "message_stop" { break }
                         if chunk.type == "content_block_delta",
                            chunk.delta?.type == "text_delta",
@@ -152,6 +197,7 @@ enum StreamingChatClient {
                             continuation.yield(text)
                         }
                     }
+                    if sawUsage { onUsage?(ChatUsage(inputTokens: inputTokens, outputTokens: outputTokens)) }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)

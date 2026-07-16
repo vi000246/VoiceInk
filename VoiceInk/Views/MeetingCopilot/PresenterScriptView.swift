@@ -25,7 +25,9 @@ final class PresenterScriptReaderModel: ObservableObject {
 /// 兩層導覽:講稿清單 ↔ 讀稿檢視(頂部 chips 快速切換 +「← 講稿清單」一鍵回清單)。
 struct PresenterScriptView: View {
     @ObservedObject private var store = PresenterScriptStore.shared
-    @StateObject private var model = PresenterScriptReaderModel()
+    // 選稿狀態住在 window manager(而非本 view 的 @StateObject):live pill 下拉選稿
+    // 要在開窗前就能指定要讀哪一稿,見 PresenterScriptWindowManager.showScript(_:)。
+    @ObservedObject private var model = PresenterScriptWindowManager.shared.readerModel
 
     static let emptyHint = "尚無講稿——到「會議copilot設定 → 預設講稿」新增你自己的講稿。"
 

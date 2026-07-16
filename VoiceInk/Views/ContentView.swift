@@ -3,6 +3,7 @@ import OSLog
 
 enum ViewType: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
+    case aiUsage = "AI Usage"
     case modes = "Modes"
     case prompts = "Prompts"
     case models = "AI Models"
@@ -81,6 +82,8 @@ struct ContentView: View {
         switch viewType {
         case .dashboard:
             DashboardView()
+        case .aiUsage:
+            AIUsageDashboardView()
         case .models:
             ModelManagementView()
         case .transcribeAudio:

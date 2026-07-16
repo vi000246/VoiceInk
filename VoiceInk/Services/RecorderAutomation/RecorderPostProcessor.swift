@@ -70,7 +70,8 @@ final class RecorderPostProcessor: ObservableObject {
         let system = "用十個字以內為內容下一個精簡標題。只輸出標題本身，不要任何標點、引號或說明。"
         guard let raw = try? await aiService.completeChat(
             provider: provider, modelName: modelName,
-            messages: [ChatMessage.user(excerpt)], systemPrompt: system, timeout: 30) else { return nil }
+            messages: [ChatMessage.user(excerpt)], systemPrompt: system, timeout: 30,
+            usageFeature: .recorderAutomation) else { return nil }
         var t = raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
         let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|「」『』“”‘’，。、！？.,!?")
         t = t.components(separatedBy: illegal).joined().trimmingCharacters(in: .whitespaces)

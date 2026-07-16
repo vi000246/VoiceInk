@@ -74,7 +74,8 @@ final class TranscriptClassificationService {
                 modelName: modelName,
                 messages: [ChatMessage.user(user)],
                 systemPrompt: system,
-                timeout: 30
+                timeout: 30,
+                usageFeature: .recorderAutomation
             )
             return parse(raw, categories: categories)
         } catch {

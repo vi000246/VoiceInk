@@ -365,6 +365,9 @@ class RecordingShortcutManager: ObservableObject {
         case .toggleTranslationExpansion:
             // 即時翻譯字幕的 5 句↔30 句展開(Stage B)。keyUp-only,狀態在 overlay manager。
             CopilotOverlayWindowManager.shared.toggleTranslationExpansion()
+        case .toggleHotkeyCheatSheet:
+            // 熱鍵一覽表 —— 獨立浮動視窗,keyUp-only,樣式比照 .togglePresenterScript。
+            HotkeyCheatSheetWindowManager.shared.toggle()
         default:
             break
         }

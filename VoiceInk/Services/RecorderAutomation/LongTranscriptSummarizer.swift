@@ -102,7 +102,8 @@ final class LongTranscriptSummarizer {
                     modelName: modelName,
                     messages: [ChatMessage.user(chunk)],
                     systemPrompt: "Summarize this transcript segment faithfully and concisely, preserving speaker attribution (who said what — keep the 講者N／speaker labels or names), names, decisions, questions, and key facts. Output prose only.",
-                    timeout: 60
+                    timeout: 60,
+                    usageFeature: .recorderAutomation
                 )
                 summaries.append("[Segment \(i + 1)]\n\(s)")
             } catch {
@@ -119,7 +120,8 @@ final class LongTranscriptSummarizer {
                 modelName: modelName,
                 messages: [ChatMessage.user(joined)],
                 systemPrompt: "Combine these ordered segment summaries into one coherent, faithful summary, keeping speaker attribution (who said what) wherever the segments carry it. Output prose only.",
-                timeout: 60
+                timeout: 60,
+                usageFeature: .recorderAutomation
             )
         } catch {
             logger.error("Summarize reduce failed: \(error, privacy: .public)")

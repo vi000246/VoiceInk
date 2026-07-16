@@ -17,6 +17,7 @@ struct MenuBarView: View {
     @ObservedObject private var copilotConfig = MeetingCopilotConfigStore.shared
     @ObservedObject private var overlayManager = CopilotOverlayWindowManager.shared
     @ObservedObject private var presenterManager = PresenterScriptWindowManager.shared
+    @ObservedObject private var cheatSheetManager = HotkeyCheatSheetWindowManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
     @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
     
@@ -82,6 +83,11 @@ struct MenuBarView: View {
             Toggle("讀稿面板", isOn: Binding(
                 get: { presenterManager.isPinned },
                 set: { _ in presenterManager.toggle() }))
+
+            // 熱鍵一覽表 —— 熱鍵之外的按鈕入口,與 .toggleHotkeyCheatSheet 共用釘住狀態。
+            Toggle("熱鍵一覽表", isOn: Binding(
+                get: { cheatSheetManager.isPinned },
+                set: { _ in cheatSheetManager.toggle() }))
 
             #if DEBUG
             Button("Replay 會議音檔…（DEBUG）") {

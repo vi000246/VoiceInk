@@ -2,31 +2,39 @@ import Foundation
 import LLMkit
 
 extension AIService {
+    /// - Parameter usageFeature: 用量統計的功能標籤(`AIUsageEvent`)。雲端呼叫每次落一筆;
+    ///   本機 provider(ollama / localCLI)免費,不記。
     func completeChat(
         provider: AIProvider,
         modelName: String?,
         messages: [ChatMessage],
         systemPrompt: String? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        usageFeature: AIUsageFeature = .other
     ) async throws -> String {
         let resolvedModel = modelName?.isEmpty == false ? modelName! : selectedModel(for: provider)
 
         let result: String
         switch provider {
         case .anthropic:
-            result = try await AnthropicLLMClient.chatCompletion(
+            let completion = try await ChatCompletionClient.completeAnthropic(
                 apiKey: try chatAPIKey(for: provider, modelName: resolvedModel),
                 model: resolvedModel,
                 messages: messages,
                 systemPrompt: systemPrompt,
                 timeout: timeout
             )
+            AIUsageRecorder.shared.recordChat(
+                provider: provider, model: resolvedModel, feature: usageFeature,
+                systemPrompt: systemPrompt, messages: messages,
+                responseText: completion.text, reported: completion.usage)
+            result = completion.text
         case .custom:
             guard let customConfiguration = CustomAIProviderManager.shared.requestConfiguration(forModel: resolvedModel),
                   let baseURL = URL(string: customConfiguration.baseURL) else {
                 throw EnhancementError.notConfigured
             }
-            result = try await OpenAILLMClient.chatCompletion(
+            let completion = try await ChatCompletionClient.completeOpenAI(
                 baseURL: baseURL,
                 apiKey: customConfiguration.apiKey,
                 model: customConfiguration.modelName,
@@ -35,6 +43,11 @@ extension AIService {
                 temperature: 0.3,
                 timeout: timeout
             )
+            AIUsageRecorder.shared.recordChat(
+                provider: provider, model: customConfiguration.modelName, feature: usageFeature,
+                systemPrompt: systemPrompt, messages: messages,
+                responseText: completion.text, reported: completion.usage)
+            result = completion.text
         case .ollama:
             result = try await enhanceWithOllama(
                 text: chatPrompt(from: messages),
@@ -60,7 +73,7 @@ extension AIService {
                 for: provider,
                 modelName: resolvedModel
             )
-            result = try await OpenAILLMClient.chatCompletion(
+            let completion = try await ChatCompletionClient.completeOpenAI(
                 baseURL: baseURL,
                 apiKey: try chatAPIKey(for: provider, modelName: resolvedModel),
                 model: resolvedModel,
@@ -71,6 +84,11 @@ extension AIService {
                 extraBody: extraBody,
                 timeout: timeout
             )
+            AIUsageRecorder.shared.recordChat(
+                provider: provider, model: resolvedModel, feature: usageFeature,
+                systemPrompt: systemPrompt, messages: messages,
+                responseText: completion.text, reported: completion.usage)
+            result = completion.text
         }
 
         return AIEnhancementOutputFilter.filter(result)

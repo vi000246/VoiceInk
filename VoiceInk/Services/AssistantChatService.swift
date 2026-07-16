@@ -45,7 +45,8 @@ final class AssistantChatService {
             modelName: modelName,
             messages: chatMessages,
             systemPrompt: systemPrompt,
-            timeout: requestTimeout
+            timeout: requestTimeout,
+            usageFeature: .assistant
         )
 
         return Reply(
