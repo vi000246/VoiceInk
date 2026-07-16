@@ -347,6 +347,15 @@ class RecordingShortcutManager: ObservableObject {
         case .peekMeetingCopilotOverlay:
             // press-and-hold 的放開端(keyDown 端在 refreshShortcutMonitor 的顯式 branch)。
             CopilotOverlayWindowManager.shared.peekKeyUp()
+        case .panicHideMeetingCopilot:
+            // 緊急隱藏:一鍵收掉 overlay + 讀稿面板 + 錄音指示 pill(要分享整個螢幕前的逃生口)。
+            // 語意刻意做成 toggle-restore(見 MeetingCaptureController.togglePanicHide):再按一次
+            // 把剛才藏起來的那些原樣叫回,避免藏了 pill 之後失去停止鈕、被卡住。keyUp-only。
+            MeetingCaptureController.shared.togglePanicHide()
+        case .captureCopilotScreenshot:
+            // 截圖深答:依設定的擷取對象截一張、加入佇列(overlay 顯示張數);再到 overlay 按
+            // 「以截圖重新深答」送出。純手動,auto-deep 不碰。keyUp-only。
+            Task { await CopilotScreenshotStore.shared.captureAndAdd() }
         case .togglePresenterScript:
             // 讀稿面板 —— 獨立於 live pipeline,keyUp-only,樣式比照 .toggleMeetingCopilotOverlay。
             PresenterScriptWindowManager.shared.toggle()

@@ -90,8 +90,9 @@ final class MeetingCopilotLiveController {
 
         // 3. cue 偵測 controller。fast label 同時代表 cue 抽取模型
         //    (makeFastCompleter 以同一組設定解析,結果必然相同)。
+        // M10:即時模型(fast)= 開口稿 + 中度分析共用;深思模型(deep)= 僅深度分析(Tier 3)。
         let fast = Self.makeStreamingCompleter(provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
-        let deep = Self.makeStreamingCompleter(provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
+        let deep = Self.makeStreamingCompleter(provider: config.deepThinkProviderName, model: config.deepThinkModelName, aiService: aiService)
         let extractor = ResponseCueExtractor(
             chat: MeetingCopilotController.makeFastCompleter(aiService: aiService, config: config),
             systemPrompt: config.effectiveCuePrompt)
@@ -119,6 +120,11 @@ final class MeetingCopilotLiveController {
         // 兩個 closure 都在 @MainActor 上被呼叫(AnswerCoordinator 是 @MainActor),直接碰 controller 安全。
         coordinator.expandedCueIdProvider = { [weak controller] in controller?.expandedCueId }
         coordinator.onDeepCompleted = { [weak controller] id in controller?.handleDeepCompleted(cueId: id) }
+        // 截圖深答:模型不支援圖片/送出失敗 → 把清楚訊息浮到 overlay(closure 反轉依賴,同上)。
+        coordinator.onImageUnsupported = { [weak controller] msg in controller?.imageDeepError = msg }
+        // 深度分析在途旗標的**單一事實來源**:三路(auto/manual/image)都經 coordinator 的 startDeep/runDeep
+        // 驅動,overlay 才能在**自動**深答進行中也顯示 spinner + disable 按鈕(修 FR-77/AC-62 缺陷)。
+        coordinator.onDeepInFlight = { [weak controller] id in controller?.deepInFlightCueId = id }
 
         // 5. 即時翻譯(M8 D 組)。**翻譯關閉時照樣建**——建構本身不打任何 API(guard 在
         //    translator.translate 內,AC-47),而恆存在的實例讓 overlay 有個穩定的
@@ -138,13 +144,19 @@ final class MeetingCopilotLiveController {
         // 6. overlay 接線。
         CopilotOverlayWindowManager.shared.configure(
             controller: controller,
-            onCueTapped: { [weak controller] cue in
+            onCueTapped: { cue in
+                // deepInFlightCueId 不在這裡手動設/清——改由 coordinator.onDeepInFlight 統一驅動
+                // (三路共用單一事實來源;auto 也吃得到 spinner/disable)。requestDeep 內部
+                // startDeep→onDeepInFlight(cue.id) 會亮 spinner;深答收尾 runDeep→onDeepInFlight(nil) 清掉。
+                Task { await coordinator.requestDeep(cue) }
+            },
+            onImageDeepRequested: { [weak controller] cue in
                 Task {
-                    // 進度旗標:Tier 2 全程(等 Tier 1 → 接地 → deep 串流)可能十餘秒,
-                    // 沒有可見狀態時點擊看起來像沒反應。
-                    controller?.deepInFlightCueId = cue.id
-                    await coordinator.requestDeep(cue)
-                    controller?.deepInFlightCueId = nil
+                    controller?.imageDeepError = nil          // 新一次嘗試,先清舊錯誤
+                    // 快照「這次要送的圖」;成功後只移除**這批**(深答十餘秒間新截的圖在尾端,保留)。
+                    let batch = CopilotScreenshotStore.shared.shots
+                    let sent = await coordinator.requestDeepWithImages(cue, images: batch)
+                    if sent { CopilotScreenshotStore.shared.removeSent(batch.count) }   // 失敗不清,留著重試
                 }
             })
 

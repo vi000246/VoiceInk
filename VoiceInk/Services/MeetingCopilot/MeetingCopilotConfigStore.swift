@@ -36,6 +36,43 @@ enum MeetingDeepStyle: String, CaseIterable {
     }
 }
 
+/// 「截圖深答」的擷取對象(手動視覺功能;`captureCopilotScreenshot` 熱鍵 + overlay 按鈕共用)。
+///
+/// 與 Tier 2 的螢幕 OCR 接地(`useScreenContext`)不同:那是把畫面轉**文字**塞進 prompt,
+/// 這是把畫面當**圖片**餵給支援視覺的深答模型——圖表/投影片/程式碼版面 OCR 讀不出的結構,
+/// 圖片才看得懂。純手動、auto-deep 不碰(見 `AnswerCoordinator.requestDeepWithImages`)。
+/// 深度分析(Tier 3)的觸發模式(M10)。
+///
+/// 是**觸發模式**不是模型——深度分析只有一顆深思模型。自動:中度分析自評 `needsDeep` 為真且 cue 可深答時
+/// **自動發起**;手動:僅使用者按「深入分析」按鈕。手動按鈕在兩模式恆存在(自動只是多了自動放行)。
+enum CopilotDeepTrigger: String, CaseIterable {
+    case auto, manual
+
+    var label: String {
+        switch self {
+        case .auto: return "自動（AI 判斷需要時）"
+        case .manual: return "手動（我按按鈕）"
+        }
+    }
+}
+
+enum CopilotScreenshotTarget: String, CaseIterable {
+    /// 最前景的外部視窗(重用 OCR 那條 `findActiveWindow`,已自動排除 VoiceInk 自己)。
+    case activeWindow
+    /// 整個螢幕(排除自己的浮動視窗)。
+    case fullScreen
+    /// 框選區域——走系統原生 `screencapture -i`(十字準星、Esc 取消)。
+    case region
+
+    var label: String {
+        switch self {
+        case .activeWindow: return "最前景視窗"
+        case .fullScreen: return "整個螢幕"
+        case .region: return "框選區域"
+        }
+    }
+}
+
 /// meeting-copilot 的設定。
 ///
 /// **M1 只含音訊骨幹需要的三項**;模型選擇（fast/deep）、熱鍵、接地開關（brief / RAG / 螢幕 OCR）、
@@ -62,10 +99,15 @@ final class MeetingCopilotConfigStore: ObservableObject {
     // Keys(M3 新增：deep model + 三層/接地開關)
     private let deepProviderKey = "meetingCopilotDeepProviderV1"
     private let deepModelKey = "meetingCopilotDeepModelV1"
+    // M10:深思模型(僅深度分析)+ 深度分析觸發模式。舊 deep* key 退役(中度改用即時模型),保留不刪。
+    private let deepThinkProviderKey = "meetingCopilotDeepThinkProviderV1"
+    private let deepThinkModelKey = "meetingCopilotDeepThinkModelV1"
+    private let deepTriggerKey = "meetingCopilotDeepTriggerV1"
     private let prefetchEnabledKey = "meetingCopilotPrefetchV1"
     private let domainPersonaKey = "meetingCopilotPersonaV1"
     private let useHistoryRAGKey = "meetingCopilotUseRAGV1"
     private let useScreenContextKey = "meetingCopilotUseScreenV1"
+    private let screenshotTargetKey = "meetingCopilotScreenshotTargetV1"
 
     // Keys(M4 新增：overlay 行為)
     private let overlayClickThroughKey = "meetingCopilotOverlayClickThroughV1"
@@ -89,13 +131,14 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
     // Keys(Prompt 設定：使用者可調 prompt)
     private let answerStyleGuidanceKey = "meetingCopilotAnswerStyleGuidanceV1"
+    private let deepStyleGuidanceKey = "meetingCopilotDeepStyleGuidanceV1"
     private let cuePromptOverrideKey = "meetingCopilotCuePromptOverrideV1"
 
     // MARK: - Prompt 預設
 
-    /// 快模型(開口稿)與深模型(深答)共用的**回答風格與範圍守則**,注入兩者的 system prompt
-    /// (persona 之後)。預設把答案綁在「軟體 + 我的個人專案」範圍內、要求口語淺白、禁用生僻術語
-    /// ——會議中沒有餘裕停下來理解艱澀詞彙(2026-07-15 依使用者要求)。空字串 = 不注入。
+    /// **開口稿 + 中度分析**(即時模型)共用的回答風格與範圍守則,注入這兩段的 system prompt(persona 之後)。
+    /// M10 起**只套即時模型的兩段**(深度分析改用 `deepStyleGuidance`,兩者互不干擾——即時要短、深度要深)。
+    /// 預設把答案綁在「軟體 + 我的個人專案」範圍、口語淺白、禁生僻術語。空字串 = 不注入。
     static let defaultAnswerStyleGuidance = """
     回答風格與範圍(嚴格遵守):
     - 只回答**軟體/系統/程式工程領域**與**我的個人專案經歷**;超出這兩者的話題(時事、政治、\
@@ -104,6 +147,18 @@ final class MeetingCopilotConfigStore: ObservableObject {
     - 只有軟體領域才可以用技術名詞,而且要挑**常見、好懂**的詞;會議中我沒空理解太複雜的詞。
     - **絕不丟出我可能沒聽過的專有名詞**——寧可用一句白話解釋概念,也不要拋一個我當場接不住、\
     還要分心去想的術語、縮寫或論文/框架名。真的必須提到時,順帶用半句話講它是什麼。
+    """
+
+    /// **深度分析**(深思模型)專用的風格與範圍守則,只注入 Tier 3 的 system prompt(persona 之後)。
+    /// 與 `answerStyleGuidance` 拆開:即時那兩段要短要口語,深度這段可以更完整、有推理層次——兩份分開設,
+    /// 不再互相拉扯。**密度**(幾條/幾句)另由「深度分析密度」enum 控制,這裡只講「取向/範圍」。空字串 = 不注入。
+    static let defaultDeepStyleGuidance = """
+    深度分析的取向(嚴格遵守):
+    - 針對**軟體/系統/程式工程**與**我的個人專案**做有推理層次的完整回答;不接題外話。
+    - 可以比開口稿詳細:多方案要**比較取捨並給出明確判斷**、需要推導就給**關鍵步驟與結論**、\
+    設計/決策題給**立場與權衡代價**——不要只列選項。
+    - 仍用我聽得懂的白話,技術名詞挑常見好懂的;真要用生僻詞,順帶半句話解釋它是什麼。
+    - 只依據我的逐字稿/筆記與已知事實,沒把握的列進 uncertainties,絕不編造數字/論文/公司名。
     """
 
     // MARK: - Settings
@@ -150,19 +205,33 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
     // MARK: - Settings(M3 新增：deep model + 三層回應/接地)
 
-    /// Tier 2 的 deep model(provider rawValue)。nil = 跟隨 AI Models 預設 provider。
+    /// (M10 退役)舊「Tier 2 deep model」設定;M10 起中度分析改用**即時模型**(fast),此設定不再驅動任何 tier。
+    /// 保留讀寫與 UserDefaults key,僅為向下相容不破壞,不刪。
     @Published private(set) var deepProviderName: String?
-    /// deep model 名稱。nil = 用該 provider 的預設 model。
     @Published private(set) var deepModelName: String?
+
+    // MARK: - Settings(M10 新增：深思模型 + 深度分析觸發)
+
+    /// 深思模型(**僅**深度分析 Tier 3 用;推理類)。預設 Gemini / `gemini-2.5-pro`
+    /// (ReasoningConfig 認得為 thinking、支援視覺;使用者既有 Gemini key)。
+    /// 經 `MeetingCopilotModels.resolve` 解析:provider 未連線時回退預設 provider(可能非推理,屬可接受降級)。
+    @Published private(set) var deepThinkProviderName: String? = "Gemini"
+    @Published private(set) var deepThinkModelName: String? = "gemini-2.5-pro"
+    /// 深度分析觸發模式(自動/手動)。**預設自動**(使用者要「有深度且不想手動」;成本已被 needsDeep 閘門壓住)。
+    @Published private(set) var deepTrigger: CopilotDeepTrigger = .auto
     /// FR-15:最新一則 cue 自動預跑 Tier 1。**預設 true**。
     @Published private(set) var prefetchEnabled: Bool = true
     /// 注入所有 tier system prompt 的 persona(讓答案針對領域)。
-    @Published private(set) var domainPersona: String = "你是資深後端工程師,專精分散式系統設計與演算法。"
+    static let defaultDomainPersona = "你是資深後端工程師,專精分散式系統設計與演算法。"
+    @Published private(set) var domainPersona: String = defaultDomainPersona
     /// FR-19:是否以歷史逐字稿 RAG 接地。**預設 false**(2026-07-13 依使用者要求改:
     /// 接地讓 Tier 1/2 各多等數秒~十餘秒,先求快;要接地的人自行到設定頁開)。
     @Published private(set) var useHistoryRAG: Bool = false
     /// FR-20:是否在 Tier 2 擷取分享畫面 OCR 接地。**預設 false**(同上;螢幕截圖+OCR 最耗時)。
     @Published private(set) var useScreenContext: Bool = false
+
+    /// 「截圖深答」的擷取對象。預設最前景視窗(與 OCR 同源、已自排除自己、最省事)。
+    @Published private(set) var screenshotTarget: CopilotScreenshotTarget = .activeWindow
 
     // MARK: - Settings(M4 新增：overlay 行為;設定頁 UI row 屬 M5)
 
@@ -231,9 +300,13 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
     // MARK: - Settings(Prompt 設定：使用者可調 prompt)
 
-    /// 快模型 + 深模型共用的回答風格/範圍守則(注入 tier1/tier2 system prompt)。
+    /// **開口稿 + 中度分析**(即時模型)的回答風格/範圍守則(注入 tier1/tier2 system prompt)。
     /// 預設見 `defaultAnswerStyleGuidance`;空字串 = 不注入(power user 想完全放開時)。
     @Published private(set) var answerStyleGuidance: String = defaultAnswerStyleGuidance
+
+    /// **深度分析**(深思模型)的風格/範圍守則(只注入 tier3 system prompt;M10 與 answerStyleGuidance 拆開)。
+    /// 預設見 `defaultDeepStyleGuidance`;空字串 = 不注入。
+    @Published private(set) var deepStyleGuidance: String = defaultDeepStyleGuidance
 
     /// 問題分類器(cue 偵測)system prompt 的**完整覆寫**。空字串 = 用內建預設
     /// (`ResponseCueExtractor.systemPrompt`)。非空 = 整段取代(進階使用者自負格式契約:
@@ -281,10 +354,18 @@ final class MeetingCopilotConfigStore: ObservableObject {
 
         deepProviderName = d.string(forKey: deepProviderKey)
         deepModelName = d.string(forKey: deepModelKey)
+        // M10 深思模型:key 存在才覆寫(否則保留 Gemini/gemini-2.5-pro 預設);
+        // 用 object(forKey:) 判存在,讓「使用者顯式清成 auto」也能覆寫掉預設。
+        if d.object(forKey: deepThinkProviderKey) != nil { deepThinkProviderName = d.string(forKey: deepThinkProviderKey) }
+        if d.object(forKey: deepThinkModelKey) != nil { deepThinkModelName = d.string(forKey: deepThinkModelKey) }
+        if let raw = d.string(forKey: deepTriggerKey), let v = CopilotDeepTrigger(rawValue: raw) { deepTrigger = v }
         prefetchEnabled = (d.object(forKey: prefetchEnabledKey) as? Bool) ?? true   // 預設 true
         if let p = d.string(forKey: domainPersonaKey), !p.isEmpty { domainPersona = p }
         useHistoryRAG = (d.object(forKey: useHistoryRAGKey) as? Bool) ?? false
         useScreenContext = (d.object(forKey: useScreenContextKey) as? Bool) ?? false
+        if let t = d.string(forKey: screenshotTargetKey), let target = CopilotScreenshotTarget(rawValue: t) {
+            screenshotTarget = target
+        }
 
         overlayClickThrough = d.bool(forKey: overlayClickThroughKey)   // 未設定 → false
         if d.object(forKey: maxCuesShownKey) != nil {
@@ -311,6 +392,7 @@ final class MeetingCopilotConfigStore: ObservableObject {
         // - 從未動過 → 保留各自預設;
         // - 使用者清空 → 存下空字串(guidance 空 = 不注入;cue 空 = 用內建預設)。
         if let g = d.string(forKey: answerStyleGuidanceKey) { answerStyleGuidance = g }
+        if let dg = d.string(forKey: deepStyleGuidanceKey) { deepStyleGuidance = dg }
         if let c = d.string(forKey: cuePromptOverrideKey) { cuePromptOverride = c }
     }
 
@@ -363,6 +445,20 @@ final class MeetingCopilotConfigStore: ObservableObject {
         persistString(model, deepModelKey)
     }
 
+    // MARK: - Mutators(M10 深思模型 + 深度分析觸發)
+
+    func setDeepThinkModel(provider: String?, model: String?) {
+        deepThinkProviderName = provider
+        deepThinkModelName = model
+        persistString(provider, deepThinkProviderKey)
+        persistString(model, deepThinkModelKey)
+    }
+
+    func setDeepTrigger(_ value: CopilotDeepTrigger) {
+        deepTrigger = value
+        defaults.set(value.rawValue, forKey: deepTriggerKey)
+    }
+
     func setPrefetchEnabled(_ value: Bool) {
         prefetchEnabled = value
         defaults.set(value, forKey: prefetchEnabledKey)
@@ -381,6 +477,11 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setUseScreenContext(_ value: Bool) {
         useScreenContext = value
         defaults.set(value, forKey: useScreenContextKey)
+    }
+
+    func setScreenshotTarget(_ value: CopilotScreenshotTarget) {
+        screenshotTarget = value
+        defaults.set(value.rawValue, forKey: screenshotTargetKey)
     }
 
     // MARK: - Mutators(M4 overlay)
@@ -454,6 +555,12 @@ final class MeetingCopilotConfigStore: ObservableObject {
     func setAnswerStyleGuidance(_ value: String) {
         answerStyleGuidance = value
         defaults.set(value, forKey: answerStyleGuidanceKey)
+    }
+
+    /// 深度分析風格(深思模型)。空字串 = 不注入;恢復預設傳 `defaultDeepStyleGuidance`。
+    func setDeepStyleGuidance(_ value: String) {
+        deepStyleGuidance = value
+        defaults.set(value, forKey: deepStyleGuidanceKey)
     }
 
     /// 空字串 = 用內建分類器 prompt;非空 = 完整覆寫。

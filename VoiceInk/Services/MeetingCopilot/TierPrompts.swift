@@ -150,18 +150,78 @@ enum TierPrompts {
         }
         return """
         \(persona)
-        \(guidanceLine(guidance))以下是我在會議中被問到的問題,以及我剛才的初步開口稿。請補強成足以應付追問的深度回答。
+        \(guidanceLine(guidance))以下是我在會議中被問到的問題,以及我剛才的初步開口稿。請補強成足以應付追問的回答。
         **鐵律:不要捏造/編造任何 benchmark 數字、論文名稱、公司名、產品版本或不存在的事實。**
         任何你沒把握的點,不要硬掰——把它列進 uncertainties。
         只輸出 JSON(不要 markdown code fence、不要其他文字),格式:
         {
           "analysis": "<完整分析,可分段>",
           "followUps": [{"question":"<對方很可能接著追問的問題>","oneLineAnswer":"<一句話答案>"}],
-          "uncertainties": ["<我不確定、需要實測或查證的點>"]
+          "uncertainties": ["<我不確定、需要實測或查證的點>"],
+          "needsDeep": <true 或 false>,
+          "deepReason": "<若 needsDeep 為 true,一句話說明為何值得更深入的推理;false 時空字串>"
+        }
+        \(formatSection)
+        needsDeep 判準:只有這題涉及**多方案取捨、多步推導、系統/演算法設計決策、或你有實質不確定**、
+        值得一顆更強的推理模型深入時才設 true;單純事實/定義/一句話能答清楚的設 false。寧可保守(false),
+        別把每題都標成需要深入。
+        一律以\(outputLanguage)回答——不論對方用什麼語言發問(JSON 內的文字也是;key 名維持英文)。
+        """
+    }
+
+    // MARK: - Tier 3(深度分析,深思模型;M10)
+
+    /// 深度分析 system:給真正的推理模型,把中度分析**深化**成足以應付現場追問的推理。
+    /// 輸出線格式與 Tier 2 相同(analysis/followUps/uncertainties;`TierParsers.parseTier3`),
+    /// 但要求的是「推理」而非「補強」:多方案要比較取捨並給判斷、需要推導就給關鍵步驟與結論、
+    /// 設計/決策題給明確立場與權衡。style 沿用 config(預設條列)。
+    static func tier3System(persona: String, guidance: String = "",
+                            outputLanguage: String = defaultOutputLanguage,
+                            style: MeetingDeepStyle) -> String {
+        let formatSection: String
+        switch style {
+        case .detailed:
+            formatSection = "followUps 給 2-3 個最可能的追問。"
+        case .bullets:
+            formatSection = """
+            analysis 以**條列**輸出:每條「**關鍵詞**:一句話結論/判斷」,把推理的**結論**放在關鍵詞後,
+            至多 5 條;followUps 至多 2 條;uncertainties 至多 2 條。
+            """
+        case .concise:
+            formatSection = """
+            analysis 以 **3~4 句話**給出結論、關鍵取捨與你的立場,不鋪陳;followUps 至多 2 條。
+            """
+        }
+        return """
+        \(persona)
+        \(guidanceLine(guidance))以下是我在會議中被問到的問題、我的開口稿,以及一份初步(中度)分析。
+        請進行**真正深入的推理**,把它深化成足以應付現場追問的深度回答:
+        - 涉及多方案 → 逐一比較取捨,並給出**你的判斷與理由**(不要只列選項);
+        - 需要推導 → 給出關鍵步驟與結論;
+        - 設計/決策題 → 給出**明確立場**與權衡代價。
+        **鐵律:不要捏造/編造任何 benchmark 數字、論文名稱、公司名、產品版本或不存在的事實。**
+        沒把握的點列進 uncertainties,不要硬掰。
+        只輸出 JSON(不要 markdown code fence、不要其他文字),格式:
+        {
+          "analysis": "<深入推理後的分析>",
+          "followUps": [{"question":"<對方很可能接著追問的問題>","oneLineAnswer":"<一句話答案>"}],
+          "uncertainties": ["<需要實測或查證的點>"]
         }
         \(formatSection)
         一律以\(outputLanguage)回答——不論對方用什麼語言發問(JSON 內的文字也是;key 名維持英文)。
         """
+    }
+
+    /// 深度分析 user:cue + 中度分析全文(要深化的基底)+ 接地。
+    static func tier3User(cue: String, mediumAnalysis: String, grounding: MeetingGrounding) -> String {
+        var lines: [String] = []
+        let g = grounding.userBlock()
+        if !g.isEmpty { lines.append(g) }
+        lines.append("對方問/說:\(cue)")
+        lines.append("")
+        lines.append("初步(中度)分析:")
+        lines.append(mediumAnalysis.isEmpty ? "(無)" : mediumAnalysis)
+        return lines.joined(separator: "\n")
     }
 
     static func tier2User(cue: String, draft: Tier1Draft, grounding: MeetingGrounding) -> String {

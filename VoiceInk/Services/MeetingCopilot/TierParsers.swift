@@ -36,6 +36,9 @@ enum TierParsers {
         let analysis: String?
         let followUps: [RawFollowUp]?
         let uncertainties: [String]?
+        // M10:中度自評升級訊號(缺鍵 → nil → 預設 false/"")。深度分析不產出這兩鍵,忽略即可。
+        let needsDeep: Bool?
+        let deepReason: String?
     }
 
     /// Tier 2:JSON(容忍 code fence)。任何失敗 → 把整段 raw 當 analysis(降級但不丟資訊)。
@@ -61,13 +64,21 @@ enum TierParsers {
         let result = Tier2Analysis(
             analysis: (decoded.analysis ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
             followUps: followUps,
-            uncertainties: (decoded.uncertainties ?? []).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+            uncertainties: (decoded.uncertainties ?? []).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty },
+            needsDeep: decoded.needsDeep ?? false,
+            deepReason: (decoded.deepReason ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
         // 防呆:RawTier2 全欄位 optional,「合法 JSON 但鍵名不符」(大小寫、外包一層殼)
         // 會 decode「成功」而全 nil → 三欄皆空。這種情況同樣降級成全文,不能丟資訊
-        // ——否則 UI 看起來就是「轉圈完什麼都沒有」。
+        // ——否則 UI 看起來就是「轉圈完什麼都沒有」。needsDeep 在降級時保守取 false。
         if result.analysis.isEmpty && result.followUps.isEmpty && result.uncertainties.isEmpty {
             return Tier2Analysis(analysis: trimmed, followUps: [], uncertainties: [])
         }
         return result
+    }
+
+    /// Tier 3(深度分析):線格式與 Tier 2 相同(analysis/followUps/uncertainties);深度不產 needsDeep,忽略。
+    /// 獨立命名讓呼叫端語意清楚,並保留未來深度輸出格式分岔的空間。
+    static func parseTier3(_ raw: String) -> Tier2Analysis {
+        parseTier2(raw)
     }
 }

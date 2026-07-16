@@ -24,6 +24,9 @@ final class PresenterScriptWindowManager: ObservableObject {
 
     // MARK: - 手動拖曳(PresenterScriptView 的把手呼叫)
 
+    /// 讀稿面板是否**實際**顯示在螢幕上(緊急隱藏判斷收/放用,FR-84)。
+    var isVisibleOnScreen: Bool { panel?.isVisible == true }
+
     var panelOrigin: NSPoint? { panel?.frame.origin }
     func setPanelOrigin(_ origin: NSPoint) { panel?.setFrameOrigin(origin) }
 
@@ -45,6 +48,22 @@ final class PresenterScriptWindowManager: ObservableObject {
             show()
             isPinned = panel != nil
         }
+    }
+
+    /// 無條件收起並取消釘住(緊急隱藏共用;鏡射 `CopilotOverlayWindowManager.hideAndUnpin`)。
+    /// 回傳收起前是否為釘住狀態——供 panic 的 restore 決定要不要把這個面板叫回。
+    @discardableResult
+    func hideAndUnpin() -> Bool {
+        let wasPinned = isPinned
+        isPinned = false
+        hide()
+        return wasPinned
+    }
+
+    /// 緊急隱藏後的還原:把面板重新顯示並釘住(只在 panic 前是釘住狀態時呼叫)。
+    func showAndPin() {
+        show()
+        isPinned = panel != nil
     }
 
     // MARK: - 視窗生命週期

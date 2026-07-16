@@ -207,7 +207,7 @@ struct MeetingSessionDiagnostics: Codable {
                     tier1PromptUser: c.tier1PromptUser, tier1RawReply: c.tier1RawReply,
                     tier1ElapsedMs: c.tier1ElapsedMs, tier1At: c.tier1At,
                     tier1Error: c.tier1Error, tier1GroundingNote: c.tier1GroundingNote,
-                    deepModelName: c.deepModelName,
+                    deepModelName: c.deepThinkModelName,   // M10:深答 = 深思模型(deepThink)
                     tier2Analysis: c.tier2Analysis, tier2FollowUps: c.tier2FollowUps,
                     tier2Uncertainties: c.tier2Uncertainties,
                     tier2PromptUser: c.tier2PromptUser, tier2RawReply: c.tier2RawReply,

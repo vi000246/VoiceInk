@@ -47,6 +47,8 @@ final class CopilotOverlayWindowManager: ObservableObject {
     private var panel: CopilotOverlayPanel?
     private weak var controller: MeetingCopilotController?
     private var onCueTapped: ((MeetingLiveCue) -> Void)?
+    /// 「以截圖重新深答」按鈕的接線(live 端注入;走 AnswerCoordinator.requestDeepWithImages)。
+    private var onImageDeepRequested: ((MeetingLiveCue) -> Void)?
 
     private var peekGuard = CopilotPeekGuard()
 
@@ -62,7 +64,8 @@ final class CopilotOverlayWindowManager: ObservableObject {
     /// overlay 恆為不透明;onLocalLevel 無訂閱者時 transcriber 端零成本。)
     func configure(
         controller: MeetingCopilotController,
-        onCueTapped: ((MeetingLiveCue) -> Void)? = nil
+        onCueTapped: ((MeetingLiveCue) -> Void)? = nil,
+        onImageDeepRequested: ((MeetingLiveCue) -> Void)? = nil
     ) {
         // 換場(新的 live session)時必須丟棄舊 panel:hosting view 對上一場的
         // controller 是強持有,重用會讓 overlay 永遠顯示上一場的殭屍 cue。
@@ -75,6 +78,7 @@ final class CopilotOverlayWindowManager: ObservableObject {
         }
         self.controller = controller
         self.onCueTapped = onCueTapped
+        self.onImageDeepRequested = onImageDeepRequested
     }
 
     /// live pipeline 停止時呼叫:取消釘住並隱藏,讓按鈕/熱鍵狀態歸零,
@@ -85,7 +89,19 @@ final class CopilotOverlayWindowManager: ObservableObject {
         hide()
     }
 
+    /// 緊急隱藏後的還原:重新顯示並釘住(只在 panic 前是釘住狀態時呼叫)。
+    /// 走 `show()`(可能因 pipeline 未跑而 panel 仍為 nil)後才依 panel 是否存在決定 isPinned,
+    /// 與 `toggle()` 的釘住語意一致(不假裝釘住)。
+    func showAndPin() {
+        show()
+        isPinned = panel != nil
+    }
+
     // MARK: - 手動拖曳(CopilotOverlayView 的把手呼叫)
+
+    /// overlay 是否**實際**顯示在螢幕上(panel 存在且未 orderOut)。緊急隱藏用它判斷收/放(FR-84),
+    /// 不靠 `isPinned`——peek 或獨立 toggle 都可能讓可見狀態與 isPinned 不一致。
+    var isVisibleOnScreen: Bool { panel?.isVisible == true }
 
     /// panel 目前的螢幕座標原點(AppKit y 向上)。
     var panelOrigin: NSPoint? { panel?.frame.origin }
@@ -184,7 +200,8 @@ final class CopilotOverlayWindowManager: ObservableObject {
                 // 掛上 controller(且翻譯關閉時照樣建),所以這裡取到的恆非 nil;
                 // 沒有 live pipeline 的路徑取到 nil → overlay 的翻譯區整段不渲染。
                 translator: controller.translator,
-                onCueTapped: onCueTapped)
+                onCueTapped: onCueTapped,
+                onImageDeepRequested: onImageDeepRequested)
         )
         newPanel.contentView = hosting.view
         newPanel.setFrame(metrics, display: true)

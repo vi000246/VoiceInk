@@ -142,6 +142,34 @@ final class MeetingLiveCue {
     /// Tier 2 觸發來源:"auto" = 自動深答、"manual" = 使用者點擊、空 = 未跑(M8 觀測用)。
     var tier2TriggerRaw: String = ""
 
+    // MARK: - M10 中度自評升級訊號(中度分析產出,供深度分析閘門)
+
+    /// 中度分析自評「這題是否需要深度分析」(多方案取捨/多步推導/架構演算法/實質不確定)。
+    /// 自動觸發模式據此決定是否自動發起 Tier 3。缺鍵預設 false。
+    var mediumNeedsDeep: Bool = false
+    /// 中度自評需要深答的簡短原因(顯示在「深入分析」鈕的 tooltip)。空 = 無/不需要。
+    var mediumDeepReason: String = ""
+
+    // MARK: - M10 深度分析(Tier 3,深思模型;鏡射 tier2 觀測欄位)
+    //
+    // 中度分析(tier2*)= 即時模型的自動續寫;深度分析(tier3*)= 深思模型的閘門化推理。
+    // M8 的「慢層」機制(latest-only 取消/展開保護/未讀徽章/spinner)由 tier2 平移到 tier3。
+
+    var tier3Analysis: String = ""
+    var tier3FollowUpsRaw: String = ""
+    var tier3UncertaintiesRaw: String = ""
+    var tier3PromptUser: String = ""
+    var tier3RawReply: String = ""
+    var tier3GroundingElapsedMs: Int = 0
+    var tier3StreamElapsedMs: Int = 0
+    var tier3Error: String = ""
+    var tier3GroundingNote: String = ""
+    var tier3At: Date?
+    /// Tier 3 觸發來源:"auto" = 中度放行自動深答、"manual" = 使用者按深入鈕、"image" = 截圖深答、空 = 未跑。
+    var tier3TriggerRaw: String = ""
+    /// 深度分析實際用的深思模型("provider/model")。
+    var deepThinkModelName: String = ""
+
     init(
         session: MeetingLiveSession?,
         text: String,
@@ -230,6 +258,48 @@ final class MeetingLiveCue {
                 : ((try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) } ?? "")
             uncertaintiesCacheRaw = tier2UncertaintiesRaw
             uncertaintiesCacheValue = newValue
+        }
+    }
+
+    // MARK: - M10 Tier 3 陣列存取器(JSON-in-raw + @Transient 快取,鏡射 tier2)
+
+    @Transient private var t3FollowUpsCacheRaw: String = ""
+    @Transient private var t3FollowUpsCacheValue: [String] = []
+    var tier3FollowUps: [String] {
+        get {
+            guard !tier3FollowUpsRaw.isEmpty, let data = tier3FollowUpsRaw.data(using: .utf8) else { return [] }
+            if t3FollowUpsCacheRaw == tier3FollowUpsRaw { return t3FollowUpsCacheValue }
+            let decoded = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+            t3FollowUpsCacheRaw = tier3FollowUpsRaw
+            t3FollowUpsCacheValue = decoded
+            return decoded
+        }
+        set {
+            tier3FollowUpsRaw = newValue.isEmpty
+                ? ""
+                : ((try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) } ?? "")
+            t3FollowUpsCacheRaw = tier3FollowUpsRaw
+            t3FollowUpsCacheValue = newValue
+        }
+    }
+
+    @Transient private var t3UncertaintiesCacheRaw: String = ""
+    @Transient private var t3UncertaintiesCacheValue: [String] = []
+    var tier3Uncertainties: [String] {
+        get {
+            guard !tier3UncertaintiesRaw.isEmpty, let data = tier3UncertaintiesRaw.data(using: .utf8) else { return [] }
+            if t3UncertaintiesCacheRaw == tier3UncertaintiesRaw { return t3UncertaintiesCacheValue }
+            let decoded = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+            t3UncertaintiesCacheRaw = tier3UncertaintiesRaw
+            t3UncertaintiesCacheValue = decoded
+            return decoded
+        }
+        set {
+            tier3UncertaintiesRaw = newValue.isEmpty
+                ? ""
+                : ((try? JSONEncoder().encode(newValue)).flatMap { String(data: $0, encoding: .utf8) } ?? "")
+            t3UncertaintiesCacheRaw = tier3UncertaintiesRaw
+            t3UncertaintiesCacheValue = newValue
         }
     }
 }

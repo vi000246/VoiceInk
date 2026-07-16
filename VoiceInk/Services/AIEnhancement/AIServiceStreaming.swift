@@ -4,6 +4,15 @@ import LLMkit
 /// 串流版可注入 seam(與既有 `ChatCompleting` 並列,AskAIService.swift:6-8)。
 protocol StreamingChatCompleting {
     func stream(system: String, user: String) -> AsyncThrowingStream<String, Error>
+    /// 帶圖片的變體(截圖深答)。有預設實作忽略圖片,所以非視覺 completer 與測試 fake 都免改;
+    /// 只有正式的 `LiveStreamingChatCompleter` override 它真的送圖。
+    func stream(system: String, user: String, images: [Data]) -> AsyncThrowingStream<String, Error>
+}
+
+extension StreamingChatCompleting {
+    func stream(system: String, user: String, images: [Data]) -> AsyncThrowingStream<String, Error> {
+        stream(system: system, user: user)   // 預設:忽略圖片
+    }
 }
 
 extension AIService {
@@ -12,7 +21,7 @@ extension AIService {
     /// model/key/reasoning 解析(AIChatCompletionService.swift:4-101)。
     func streamChat(
         provider: AIProvider, modelName: String?, messages: [ChatMessage],
-        systemPrompt: String?, timeout: TimeInterval = 60
+        systemPrompt: String?, images: [Data] = [], timeout: TimeInterval = 60
     ) -> AsyncThrowingStream<String, Error> {
         let resolvedModel = modelName?.isEmpty == false ? modelName! : selectedModel(for: provider)
         // key 解析照抄 chatAPIKey(它是 file-private)。
@@ -28,7 +37,7 @@ extension AIService {
                     do {
                         let inner = StreamingChatClient.streamAnthropic(
                             apiKey: try key(), model: resolvedModel, messages: messages,
-                            systemPrompt: systemPrompt, maxTokens: 4096, timeout: timeout)
+                            systemPrompt: systemPrompt, maxTokens: 4096, images: images, timeout: timeout)
                         for try await d in inner { c.yield(d) }
                         c.finish()
                     } catch { c.finish(throwing: error) }
@@ -46,7 +55,7 @@ extension AIService {
                             messages: messages, systemPrompt: systemPrompt, temperature: temp,
                             reasoningEffort: ReasoningConfig.getReasoningParameter(for: provider, modelName: resolvedModel),
                             extraBody: ReasoningConfig.getExtraBodyParameters(for: provider, modelName: resolvedModel),
-                            timeout: timeout)
+                            images: images, timeout: timeout)
                         for try await d in inner { c.yield(d) }
                         c.finish()
                     } catch { c.finish(throwing: error) }
@@ -65,6 +74,11 @@ struct LiveStreamingChatCompleter: StreamingChatCompleting {
     func stream(system: String, user: String) -> AsyncThrowingStream<String, Error> {
         aiService.streamChat(provider: provider, modelName: modelName,
                              messages: [.user(user)], systemPrompt: system, timeout: 60)
+    }
+
+    func stream(system: String, user: String, images: [Data]) -> AsyncThrowingStream<String, Error> {
+        aiService.streamChat(provider: provider, modelName: modelName,
+                             messages: [.user(user)], systemPrompt: system, images: images, timeout: 60)
     }
 }
 

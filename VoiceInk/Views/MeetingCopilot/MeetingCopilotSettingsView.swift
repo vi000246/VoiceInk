@@ -62,6 +62,7 @@ struct MeetingCopilotSettingsView: View {
             notesRAGSection
             presetScriptsSection
             overlaySection
+            screenshotSection
             hotkeySection
         }
         .formStyle(.grouped)
@@ -152,26 +153,28 @@ struct MeetingCopilotSettingsView: View {
 
     private var modelSection: some View {
         Section("回應模型") {
-            Picker("快模型(開口稿)", selection: fastBinding) {
-                Text("自動(跟隨預設,建議選 Groq 低延遲)").tag(RecorderModelChoice?.none)
+            Picker("即時模型（開口稿＋中度分析）", selection: fastBinding) {
+                Text("自動(跟隨預設,建議選 Groq/Gemini flash 低延遲)").tag(RecorderModelChoice?.none)
                 ForEach(recorderModelChoices(aiService), id: \.self) { c in
                     Text(c.label).tag(RecorderModelChoice?.some(c))
                 }
             }
-            Picker("深模型(深度分析)", selection: deepBinding) {
+            Picker("深思模型（深度分析）", selection: deepThinkBinding) {
                 Text("自動(跟隨預設)").tag(RecorderModelChoice?.none)
                 ForEach(recorderModelChoices(aiService), id: \.self) { c in
                     Text(c.label).tag(RecorderModelChoice?.some(c))
                 }
             }
+            Picker("深度分析觸發", selection: bind(\.deepTrigger, store.setDeepTrigger)) {
+                ForEach(CopilotDeepTrigger.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
             Toggle("先預跑開口稿(最新一則)", isOn: bind(\.prefetchEnabled, store.setPrefetchEnabled))
-            Toggle("Tier 1 完成後自動深度分析", isOn: bind(\.autoDeepEnabled, store.setAutoDeepEnabled))
-            Picker("深度分析風格", selection: bind(\.deepStyle, store.setDeepStyle)) {
+            Picker("深度分析密度", selection: bind(\.deepStyle, store.setDeepStyle)) {
                 ForEach(MeetingDeepStyle.allCases, id: \.self) { Text($0.label).tag($0) }
             }
-            Text("快模型負責「立刻可開口」的草稿(選低延遲的 Groq 最佳);深模型隨後補深度分析與追問預判。")
+            Text("即時模型:開口稿(<1s)＋中度分析(~5s)共用,選低延遲的 flash/Groq 最佳。深思模型:只在需要深入時跑,**請選推理/thinking 類**(預設 gemini-2.5-pro)——它才有真正的推理增量。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("自動深度分析:開口稿一回來就在背景續跑深模型,不必手動點開。分析完成時,沒在讀別則就直接展開,否則只亮未讀徽章(熱鍵「展開/收合分析」可切過去)。關閉則回到點擊才跑。")
+            Text("深度分析觸發 = 自動:中度分析判定這題需要複雜推理時,自動用深思模型跑(晚幾秒補上、亮徽章)。手動:只有你按「深入分析」才跑。兩種模式下手動按鈕都在。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -189,55 +192,37 @@ struct MeetingCopilotSettingsView: View {
 
     private var promptForm: some View {
         Form {
-            Section("領域身分(persona)") {
-                VStack(alignment: .leading, spacing: 4) {
-                    TextEditor(text: bind(\.domainPersona, store.setDomainPersona))
-                        .font(.system(size: 12)).frame(height: 54)
-                    Text("快模型(開口稿)與深模型(深答)都以這個身分回答——讓答案針對你的領域,而非教科書。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            PromptEditorRow(
+                title: "領域身分(persona)",
+                help: "開口稿、中度、深度三段都以這個身分回答（即時＋深思模型共用）——讓答案針對你的領域,而非教科書。",
+                stored: store.domainPersona,
+                defaultText: MeetingCopilotConfigStore.defaultDomainPersona,
+                editorHeight: 56,
+                onSave: store.setDomainPersona)
 
-            Section("回答風格與範圍(快模型 + 深模型)") {
-                VStack(alignment: .leading, spacing: 6) {
-                    TextEditor(text: bind(\.answerStyleGuidance, store.setAnswerStyleGuidance))
-                        .font(.system(size: 12)).frame(height: 168)
-                    HStack {
-                        Button("恢復預設") {
-                            store.setAnswerStyleGuidance(MeetingCopilotConfigStore.defaultAnswerStyleGuidance)
-                        }
-                        Button("清空(完全放開)") {
-                            store.setAnswerStyleGuidance("")
-                        }
-                        Spacer()
-                    }
-                    .buttonStyle(.borderless).font(.caption)
-                    Text("同時注入開口稿(快)與深答(深)的 prompt。預設把答案綁在「軟體 + 你的個人專案」範圍、要求口語淺白、不用你沒聽過或太難的術語。清空 = 不加任何限制。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            PromptEditorRow(
+                title: "回答風格與範圍(開口稿＋中度)",
+                help: "只套即時模型的**開口稿與中度分析**。預設把答案綁在「軟體 + 你的個人專案」範圍、口語淺白、不用你沒聽過或太難的術語。深度分析的風格另設(下方欄位)。清空 = 不加任何限制。",
+                stored: store.answerStyleGuidance,
+                defaultText: MeetingCopilotConfigStore.defaultAnswerStyleGuidance,
+                editorHeight: 150,
+                onSave: store.setAnswerStyleGuidance)
 
-            Section("問題分類器 prompt(快模型)") {
-                VStack(alignment: .leading, spacing: 6) {
-                    if store.cuePromptOverride.isEmpty {
-                        Text("目前使用內建預設。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("載入預設以編輯") {
-                            store.setCuePromptOverride(ResponseCueExtractor.systemPrompt)
-                        }
-                        .buttonStyle(.borderless).font(.caption)
-                    } else {
-                        TextEditor(text: bind(\.cuePromptOverride, store.setCuePromptOverride))
-                            .font(.system(size: 12)).frame(height: 220)
-                        Button("恢復內建預設(清空覆寫)") {
-                            store.setCuePromptOverride("")
-                        }
-                        .buttonStyle(.borderless).font(.caption)
-                    }
-                    Text("決定對方哪句話會被判成「需要回應的問題」並分類(directQuestion / aboutMe 等)。覆寫時務必保留輸出 {\"cues\":[…]} JSON 的格式指示,否則會解析失敗、整場抓不到 cue。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            PromptEditorRow(
+                title: "深度分析風格(深思模型)",
+                help: "只套**深度分析**這段,與上面的即時風格拆開——即時要短、深度可以更完整有推理,兩份分開設不會互相拉扯。密度(幾條/幾句)另由「回應模型」分頁的「深度分析密度」控制。清空 = 不加。",
+                stored: store.deepStyleGuidance,
+                defaultText: MeetingCopilotConfigStore.defaultDeepStyleGuidance,
+                editorHeight: 150,
+                onSave: store.setDeepStyleGuidance)
+
+            PromptEditorRow(
+                title: "問題分類器 prompt(即時模型)",
+                help: "決定對方哪句話被判成「需要回應」並分類(directQuestion / aboutMe 等)。覆寫時務必保留輸出 {\"cues\":[…]} JSON 的格式指示,否則整場抓不到 cue。清空 = 用內建預設。",
+                stored: store.cuePromptOverride,
+                defaultText: ResponseCueExtractor.systemPrompt,
+                editorHeight: 200,
+                onSave: store.setCuePromptOverride)
         }
         .formStyle(.grouped)
     }
@@ -319,6 +304,22 @@ struct MeetingCopilotSettingsView: View {
         }
     }
 
+    private var screenshotSection: some View {
+        Section("截圖深答（手動視覺）") {
+            Picker("截圖對象", selection: bind(\.screenshotTarget, store.setScreenshotTarget)) {
+                ForEach(CopilotScreenshotTarget.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            Text("按截圖熱鍵累積畫面（最多 \(CopilotScreenshotStore.maxShots) 張），再到浮動視窗展開任一題按「以截圖重新深答」——把畫面當**圖片**送給深答模型，覆蓋原本的文字深答。用在對方分享**圖表／投影片／程式碼**、OCR 讀不出版面時。")
+                .font(.caption).foregroundStyle(.secondary)
+            Label("需要**支援視覺的深答模型**（如 gpt-4o、claude-sonnet-4、gemini）；不支援時會提示你換模型。純手動觸發，自動深答不會送圖，額外 token 只花在你主動送的那幾張。", systemImage: "photo.badge.checkmark")
+                .font(.caption).foregroundStyle(.orange)
+            if store.screenshotTarget == .region {
+                Text("「框選區域」用系統原生的十字準星（Esc 取消）。框選當下若掃過浮動視窗可能一起入鏡——框對方的內容即可。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var hotkeySection: some View {
         Section("熱鍵") {
             LabeledContent("開/關浮動視窗") {
@@ -326,6 +327,12 @@ struct MeetingCopilotSettingsView: View {
             }
             LabeledContent("按住瞄一眼") {
                 ShortcutRecorder(action: .peekMeetingCopilotOverlay).controlSize(.small)
+            }
+            LabeledContent("緊急隱藏（再按還原）") {
+                ShortcutRecorder(action: .panicHideMeetingCopilot).controlSize(.small)
+            }
+            LabeledContent("截圖（截圖深答）") {
+                ShortcutRecorder(action: .captureCopilotScreenshot).controlSize(.small)
             }
             LabeledContent("展開/收合分析") {
                 ShortcutRecorder(action: .toggleCopilotCueExpansion).controlSize(.small)
@@ -416,6 +423,16 @@ struct MeetingCopilotSettingsView: View {
             set: { store.setDeepModel(provider: $0?.provider, model: $0?.model) })
     }
 
+    /// M10 深思模型(僅深度分析)。預設 Gemini/gemini-2.5-pro;nil = 跟隨預設 provider。
+    private var deepThinkBinding: Binding<RecorderModelChoice?> {
+        Binding(
+            get: {
+                guard let p = store.deepThinkProviderName, let m = store.deepThinkModelName else { return nil }
+                return RecorderModelChoice(provider: p, model: m)
+            },
+            set: { store.setDeepThinkModel(provider: $0?.provider, model: $0?.model) })
+    }
+
     /// 翻譯模型(M8)。形式完全鏡射 `fastBinding`:nil = 跟隨預設 provider。
     private var translationModelBinding: Binding<RecorderModelChoice?> {
         Binding(
@@ -493,5 +510,68 @@ private struct ScriptEditorSheet: View {
         }
         .padding(20)
         .frame(width: 480)
+    }
+}
+
+/// Prompt 頁共用的可編輯欄位:草稿編輯 + **儲存 / 恢復預設 / 清空**(有樣式的按鈕)。
+///
+/// 草稿模式(不即時生效):編輯 TextEditor 只改本地草稿,按「儲存」才寫回設定。恢復預設 / 清空只**填入草稿**,
+/// 仍需按「儲存」才套用——單一 commit 入口、不會有東西被默默改掉;有未存變更時顯示橙色「未儲存」提示、
+/// 「儲存」才可按。
+private struct PromptEditorRow: View {
+    let title: String
+    let help: String
+    /// 目前已儲存的值(判斷 dirty + 首次 seed 草稿)。
+    let stored: String
+    let defaultText: String
+    var editorHeight: CGFloat = 120
+    let onSave: (String) -> Void
+
+    @State private var draft: String
+
+    init(title: String, help: String, stored: String, defaultText: String,
+         editorHeight: CGFloat = 120, onSave: @escaping (String) -> Void) {
+        self.title = title
+        self.help = help
+        self.stored = stored
+        self.defaultText = defaultText
+        self.editorHeight = editorHeight
+        self.onSave = onSave
+        _draft = State(initialValue: stored)   // 首次以已存值 seed;之後由 @State 保留編輯
+    }
+
+    private var dirty: Bool { draft != stored }
+
+    var body: some View {
+        Section(title) {
+            VStack(alignment: .leading, spacing: 8) {
+                TextEditor(text: $draft)
+                    .font(.system(size: 12))
+                    .frame(height: editorHeight)
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.secondary.opacity(0.25)))
+
+                HStack(spacing: 8) {
+                    Button("儲存") { onSave(draft) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(!dirty)
+                    Button("恢復預設") { draft = defaultText }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("清空") { draft = "" }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Spacer()
+                    if dirty {
+                        Label("未儲存", systemImage: "circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Text(help).font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }

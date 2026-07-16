@@ -20,6 +20,10 @@ struct CopilotOverlayView: View {
     @ObservedObject private var overlayManager = CopilotOverlayWindowManager.shared
     /// 點「深度分析」→ 觸發 Tier 2(接 M3 AnswerCoordinator;click-through 開啟時自然不會觸發)。
     var onCueTapped: ((MeetingLiveCue) -> Void)?
+    /// 點「以截圖重新深答」→ 帶累積的截圖重跑 Tier 2(手動視覺;走 requestDeepWithImages)。
+    var onImageDeepRequested: ((MeetingLiveCue) -> Void)?
+    /// 截圖佇列(截圖深答)。overlay 觀察它顯示張數徽章與按鈕。
+    @ObservedObject private var screenshots = CopilotScreenshotStore.shared
 
     /// 手風琴:使用者手動展開的 cue(`controller.expandedCueId`;nil = 自動展開最新一則)。
     /// 面試官連問兩題時,可點任一題展開、其餘自動收成單行;新題進來仍排最上,
@@ -106,6 +110,14 @@ struct CopilotOverlayView: View {
             Image(systemName: "line.3.horizontal").font(.system(size: 10, weight: .semibold))
             Text("會議輔助").font(.system(size: 10, weight: .semibold))
             Spacer()
+            // 截圖佇列張數:按了截圖熱鍵後在這裡即時 +1,是 overlay 顯示時唯一的截圖回饋
+            // (隱藏時刻意無聲、無通知,不暴露本功能——與誠實邊界的取捨一致)。
+            if screenshots.count > 0 {
+                Label("\(screenshots.count)", systemImage: "photo.on.rectangle.angled")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.45, green: 0.72, blue: 1.0))
+                    .help("已截 \(screenshots.count) 張,展開任一題按「以截圖重新深答」送出")
+            }
             if capture.isRecording {
                 // 等寬數字:每秒跳動時字不會左右抖。
                 Text(capture.elapsedText)
@@ -233,9 +245,10 @@ struct CopilotOverlayView: View {
                 Text("準備開口稿中…").font(.system(size: 12)).foregroundStyle(.secondary)
             }
 
-            // Tier 2:深度 + follow-up 預判 + 不確定
+            // 中度分析(Tier 2,即時模型):有就渲染。它是即時漸進的一部分(像開口稿),不掛未讀徽章。
             if !cue.tier2Analysis.isEmpty {
                 Divider()
+                Text("中度分析").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
                 Text(cue.tier2Analysis)
                     .font(.system(size: 12))
                     .foregroundStyle(.primary.opacity(0.85))
@@ -253,27 +266,99 @@ struct CopilotOverlayView: View {
                             .font(.system(size: 10)).foregroundStyle(.orange)
                     }
                 }
-            } else if controller.deepInFlightCueId == cue.id {
-                // Tier 2 在跑(等 Tier 1 → RAG/OCR 接地 → deep model 串流,可能十幾秒)。
-                // 沒有這個狀態時,點了按鈕到結果出現之間 UI 零回饋,看起來像壞掉。
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("深度分析中…(檢索接地資料+深模型,約需十餘秒)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+            }
+
+            // 深度分析(Tier 3,深思模型;閘門化)
+            deepSection(cue)
+
+            imageDeepControls(cue)
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// 深度分析(Tier 3,深思模型)區:有結果就渲染;在途顯示 spinner(等同按鈕 disabled);
+    /// 否則(可深答時)顯示「深入分析」按鈕(觸發 requestDeep;needsDeep 時附建議原因)。
+    @ViewBuilder
+    private func deepSection(_ cue: MeetingLiveCue) -> some View {
+        if !cue.tier3Analysis.isEmpty {
+            Divider()
+            HStack(spacing: 4) {
+                Image(systemName: "brain").font(.system(size: 9))
+                Text("深度分析").font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(Color(red: 0.45, green: 0.72, blue: 1.0))
+            Text(cue.tier3Analysis)
+                .font(.system(size: 12))
+                .foregroundStyle(.primary.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            if !cue.tier3FollowUps.isEmpty {
+                Text("可能追問").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                ForEach(cue.tier3FollowUps, id: \.self) { f in
+                    Text("· \(f)").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            } else {
-                // 只有這行文字可觸發 Tier 2——整張卡不再是點擊區,
-                // 避免收合/展開操作誤觸深度分析。
-                Text("▶ 深度分析")
+            }
+            if !cue.tier3Uncertainties.isEmpty {
+                ForEach(cue.tier3Uncertainties, id: \.self) { u in
+                    Label(u, systemImage: "questionmark.circle")
+                        .font(.system(size: 10)).foregroundStyle(.orange)
+                }
+            }
+        } else if controller.deepInFlightCueId == cue.id {
+            // 深度分析在跑(深思模型推理)。in-flight 走這條 = 按鈕不出現 = 等同 disabled(FR-77/AC-62)。
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("深度分析中…（深思模型推理，約需十餘~數十秒）")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        } else if cue.kind != .aboutMe, cue.kind != .informational {
+            // 「深入分析」按鈕:觸發 Tier 3(onCueTapped → AnswerCoordinator.requestDeep)。
+            // aboutMe / informational 不進深度分析(deepEligible),不渲染死鈕。
+            // 自動模式下 needsDeep 的題通常已自動跑掉;手動模式、或自動判定不需要時,這裡讓你手動深入。
+            VStack(alignment: .leading, spacing: 2) {
+                Text("▶ 深入分析")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color(red: 0.45, green: 0.72, blue: 1.0))
                     .contentShape(Rectangle())
                     .onTapGesture { onCueTapped?(cue) }
+                if cue.mediumNeedsDeep, !cue.mediumDeepReason.isEmpty {
+                    Text("建議深入：\(cue.mediumDeepReason)")
+                        .font(.system(size: 9)).foregroundStyle(.orange)
+                }
             }
         }
-        .padding(10)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// 截圖深答的控制(手動視覺):只有累積了截圖才出現「以截圖重新深答」;錯誤時顯示可關閉橫幅。
+    @ViewBuilder
+    private func imageDeepControls(_ cue: MeetingLiveCue) -> some View {
+        // aboutMe / informational 不進深度分析 → 不顯示截圖深答鈕(否則點了只會跳「不適用」)。
+        if screenshots.count > 0, cue.kind != .aboutMe, cue.kind != .informational {
+            Button {
+                onImageDeepRequested?(cue)
+            } label: {
+                Label("以截圖重新深答（\(screenshots.count) 張）", systemImage: "photo.on.rectangle.angled")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color(red: 0.45, green: 0.72, blue: 1.0))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(controller.deepInFlightCueId == cue.id)   // 深答進行中不重複觸發
+            .help("把累積的截圖連同這題送給深答模型重新分析（會覆蓋上面的文字深答，需視覺模型）")
+        }
+        if let err = controller.imageDeepError {
+            HStack(alignment: .top, spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+                Text(err).font(.system(size: 10)).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button { controller.imageDeepError = nil } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(.orange)
+        }
     }
 }
 

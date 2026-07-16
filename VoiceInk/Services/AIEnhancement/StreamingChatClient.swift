@@ -19,6 +19,22 @@ enum StreamingChatError: Error {
 ///   auth `x-api-key` + `anthropic-version`,system 為 top-level 欄位。
 enum StreamingChatClient {
 
+    /// 串流專用的 URLSession。
+    ///
+    /// `req.timeoutInterval`(= `timeoutIntervalForRequest`)只是**閒置**計時器:每收到一個 byte 就
+    /// 重置,所以死連線會在 timeout 秒後斷,但**行為異常的伺服器持續 dribble 無內容的 SSE 心跳行**
+    /// 會不斷重置它 → 永不逾時。手動深答走 `await task.value`,一旦卡在這種 dribble,overlay 的
+    /// 「深度分析中…」會無上限空轉。`timeoutIntervalForResource` 是**整個請求**的 wall-clock 上限,
+    /// 不會被 byte 重置——設它才封得住這個洞。`.shared` 的預設是 7 天,等於沒有上限。
+    ///
+    /// 180s:遠比正常深答(十餘秒)寬鬆,只砍真正掛住的請求;不學 AI-overlay 那種 60s 硬砍
+    /// (會誤殺慢但有進度的長回應)。
+    static let pooledSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForResource = 180
+        return URLSession(configuration: cfg)
+    }()
+
     // MARK: - OpenAI-compat(data: {json} + [DONE])
 
     private struct OpenAIChunk: Decodable {
@@ -29,7 +45,8 @@ enum StreamingChatClient {
     static func streamOpenAI(
         baseURL: URL, apiKey: String, model: String, messages: [ChatMessage],
         systemPrompt: String?, temperature: Double, reasoningEffort: String?,
-        extraBody: [String: Any]?, timeout: TimeInterval, session: URLSession = .shared
+        extraBody: [String: Any]?, images: [Data] = [], timeout: TimeInterval,
+        session: URLSession = StreamingChatClient.pooledSession
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -46,7 +63,7 @@ enum StreamingChatClient {
                     if let systemPrompt, !systemPrompt.isEmpty { all.insert(.system(systemPrompt), at: 0) }
                     var body: [String: Any] = [
                         "model": model,
-                        "messages": all.map { ["role": $0.role, "content": $0.content] },
+                        "messages": Self.openAIMessages(all, images: images),
                         "temperature": temperature,
                         "stream": true,
                     ]
@@ -86,7 +103,8 @@ enum StreamingChatClient {
 
     static func streamAnthropic(
         apiKey: String, model: String, messages: [ChatMessage], systemPrompt: String?,
-        maxTokens: Int, timeout: TimeInterval, session: URLSession = .shared
+        maxTokens: Int, images: [Data] = [], timeout: TimeInterval,
+        session: URLSession = StreamingChatClient.pooledSession
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -111,7 +129,7 @@ enum StreamingChatClient {
                     var body: [String: Any] = [
                         "model": model,
                         "max_tokens": maxTokens,
-                        "messages": nonSystem.map { ["role": $0.role, "content": $0.content] },
+                        "messages": Self.anthropicMessages(nonSystem, images: images),
                         "stream": true,
                     ]
                     if let sys { body["system"] = sys }   // nil 時省略 key(等價 LLMkit custom encoder)
@@ -141,6 +159,40 @@ enum StreamingChatClient {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    // MARK: - 多模態訊息組裝(截圖深答)
+
+    /// OpenAI-compat:圖片以 `image_url` content part 併進**最後一則 user 訊息**。
+    /// 無圖時退化成原本的 `content: String`(行為完全不變)。
+    private static func openAIMessages(_ messages: [ChatMessage], images: [Data]) -> [[String: Any]] {
+        var arr: [[String: Any]] = messages.map { ["role": $0.role, "content": $0.content] }
+        guard !images.isEmpty,
+              let idx = arr.lastIndex(where: { ($0["role"] as? String) == "user" }) else { return arr }
+        let text = (arr[idx]["content"] as? String) ?? ""
+        var parts: [[String: Any]] = [["type": "text", "text": text]]
+        for img in images {
+            parts.append(["type": "image_url",
+                          "image_url": ["url": "data:image/jpeg;base64,\(img.base64EncodedString())"]])
+        }
+        arr[idx]["content"] = parts
+        return arr
+    }
+
+    /// Anthropic:圖片以 `image`/`source.base64` content part 併進最後一則 user 訊息。
+    private static func anthropicMessages(_ messages: [ChatMessage], images: [Data]) -> [[String: Any]] {
+        var arr: [[String: Any]] = messages.map { ["role": $0.role, "content": $0.content] }
+        guard !images.isEmpty,
+              let idx = arr.lastIndex(where: { ($0["role"] as? String) == "user" }) else { return arr }
+        let text = (arr[idx]["content"] as? String) ?? ""
+        var parts: [[String: Any]] = [["type": "text", "text": text]]
+        for img in images {
+            parts.append(["type": "image",
+                          "source": ["type": "base64", "media_type": "image/jpeg",
+                                     "data": img.base64EncodedString()]])
+        }
+        arr[idx]["content"] = parts
+        return arr
     }
 
     // MARK: - Shared

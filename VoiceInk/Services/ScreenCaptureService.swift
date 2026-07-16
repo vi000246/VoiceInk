@@ -61,6 +61,110 @@ class ScreenCaptureService: ObservableObject {
         return contextText
     }
 
+    // MARK: - 截圖深答:擷取為圖片(JPEG,供多模態深答)
+
+    /// 依 target 擷取畫面為 JPEG。失敗一律回 nil(靜默,同 OCR 紀律)。
+    /// - `.region` 走系統原生 `screencapture -i`(使用者互動,不受 3s 逾時限制;Esc 取消 → nil)。
+    /// - `.activeWindow` / `.fullScreen` 走 ScreenCaptureKit,3s 逾時,並排除 VoiceInk 自己的視窗。
+    func captureImageData(target: CopilotScreenshotTarget) async -> Data? {
+        guard !isCapturing else { return nil }
+        isCapturing = true
+        defer { isCapturing = false }
+
+        if target == .region {
+            return await Self.captureRegionJPEG()
+        }
+
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let hint = target == .activeWindow ? makeFocusedWindowHint(excluding: currentPID) : nil
+        return await Self.withTimeout(seconds: Self.captureTimeout) {
+            await Self.captureJPEG(target: target, focusedWindowHint: hint, currentPID: currentPID)
+        }
+    }
+
+    private nonisolated static func captureJPEG(
+        target: CopilotScreenshotTarget,
+        focusedWindowHint: FocusedWindowHint?,
+        currentPID: pid_t
+    ) async -> Data? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            let cgImage: CGImage
+            switch target {
+            case .activeWindow:
+                guard let window = findActiveWindow(
+                    in: content.windows, focusedWindowHint: focusedWindowHint, currentPID: currentPID
+                ) else { return nil }
+                let filter = SCContentFilter(desktopIndependentWindow: window)
+                let configuration = SCStreamConfiguration()
+                let scale = captureScale(for: window.frame.size)
+                configuration.width = max(1, Int(window.frame.width * scale))
+                configuration.height = max(1, Int(window.frame.height * scale))
+                cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            case .fullScreen:
+                guard let display = content.displays.first else { return nil }
+                // 排除 VoiceInk 自己的所有視窗(overlay / pill / 讀稿面板不進截圖)——
+                // 比 AI-overlay「先隱藏自己再截」更穩:根本不把自己納入擷取來源,沒有閃爍/race。
+                let ownWindows = content.windows.filter { $0.owningApplication?.processID == currentPID }
+                let filter = SCContentFilter(display: display, excludingWindows: ownWindows)
+                let configuration = SCStreamConfiguration()
+                let scale = captureScale(for: CGSize(width: display.width, height: display.height))
+                configuration.width = max(1, Int(CGFloat(display.width) * scale))
+                configuration.height = max(1, Int(CGFloat(display.height) * scale))
+                cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            case .region:
+                return nil   // region 在 captureImageData 已分流,不會走到這裡
+            }
+            return jpegData(from: cgImage)
+        } catch {
+            return nil
+        }
+    }
+
+    /// 框選:呼叫系統 `screencapture -i`(十字準星、Esc 取消、`-x` 靜音)。使用者完成選取才寫檔;
+    /// 取消時 status 仍為 0 但無檔案 → `fileExists` 守門回 nil。
+    private nonisolated static func captureRegionJPEG() async -> Data? {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("voiceink-region-\(UUID().uuidString).png")
+        let ok: Bool = await withCheckedContinuation { cont in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            proc.arguments = ["-i", "-x", tmp.path]
+            proc.terminationHandler = { p in cont.resume(returning: p.terminationStatus == 0) }
+            do { try proc.run() } catch { cont.resume(returning: false) }
+        }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        guard ok, FileManager.default.fileExists(atPath: tmp.path),
+              let data = try? Data(contentsOf: tmp),
+              let image = NSImage(data: data),
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return nil }
+        return jpegData(from: cg)
+    }
+
+    /// CGImage → 縮到長邊 ≤ maxLongEdge 的 JPEG(控制多模態 token 量)。
+    private nonisolated static func jpegData(
+        from cgImage: CGImage, maxLongEdge: CGFloat = 1568, quality: CGFloat = 0.6
+    ) -> Data? {
+        let w = CGFloat(cgImage.width), h = CGFloat(cgImage.height)
+        let longEdge = max(w, h)
+        let scale = longEdge > maxLongEdge ? maxLongEdge / longEdge : 1
+        let targetW = max(1, Int((w * scale).rounded()))
+        let targetH = max(1, Int((h * scale).rounded()))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: targetW, pixelsHigh: targetH,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = NSSize(width: targetW, height: targetH)
+        guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ctx
+        ctx.cgContext.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetW, height: targetH))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
+    }
+
     private func makeFocusedWindowHint(excluding currentPID: pid_t) -> FocusedWindowHint? {
         guard let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
               frontmostPID != currentPID else {

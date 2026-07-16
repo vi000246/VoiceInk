@@ -28,11 +28,18 @@ struct Tier1Draft: Equatable {
     }
 }
 
-/// Tier 2:深度分析 + follow-up 預判 + 不確定項。
+/// Tier 2(中度分析)/ Tier 3(深度分析)共用結構:分析 + follow-up 預判 + 不確定項。
+///
+/// M10:中度分析多產出**升級訊號** `needsDeep` + `deepReason`——供深度分析的自動觸發閘門。
+/// Tier 3 沿用同結構,`needsDeep`/`deepReason` 在深度分析忽略(有預設值,不影響既有 Tier 2 建構點)。
 struct Tier2Analysis: Equatable {
     var analysis: String
     var followUps: [FollowUp]
     var uncertainties: [String]
+    /// 中度自評:這題是否需要深度分析(自動閘門用)。深度分析忽略。
+    var needsDeep: Bool = false
+    /// 需要深答的簡短原因(顯示在「深入分析」鈕 tooltip)。深度分析忽略。
+    var deepReason: String = ""
 }
 
 /// RAG 片段在 user prompt 裡的**來源標題**。

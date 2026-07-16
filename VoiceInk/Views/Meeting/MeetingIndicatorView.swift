@@ -207,6 +207,9 @@ final class MeetingIndicatorWindowManager {
 
     // MARK: - 手動拖曳 / 移到其他螢幕(MeetingIndicatorView 呼叫)
 
+    /// 錄音指示 pill 是否**實際**顯示在螢幕上(緊急隱藏判斷收/放用,FR-84)。
+    var isVisibleOnScreen: Bool { panel?.isVisible == true }
+
     /// panel 目前的螢幕座標原點(AppKit y 向上)。
     var panelOrigin: NSPoint? { panel?.frame.origin }
     /// 直接設定 panel 原點(整窗拖曳用;不激活 app)。

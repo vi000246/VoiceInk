@@ -12,6 +12,8 @@ enum ShortcutAction: Hashable {
     case toggleMeetingRecording
     case toggleMeetingCopilotOverlay
     case peekMeetingCopilotOverlay
+    case panicHideMeetingCopilot
+    case captureCopilotScreenshot
     case togglePresenterScript
     case toggleCopilotCueExpansion
     case toggleTranslationExpansion
@@ -56,6 +58,10 @@ enum ShortcutAction: Hashable {
             return "toggleMeetingCopilotOverlay"
         case .peekMeetingCopilotOverlay:
             return "peekMeetingCopilotOverlay"
+        case .panicHideMeetingCopilot:
+            return "panicHideMeetingCopilot"
+        case .captureCopilotScreenshot:
+            return "captureCopilotScreenshot"
         case .togglePresenterScript:
             return "togglePresenterScript"
         case .toggleCopilotCueExpansion:
@@ -95,6 +101,10 @@ enum ShortcutAction: Hashable {
             return String(localized: "Toggle Meeting Copilot Overlay")
         case .peekMeetingCopilotOverlay:
             return String(localized: "Peek Meeting Copilot Overlay")
+        case .panicHideMeetingCopilot:
+            return String(localized: "緊急隱藏（收起所有會議浮動視窗）")
+        case .captureCopilotScreenshot:
+            return String(localized: "截圖（加入截圖深答佇列）")
         case .togglePresenterScript:
             return String(localized: "Toggle Presenter Script")
         case .toggleCopilotCueExpansion:
@@ -127,6 +137,8 @@ enum ShortcutAction: Hashable {
         .toggleMeetingRecording,
         .toggleMeetingCopilotOverlay,
         .peekMeetingCopilotOverlay,
+        .panicHideMeetingCopilot,
+        .captureCopilotScreenshot,
         .togglePresenterScript,
         .toggleCopilotCueExpansion,
         .toggleTranslationExpansion
@@ -151,6 +163,8 @@ enum ShortcutAction: Hashable {
         .toggleMeetingRecording,
         .toggleMeetingCopilotOverlay,
         .peekMeetingCopilotOverlay,
+        .panicHideMeetingCopilot,
+        .captureCopilotScreenshot,
         .togglePresenterScript,
         // 同理:新動作也要進這裡,否則它的鍵對 ShortcutValidator 的衝突偵測雙向隱形。
         .toggleCopilotCueExpansion,

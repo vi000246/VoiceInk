@@ -34,6 +34,10 @@ final class MeetingCopilotController: ObservableObject {
     /// Tier 2 進行中的 cue id(overlay 顯示「深度分析中…」;由點擊 handler 設定/清除)。
     @Published var deepInFlightCueId: UUID?
 
+    /// 截圖深答的使用者可見錯誤(模型不支援圖片、或送出失敗)。overlay 顯示一條可關閉的橫幅;
+    /// 由 `AnswerCoordinator.onImageUnsupported` 寫入,使用者關閉或下次成功時清空。
+    @Published var imageDeepError: String?
+
     /// 展開中(使用者正在閱讀)的 cue id。
     /// nil = 自動跟隨最新一則;非 nil = 使用者點開/自動展開中,受閱讀保護——
     /// 該 cue 不會被 `maxCount` 從 overlay 擠出(AC-37,見 CopilotOverlayArranger.arrange 的 pinnedId),

@@ -144,8 +144,9 @@ final class MeetingReplayQueue: ObservableObject {
         let config = MeetingCopilotConfigStore.shared
         let fast = MeetingCopilotLiveController.makeStreamingCompleter(
             provider: config.fastProviderName, model: config.fastModelName, aiService: aiService)
+        // M10:離線覆盤的深度分析也用**深思模型**(與 live 一致),不再用退役的 deep 設定。
         let deep = MeetingCopilotLiveController.makeStreamingCompleter(
-            provider: config.deepProviderName, model: config.deepModelName, aiService: aiService)
+            provider: config.deepThinkProviderName, model: config.deepThinkModelName, aiService: aiService)
         let coordinator = AnswerCoordinator(
             fast: fast.completer,
             deep: deep.completer,

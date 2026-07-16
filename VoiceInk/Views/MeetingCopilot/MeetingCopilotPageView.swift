@@ -604,8 +604,8 @@ private struct MeetingSessionDetailSheet: View {
         if cue.tier2StreamElapsedMs > 0 {
             parts.append("Tier2 接地 \(cue.tier2GroundingElapsedMs)ms＋串流 \(cue.tier2StreamElapsedMs)ms")
         }
-        if !cue.fastModelName.isEmpty { parts.append("fast＝\(cue.fastModelName)") }
-        if !cue.deepModelName.isEmpty { parts.append("deep＝\(cue.deepModelName)") }
+        if !cue.fastModelName.isEmpty { parts.append("即時＝\(cue.fastModelName)") }
+        if !cue.deepThinkModelName.isEmpty { parts.append("深思＝\(cue.deepThinkModelName)") }
         return parts.joined(separator: " · ")
     }
 }

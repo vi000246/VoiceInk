@@ -121,6 +121,7 @@ final class MeetingCaptureController: ObservableObject {
         timer?.invalidate(); timer = nil
         watchdogTask?.cancel(); watchdogTask = nil
         indicator?.hide()
+        panicSnapshot = nil   // 跨場次不殘留 panic 狀態(否則下一場按 panic 會誤還原上一場)
         isRecording = false
 
         // 先停 copilot live pipeline(轉錄消費者)再收音訊檔。
@@ -150,6 +151,48 @@ final class MeetingCaptureController: ObservableObject {
         indicator?.move(to: screen)
         CopilotOverlayWindowManager.shared.move(to: screen)
         PresenterScriptWindowManager.shared.move(to: screen)
+    }
+
+    // MARK: - 緊急隱藏(panic;.panicHideMeetingCopilot 熱鍵)
+
+    /// panic 前各面板的可見/釘住快照(nil = 目前不在 panic 隱藏狀態)。
+    private var panicSnapshot: (overlayPinned: Bool, presenterPinned: Bool, pillWasVisible: Bool)?
+
+    /// 一鍵收掉**所有**會議浮動視窗(overlay + 讀稿面板 + 錄音指示 pill);**再按一次原樣還原**。
+    ///
+    /// 要分享整個螢幕時,`sharingType = .none` 在 macOS 15.4+ 擋不住(誠實邊界),`orderOut` 把視窗
+    /// 移出 window server 才是唯一可靠的逃生口(不存在的視窗錄不到)。
+    ///
+    /// 為什麼做成 toggle-restore 而非單向隱藏:pill 一旦藏掉,現場就沒有停止鈕/copilot 開關可按了
+    /// (選單列還在,但慌張時要的是一鍵找回)。所以第一次按 = 快照當下可見狀態並全部收起,
+    /// 第二次按 = 依快照把「剛才確實顯示的那些」叫回。只還原 panic 前可見的,不會平白多開東西。
+    func togglePanicHide() {
+        // FR-84:收 vs 放以**當下實際可見狀態**判斷,不靠 `panicSnapshot != nil`——否則 panic 後又用
+        // 獨立熱鍵(toggle overlay / presenter)改了可見性,再按 panic 會反向(把東西叫出來而非收掉)。
+        let overlayVisible = CopilotOverlayWindowManager.shared.isVisibleOnScreen
+        let presenterVisible = PresenterScriptWindowManager.shared.isVisibleOnScreen
+        let pillVisible = indicator?.isVisibleOnScreen == true
+
+        if overlayVisible || presenterVisible || pillVisible {
+            // 任一可見 → 快照當下可見狀態並全部收起。
+            panicSnapshot = (
+                overlayPinned: CopilotOverlayWindowManager.shared.isPinned,
+                presenterPinned: PresenterScriptWindowManager.shared.isPinned,
+                pillWasVisible: pillVisible
+            )
+            CopilotOverlayWindowManager.shared.hideAndUnpin()
+            PresenterScriptWindowManager.shared.hideAndUnpin()
+            indicator?.hide()
+            logger.notice("🫥 panic hide")
+        } else if let snap = panicSnapshot {
+            // 全不可見 → 依快照把 panic 前確實顯示的那些原樣叫回。
+            if snap.overlayPinned { CopilotOverlayWindowManager.shared.showAndPin() }
+            if snap.presenterPinned { PresenterScriptWindowManager.shared.showAndPin() }
+            if snap.pillWasVisible, isRecording { indicator?.show() }
+            panicSnapshot = nil
+            logger.notice("🫥 panic restore")
+        }
+        // 全不可見且無快照 → no-op(沒有東西可收、也沒有可還原的)。
     }
 
     // MARK: - 忘了關的保險(2 小時確認 → 無人回應自動停止)
