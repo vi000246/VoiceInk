@@ -19,6 +19,7 @@ struct MeetingCopilotSettingsView: View {
         case general = "一般"
         case prompt = "Prompt"
         case translation = "即時翻譯"
+        case detection = "會議偵測"
     }
 
     @State private var tab: SettingsTab = .general
@@ -37,7 +38,7 @@ struct MeetingCopilotSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 380)
+                .frame(maxWidth: 480)
                 Spacer()
             }
             .padding(.horizontal, 20)
@@ -47,6 +48,7 @@ struct MeetingCopilotSettingsView: View {
             case .general: generalForm
             case .prompt: promptForm
             case .translation: translationForm
+            case .detection: MeetingDetectionSettingsView()
             }
         }
     }

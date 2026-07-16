@@ -152,6 +152,9 @@ struct VoiceInkApp: App {
             aiService: aiService,
             modelContext: resolvedContainer.mainContext,
             fluidAudioService: engine.serviceRegistry.fluidAudioTranscriptionService)
+        // M11 會議開始偵測:輪詢麥克風使用 + 視窗標題,偵測到會議卻沒在錄音時提示。
+        // 只提示、永不自動開錄(通知按鈕才呼叫 start());與 live pipeline 零耦合。
+        MeetingStartDetector.shared.start()
         // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
         TemplateStore.shared.migrateIfNeeded()
         // 一次性補救：把先前操作漏掉/被覆蓋的舊範本從 legacy key 補回（只新增、不動既有）。
