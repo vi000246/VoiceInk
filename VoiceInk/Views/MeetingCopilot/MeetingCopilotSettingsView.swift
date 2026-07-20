@@ -7,6 +7,9 @@ import SwiftData
 struct MeetingCopilotSettingsView: View {
     @StateObject private var store = MeetingCopilotConfigStore.shared
     @StateObject private var scriptStore = PresenterScriptStore.shared
+    @StateObject private var packStore = MeetingPackConfigStore.shared
+    /// 會後包子資料夾的編輯草稿(失焦/送出才寫回,避免打字中被空值正規化蓋掉)。
+    @State private var packSubfolderDraft: String = ""
     @EnvironmentObject private var aiService: AIService
     @Environment(\.modelContext) private var modelContext
 
@@ -20,6 +23,7 @@ struct MeetingCopilotSettingsView: View {
         case prompt = "Prompt"
         case translation = "即時翻譯"
         case detection = "會議偵測"
+        case pack = "會後包"
     }
 
     @State private var tab: SettingsTab = .general
@@ -49,6 +53,7 @@ struct MeetingCopilotSettingsView: View {
             case .prompt: promptForm
             case .translation: translationForm
             case .detection: MeetingDetectionSettingsView()
+            case .pack: meetingPackForm
             }
         }
     }
@@ -388,6 +393,39 @@ struct MeetingCopilotSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - 會後包分頁(M12)
+
+    private var meetingPackForm: some View {
+        Form {
+            Section {
+                Toggle("會議結束後自動生成會後包",
+                       isOn: Binding(get: { packStore.enabled }, set: { packStore.setEnabled($0) }))
+                Text("會議錄音匯入完成後,自動整理**主題重點/決定/行動項目/待追問**,連同原始逐字稿寫進 Obsidian vault。AI 生成失敗時仍會匯出僅含逐字稿的筆記——內容不會遺失。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("匯出") {
+                TextField("Vault 子資料夾", text: $packSubfolderDraft)
+                    .onSubmit { commitPackSubfolder() }
+                Text("寫入 Obsidian vault 根目錄下的這個子資料夾(根目錄沿用「錄音設定」的 vault 設定)。清空 = 還原預設「\(MeetingPackConfigStore.defaultSubfolder)」。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Vikunja") {
+                Toggle("「我答應的」自動建成 Vikunja 任務",
+                       isOn: Binding(get: { packStore.vikunjaAutoCreate }, set: { packStore.setVikunjaAutoCreate($0) }))
+                Text("關閉時,通知上會出現「加入 Vikunja(N)」按鈕,按了才批次建立;開啟時直接建立並在通知回報結果。需先在 Vikunja 設定頁完成連線設定——未設定時按鈕不出現,行動項目仍完整保留在筆記裡。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { packSubfolderDraft = packStore.subfolder }
+        .onDisappear { commitPackSubfolder() }
+    }
+
+    private func commitPackSubfolder() {
+        packStore.setSubfolder(packSubfolderDraft)
+        packSubfolderDraft = packStore.subfolder
     }
 
     /// 來源語言。auto 置頂:混語(中英夾雜)會議的唯一正解——見 `MeetingTranslationPrompt` 檔頭,

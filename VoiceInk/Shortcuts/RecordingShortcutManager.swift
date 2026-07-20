@@ -368,6 +368,20 @@ class RecordingShortcutManager: ObservableObject {
         case .toggleHotkeyCheatSheet:
             // 熱鍵一覽表 —— 獨立浮動視窗,keyUp-only,樣式比照 .togglePresenterScript。
             HotkeyCheatSheetWindowManager.shared.toggle()
+        case .voiceCaptureVikunja:
+            // 語音記待辦:重用聽寫錄音+轉錄,但完成後經 engine 的 route 覆寫進 Vikunja 管線
+            // 而非貼上游標處。第一按啟動、第二按停止,keyUp-only。
+            await VikunjaCaptureCoordinator.shared.handleHotkey(
+                engine: engine,
+                recorderUIManager: recorderUIManager
+            )
+        case .showMorningBriefing:
+            // 晨間簡報:開 = 永遠重新生成(手動不受每日一次限制);已開著就收起。keyUp-only。
+            if MorningBriefingWindowManager.shared.isPinned {
+                MorningBriefingWindowManager.shared.hideAndUnpin()
+            } else {
+                await MorningBriefingService.shared.showManually()
+            }
         default:
             break
         }

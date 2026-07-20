@@ -105,6 +105,26 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: [Task<Void, Never>] = []
 
+    // MARK: - 轉錄路由 seam(語音待辦捕捉等替代出口)
+    //
+    // arm 之後**下一次**錄音 start(prepareNewRecording)消費;正常聽寫 start 一樣會消費並取代
+    // 預設貼上行為——所以 caller 必須「設完立刻啟動錄音」,不能先 arm 再等使用者慢慢按。
+    // route 生效時 pipeline 跳過 AI 增強(handler 要的是原始轉錄,不是增強稿),
+    // 完成後把轉錄文字交給 handler 而不是貼到游標處;取消/失敗路徑一律清掉,不殘留到下一次。
+    /// 下一次錄音的轉錄出口覆寫。nil = 正常聽寫(貼上游標處)。參數 nil = 轉錄失敗/無內容。
+    var transcriptRouteOverrideForNextRecording: ((String?) async -> Void)?
+    private var activeTranscriptRouteOverride: ((String?) async -> Void)?
+
+    /// 目前(pending 或進行中)是否有轉錄路由覆寫——熱鍵第二按判斷「是否我方會話」用。
+    var hasTranscriptRouteOverride: Bool {
+        transcriptRouteOverrideForNextRecording != nil || activeTranscriptRouteOverride != nil
+    }
+
+    private func clearTranscriptRouteOverride() {
+        transcriptRouteOverrideForNextRecording = nil
+        activeTranscriptRouteOverride = nil
+    }
+
     let recorder = Recorder()
     var recordedFile: URL? = nil
     let recordingsDirectory: URL
@@ -215,12 +235,20 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingStartID = nil
         partialTranscript = ""
         recordingState = .transcribing
+        // 在這裡消費(而不是 pipeline 完成後),之後的任何早退/取消都不會把 route 留給下一次錄音。
+        let transcriptRoute = activeTranscriptRouteOverride
+        activeTranscriptRouteOverride = nil
         await recorder.stopRecording()
 
         guard let recordedFile else {
             cancelCurrentSession()
             if !shouldCancelRecording {
                 logger.error("❌ No recorded file found after stopping recording")
+                // route 已在上面消費——不交付 nil 的話,handler 的「轉錄失敗」通知永遠不會出現,
+                // 使用者按了熱鍵卻毫無回饋(取消是使用者主動的,不必通知)。
+                if let transcriptRoute {
+                    await transcriptRoute(nil)
+                }
             }
             recordingState = .idle
             await cleanupResources()
@@ -234,7 +262,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         // 對著 VoiceInk 自己的視窗聽寫（例如把問題講進 Ask AI 輸入框）→ 照常轉錄＋貼上，
         // 但不留進「語音管理」歷史（那是使用者操作 App 的內容，不是要保存的語音筆記）。
-        let targetIsSelf = ActiveWindowService.shared.currentApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
+        // route 覆寫（語音待辦捕捉等）必須排除：內容不會貼進任何輸入框，「已貼上所以歷史多餘」
+        // 的前提不成立，歷史是 handler 失敗時的唯一保底——即使前景剛好是 VoiceInk
+        // （在設定頁按熱鍵測試是常態）也不得刪。
+        let targetIsSelf = transcriptRoute == nil &&
+            ActiveWindowService.shared.currentApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
 
         let transcription = makeRecordingTranscription(
             for: recordedFile,
@@ -249,7 +281,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         await runPipeline(
             on: transcription,
             audioURL: recordedFile,
-            contextStore: activeRecordingContextStore
+            contextStore: activeRecordingContextStore,
+            transcriptRoute: transcriptRoute
         )
 
         if targetIsSelf {
@@ -267,6 +300,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
         shouldCancelRecording = false
         partialTranscript = ""
         activeRecordingUseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
+        // 消費 pending route:這次錄音走覆寫出口;沒 arm 就歸零(正常聽寫不受上次殘留影響)。
+        activeTranscriptRouteOverride = transcriptRouteOverrideForNextRecording
+        transcriptRouteOverrideForNextRecording = nil
         clearActiveRecordingContext()
 
         if !activeRecordingUseCase.isAssistantFollowUp {
@@ -279,6 +315,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// file and shows an error, then dismisses the panel. These steps used to be copy-pasted at
     /// each early exit with slight differences — the breeding ground for lingering-state bugs.
     private func abortStart(deletingFile fileURL: URL?, notifying errorTitle: String? = nil) async {
+        clearTranscriptRouteOverride()
         await recorder.stopRecording()
         cancelCurrentSession()
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
@@ -329,6 +366,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     }
                     recordingState = .idle
                     activeRecordingStartID = nil
+                    // route 覆寫也是本次會話的共享狀態:早退不清會殘留 active route,
+                    // hasTranscriptRouteOverride 因此誤判,下一按 Vikunja 熱鍵行為錯亂。
+                    // 只在仍持有所有權時清——被接管時這組欄位已屬於接管的新會話。
+                    clearTranscriptRouteOverride()
                 }
                 return
             }
@@ -340,6 +381,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
             guard recordingState == .recording,
                   activeRecordingStartID == startID,
                   !shouldCancelRecording else {
+                // 同上一個守衛:仍持有所有權的早退必須清 route,否則殘留誤導下一次會話。
+                // 取消路徑另有 finishActiveRecorderCancellation 清理,重複清為冪等、無害。
+                if activeRecordingStartID == startID {
+                    clearTranscriptRouteOverride()
+                }
                 return
             }
 
@@ -460,7 +506,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private func runPipeline(
         on transcription: Transcription,
         audioURL: URL,
-        contextStore: RecordingContextSnapshotStore?
+        contextStore: RecordingContextSnapshotStore?,
+        transcriptRoute: ((String?) async -> Void)? = nil
     ) async {
         guard let transcriptionConfiguration = currentSessionTranscriptionConfiguration ??
             ModeRuntimeResolver.transcriptionConfiguration(transcriptionModelManager: transcriptionModelManager) else {
@@ -469,6 +516,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
             try? modelContext.save()
             recordingState = .idle
             activePipelineUseCase = .newSession
+            // 同 stopRecordingAndTranscribe 的無檔案早退:route 已消費,必須交付 nil 讓 handler 通知失敗。
+            if let transcriptRoute {
+                await transcriptRoute(nil)
+            }
             return
         }
 
@@ -488,7 +539,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 self?.selectTriggerWordModeIfNeeded(for: text)
             },
             enhancementConfiguration: { [weak self] in
-                guard let self,
+                // route 覆寫要的是原始轉錄(下游自己跑 LLM 抽取),跳過 AI 增強。
+                guard transcriptRoute == nil,
+                      let self,
                       let enhancementService = self.enhancementService,
                       let aiService = enhancementService.getAIService() else {
                     return nil
@@ -523,6 +576,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
                 await self.recorderUIManager?.dismissRecorderPanel()
             },
+            deliveryOverride: transcriptRoute,
             assistant: TranscriptionPipeline.AssistantHooks(
                 isFollowUp: activePipelineUseCase.isAssistantFollowUp,
                 sendFollowUp: { [weak self] text, transcription in
@@ -616,6 +670,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         assistantSession.reset()
         activeRecordingUseCase = .newSession
         activePipelineUseCase = .newSession
+        clearTranscriptRouteOverride()
         clearActiveRecordingContext()
         await recorder.stopRecording()
         recordedFile = nil
@@ -637,6 +692,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     private func finishActiveRecorderCancellation() async {
         activeRecordingStartID = nil
+        clearTranscriptRouteOverride()
         clearActiveRecordingContext()
         await recorder.stopRecording()
         await saveCanceledRecording()

@@ -39,7 +39,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit VoiceInk") {
+            Button("Quit Muninn") {
                 NSApplication.shared.terminate(nil)
             }
         }
@@ -88,6 +88,16 @@ struct MenuBarView: View {
             Toggle("熱鍵一覽表", isOn: Binding(
                 get: { cheatSheetManager.isPinned },
                 set: { _ in cheatSheetManager.toggle() }))
+
+            // 晨間簡報 —— 手動入口:toggle 語意與熱鍵一致(已開著就收起),
+            // 開啟時永遠重新生成、不受每日一次限制(M13)。
+            Button("晨間簡報") {
+                if MorningBriefingWindowManager.shared.isPinned {
+                    MorningBriefingWindowManager.shared.hideAndUnpin()
+                } else {
+                    Task { await MorningBriefingService.shared.showManually() }
+                }
+            }
 
             #if DEBUG
             Button("Replay 會議音檔…（DEBUG）") {
@@ -199,7 +209,7 @@ struct MenuBarView: View {
             }
             .disabled(!updaterViewModel.canCheckForUpdates)
 
-            Button("Quit VoiceInk") {
+            Button("Quit Muninn") {
                 NSApplication.shared.terminate(nil)
             }
         }

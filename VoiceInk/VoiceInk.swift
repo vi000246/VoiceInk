@@ -76,7 +76,7 @@ struct VoiceInkApp: App {
                 DispatchQueue.main.async {
                     let alert = NSAlert()
                     alert.messageText = String(localized: "Storage Warning")
-                    alert.informativeText = String(localized: "VoiceInk couldn't access its storage location. Your transcriptions will not be saved between sessions.")
+                    alert.informativeText = String(localized: "Muninn couldn't access its storage location. Your transcriptions will not be saved between sessions.")
                     alert.alertStyle = .warning
                     alert.addButton(withTitle: String(localized: "OK"))
                     alert.runModal()
@@ -85,7 +85,7 @@ struct VoiceInkApp: App {
                 let persistentDetail = Self.fullErrorDescription(persistentError)
                 let memoryDetail = Self.fullErrorDescription(memoryError)
                 logger.critical("❌ All ModelContainer init attempts failed.\nPersistent:\n\(persistentDetail, privacy: .public)\nIn-memory:\n\(memoryDetail, privacy: .public)")
-                fatalError("VoiceInk failed to initialize storage.\nPersistent:\n\(persistentDetail)\nIn-memory:\n\(memoryDetail)")
+                fatalError("Muninn failed to initialize storage.\nPersistent:\n\(persistentDetail)\nIn-memory:\n\(memoryDetail)")
             }
         }
 
@@ -155,6 +155,9 @@ struct VoiceInkApp: App {
         // M11 會議開始偵測:輪詢麥克風使用 + 視窗標題,偵測到會議卻沒在錄音時提示。
         // 只提示、永不自動開錄(通知按鈕才呼叫 start());與 live pipeline 零耦合。
         MeetingStartDetector.shared.start()
+        // M13 晨間簡報:每天設定時刻主動彈出;app 啟動/系統喚醒時 catch-up 補顯示。
+        MorningBriefingService.shared.configure(aiService: aiService)
+        MorningBriefingService.shared.start()
         // 合併語音+錄音範本為單一共用庫（一次性、冪等）——須在任何消費端讀範本前執行。
         TemplateStore.shared.migrateIfNeeded()
         // 一次性補救：把先前操作漏掉/被覆蓋的舊範本從 legacy key 補回（只新增、不動既有）。

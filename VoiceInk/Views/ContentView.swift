@@ -23,7 +23,7 @@ enum ViewType: String, CaseIterable, Identifiable {
     case meetingCopilot = "Meeting Copilot"
     case meetingCopilotSettings = "Meeting Copilot Settings"
     case settings = "Settings"
-    case license = "VoiceInk Pro"
+    case license = "Muninn Pro"
 
     var id: String { rawValue }
 }

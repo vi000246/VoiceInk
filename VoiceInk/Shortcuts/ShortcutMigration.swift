@@ -271,7 +271,8 @@ enum ShortcutMigration {
         case .recorderPanelEscape, .recorderPanelMode, .toggleMeetingRecording,
              .toggleMeetingCopilotOverlay, .peekMeetingCopilotOverlay, .panicHideMeetingCopilot,
              .captureCopilotScreenshot, .togglePresenterScript,
-             .toggleCopilotCueExpansion, .toggleTranslationExpansion, .toggleHotkeyCheatSheet:
+             .toggleCopilotCueExpansion, .toggleTranslationExpansion, .toggleHotkeyCheatSheet,
+             .voiceCaptureVikunja, .showMorningBriefing:
             // 會議相關與熱鍵一覽皆為新動作,不存在 legacy KeyboardShortcuts 鍵。
             return []
         }

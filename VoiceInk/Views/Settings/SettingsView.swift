@@ -175,7 +175,7 @@ struct SettingsView: View {
                     isExpanded: $isRestoreClipboardExpanded,
                     isEnabled: $restoreClipboardAfterPaste,
                     label: "Keep Clipboard Content",
-                    infoMessage: "VoiceInk temporarily uses the clipboard to paste transcription. When enabled, it restores your previous clipboard content after the selected delay. When disabled, the pasted transcription stays on your clipboard."
+                    infoMessage: "Muninn temporarily uses the clipboard to paste transcription. When enabled, it restores your previous clipboard content after the selected delay. When disabled, the pasted transcription stays on your clipboard."
                 ) {
                     Picker("Restore Delay", selection: $clipboardRestoreDelay) {
                         Text("250ms").tag(0.25)
@@ -228,6 +228,12 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.menu)
             }
+
+            // 語音記待辦(Vikunja):熱鍵口述 → LLM 抽取 → 建任務。區塊本體在 VikunjaSettingsView.swift。
+            VikunjaSettingsSection()
+
+            // 晨間簡報(M13):每天固定時間主動彈出任務/會後包摘要。區塊本體在 MorningBriefingSettingsView.swift。
+            MorningBriefingSettingsSection()
 
             Section("Interface") {
                 Picker("Appearance", selection: $appAppearancePreference) {
@@ -354,10 +360,10 @@ struct SettingsView: View {
         } message: {
             Text("You'll see the introduction screens again the next time you launch the app.")
         }
-        .alert("Restart VoiceInk to Apply Language", isPresented: $showLanguageRestartAlert) {
+        .alert("Restart Muninn to Apply Language", isPresented: $showLanguageRestartAlert) {
             Button("OK", role: .cancel) { }
         } message: {
-            Text("Your language change will take full effect after you quit and reopen VoiceInk.")
+            Text("Your language change will take full effect after you quit and reopen Muninn.")
         }
     }
 

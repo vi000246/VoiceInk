@@ -72,6 +72,8 @@ struct HotkeyCheatSheetView: View {
         }
 
         result.append(RowGroup(id: "misc", title: "其他", rows: [
+            row("語音記待辦（Vikunja）", .voiceCaptureVikunja),
+            row("晨間簡報", .showMorningBriefing),
             row("熱鍵一覽表（本視窗）", .toggleHotkeyCheatSheet),
         ]))
 

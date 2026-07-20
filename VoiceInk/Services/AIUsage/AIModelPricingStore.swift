@@ -22,10 +22,16 @@ final class AIModelPricingStore: ObservableObject {
     static let shared = AIModelPricingStore()
 
     private let overridesKey = "aiModelPricingOverridesV1"
+    private let twdRateKey = "aiUsdToTwdRateV1"
     private let defaults: UserDefaults
 
     /// 使用者覆寫(key 一律小寫模型名)。
     @Published private(set) var overrides: [String: Price] = [:]
+
+    /// 顯示用的 USD→TWD 手動匯率(dashboard 把美元計費換算成台幣)。
+    /// **不抓即時匯率**——費用本身已是估算(token 估算＋單價表),再套即時匯率是假精確;
+    /// 手動匯率＋合理預設(約 32)夠用,想準的人自己調。夾在 [1, 1000]。
+    @Published private(set) var usdToTwdRate: Double = 32
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -33,7 +39,11 @@ final class AIModelPricingStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([String: Price].self, from: data) {
             overrides = decoded
         }
+        let rate = defaults.double(forKey: twdRateKey)   // 未設定 → 0
+        if rate > 0 { usdToTwdRate = Self.clampRate(rate) }
     }
+
+    static func clampRate(_ v: Double) -> Double { min(max(v, 1), 1000) }
 
     /// 內建單價(2026-07 整理;之後的調價/新模型請在 UI 覆寫)。key 一律小寫。
     static let builtin: [String: Price] = [
@@ -110,6 +120,11 @@ final class AIModelPricingStore: ObservableObject {
             overrides.removeValue(forKey: key)
         }
         persist()
+    }
+
+    func setUsdToTwdRate(_ v: Double) {
+        usdToTwdRate = Self.clampRate(v)
+        defaults.set(usdToTwdRate, forKey: twdRateKey)
     }
 
     private func persist() {

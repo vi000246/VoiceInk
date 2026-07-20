@@ -15,7 +15,13 @@ enum AIUsageFeature: String, CaseIterable {
     case meetingAnswer = "meeting-answer"
     case meetingTranslation = "meeting-translation"
     case recorderAutomation = "recorder-automation"
+    /// 會後自動閉環包(會議匯入完成後的結構化整理)。
+    case meetingPack = "meeting-pack"
     case embedding = "embedding"
+    /// 語音待辦捕捉(轉錄 → 抽取任務欄位 → 建 Vikunja 任務)。
+    case vikunjaCapture = "vikunja-capture"
+    /// 晨間簡報(「今日第一件事」AI 建議)。
+    case morningBriefing = "morning-briefing"
     case other = "other"
 
     var displayName: String {
@@ -27,7 +33,10 @@ enum AIUsageFeature: String, CaseIterable {
         case .meetingAnswer: return "會議即答/深答"
         case .meetingTranslation: return "會議即時翻譯"
         case .recorderAutomation: return "錄音自動化"
+        case .meetingPack: return "會後包"
         case .embedding: return "語意索引（嵌入）"
+        case .vikunjaCapture: return "語音待辦捕捉"
+        case .morningBriefing: return "晨間簡報"
         case .other: return "其他"
         }
     }

@@ -90,7 +90,9 @@ final class VaultExportService {
     }
 
     /// Resolve a device's stored vault-root bookmark to a URL.
-    func resolveVaultRoot(_ bookmark: Data) -> URL? {
+    /// nonisolated:解析可能觸發磁碟 I/O(vault 在外接/網路磁碟時),晨間簡報要在
+    /// 背景執行緒呼叫以免凍結主執行緒;本函式無共享狀態,脫離 MainActor 安全。
+    nonisolated func resolveVaultRoot(_ bookmark: Data) -> URL? {
         var stale = false
         return try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope],
                         relativeTo: nil, bookmarkDataIsStale: &stale)

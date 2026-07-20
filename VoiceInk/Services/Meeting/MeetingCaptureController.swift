@@ -232,7 +232,7 @@ final class MeetingCaptureController: ObservableObject {
         let minutes = Int(Self.unattendedStopTimeout / 60)
 
         let alert = NSAlert()
-        alert.messageText = "VoiceInk 錄音仍在進行(已錄 \(elapsedText))"
+        alert.messageText = "Muninn 錄音仍在進行(已錄 \(elapsedText))"
         alert.informativeText = "已經連續錄製超過 \(hours) 小時。要繼續嗎?\n\(minutes) 分鐘內沒有回應會自動停止並匯入這段錄音。"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "繼續錄製")

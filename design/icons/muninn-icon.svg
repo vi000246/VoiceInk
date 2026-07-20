@@ -1,0 +1,66 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F3C79E"/>
+      <stop offset="0.55" stop-color="#E4A08C"/>
+      <stop offset="1" stop-color="#C77E93"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3C3F4A"/>
+      <stop offset="1" stop-color="#20222B"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+
+  <!-- perch -->
+  <path d="M 262 792 Q 512 782 762 792" stroke="#7A4A52" stroke-width="17" stroke-linecap="round" fill="none" opacity="0.7"/>
+
+  <!-- tail wedge -->
+  <path d="M 690 606 L 806 654 L 786 692 L 682 662 Z" fill="#1B1D25"/>
+  <path d="M 696 630 L 786 668" stroke="#0F1119" stroke-width="4" opacity="0.5"/>
+
+  <!-- fluffed resting body -->
+  <path d="M 452 448
+           C 344 442 300 512 300 596
+           C 300 686 396 748 520 750
+           C 646 752 730 694 732 598
+           C 733 520 690 470 616 456
+           C 628 436 628 414 616 396 Z"
+        fill="url(#body)"/>
+
+  <!-- folded wing -->
+  <path d="M 548 500 C 654 516 712 590 694 690 C 636 678 574 626 546 548 Z" fill="#191B22"/>
+  <path d="M 574 536 C 632 556 672 598 690 652" stroke="#9AA4BC" stroke-width="6" opacity="0.28" fill="none" stroke-linecap="round"/>
+  <path d="M 570 580 C 616 596 650 626 674 664" stroke="#9AA4BC" stroke-width="5" opacity="0.18" fill="none" stroke-linecap="round"/>
+
+  <!-- feet -->
+  <g stroke="#0F1119" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M 486 746 L 484 788 M 466 788 L 484 778 L 502 788"/>
+    <path d="M 560 746 L 560 788 M 542 788 L 560 778 L 578 788"/>
+  </g>
+
+  <!-- fluffed head, settled low -->
+  <path d="M 438 300
+           C 352 300 292 366 292 452
+           C 292 536 360 590 452 590
+           C 548 590 616 534 616 448
+           C 616 360 548 300 458 300 Z"
+        fill="url(#body)"/>
+
+  <!-- top fluff moonlight rim -->
+  <path d="M 300 446 C 312 366 372 306 452 306 C 512 306 560 336 588 388"
+        stroke="#9AA4BC" stroke-width="8" opacity="0.42" fill="none" stroke-linecap="round"/>
+
+  <!-- short relaxed beak (forward-left) -->
+  <path d="M 300 440 L 196 462 L 300 484 Q 326 462 300 440 Z" fill="#101119"/>
+
+  <!-- sleepy content eye (closed arc) -->
+  <path d="M 372 440 Q 410 468 448 440" stroke="#F2A93B" stroke-width="12" fill="none" stroke-linecap="round"/>
+
+  <!-- soft sleep marks -->
+  <g stroke="#FBE6C8" stroke-width="7" fill="none" stroke-linejoin="round" opacity="0.85">
+    <path d="M 566 262 h 34 l -34 34 h 34"/>
+    <path d="M 624 218 h 26 l -26 26 h 26" stroke-width="6"/>
+  </g>
+</svg>

@@ -482,6 +482,11 @@ private struct RecordingCard: View {
                 tab("原始逐字稿", active: !showAnalysis) { showAnalysis = false }
                 if hasAnalysis { tab("套用後", active: showAnalysis) { showAnalysis = true } }
                 Spacer()
+                // 複製的是完整內容，不是下方那份截斷到 6000 字的預覽。
+                if !displayText.isEmpty {
+                    CopyIconButton(textToCopy: displayText,
+                                   accessibilityLabel: showAnalysis ? "複製套用後全文" : "複製逐字稿全文")
+                }
             }
             if style == .detail {
                 // 詳情頁：逐字稿佔滿剩餘高度、可捲動、可選取。只渲染前段（整篇 5 萬字一次渲染會卡頓），
@@ -799,6 +804,14 @@ enum RecorderRowDisplay {
         if t.importFingerprint?.hasPrefix("manual:") == true { return "手動匯入" }
         return "其他"
     }
+    /// 列表標題的顯示字數上限。視窗預設寬度（`AppWindowLayout.width`）就是抓能完整放下這麼多字來訂的，
+    /// 超過才截斷；完整標題仍可從 tooltip 看。
+    static let titleCharacterLimit = 30
+
+    static func truncatedTitle(_ title: String, limit: Int = titleCharacterLimit) -> String {
+        title.count > limit ? String(title.prefix(limit)) + "…" : title
+    }
+
     /// 顯示標題：自動標題（yyyyMMdd HHmm 摘要）會用檔名時間重新蓋章;使用者改名的原樣顯示;皆無則用檔名。
     static func title(_ t: Transcription, fileName: String?) -> String {
         if let title = t.recorderTitle, !title.isEmpty {
@@ -862,6 +875,10 @@ private struct RecorderTableRow: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var postProcessor = RecorderPostProcessor.shared
 
+    @State private var showRename = false
+    @State private var renameText = ""
+    @State private var confirmDelete = false
+
     private var recordingDate: Date { RecorderRowDisplay.recordingDate(transcription, fileName: fileName) }
     private var title: String { RecorderRowDisplay.title(transcription, fileName: fileName) }
     private var sizeText: String? {
@@ -889,8 +906,11 @@ private struct RecorderTableRow: View {
             .buttonStyle(.plain).frame(width: 12)
             .help(transcription.recorderFavorite ? "已標記為喜歡（提醒：不要刪除）" : "標記為喜歡")
 
-            Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+            // 截到 30 字（視窗預設寬度就是照這個字數訂的）；完整標題留在 tooltip。
+            Text(RecorderRowDisplay.truncatedTitle(title))
+                .font(.system(size: 13, weight: .medium)).lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .help(title)
 
             Text(recordingDate, format: .dateTime.year().month(.abbreviated).day().hour().minute())
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
@@ -933,6 +953,33 @@ private struct RecorderTableRow: View {
         .background(isChecked ? AppTheme.Accent.primary.opacity(0.06) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
+        .contextMenu {
+            Button { renameText = title; showRename = true } label: {
+                Label("重新命名", systemImage: "pencil")
+            }
+            Divider()
+            Button(role: .destructive) { confirmDelete = true } label: {
+                Label("刪除", systemImage: "trash")
+            }
+        }
+        .alert("重新命名", isPresented: $showRename) {
+            TextField("名稱", text: $renameText)
+            Button("儲存") { rename() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("自訂這筆錄音在管理頁顯示的名稱。清空則還原為預設（日期＋摘要或原檔名）。")
+        }
+        .confirmationDialog("刪除整筆紀錄？音檔與逐字稿都會移除。", isPresented: $confirmDelete) {
+            Button("刪除整筆", role: .destructive) {
+                TranscriptionStore.delete(transcription, in: modelContext)
+            }
+        }
+    }
+
+    private func rename() {
+        let t = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        transcription.recorderTitle = t.isEmpty ? nil : t
+        try? modelContext.save()
     }
 
     private func toggleFavorite() {

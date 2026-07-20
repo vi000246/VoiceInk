@@ -470,7 +470,7 @@ final class MeetingCaptureService: ObservableObject {
 
         // 4. private aggregate:tap list + (可選) mic sub-device,皆開 drift compensation
         var composition: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "VoiceInk Meeting",
+            kAudioAggregateDeviceNameKey: "Muninn Meeting",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceTapAutoStartKey: true,

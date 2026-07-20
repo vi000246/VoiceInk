@@ -3,8 +3,9 @@ import AppKit
 
 enum AppWindowLayout {
     /// 預設/理想寬度（開窗時的初始寬）;不再是硬性上限——視窗可自由放大縮小。
-    static let width: CGFloat = 950
-    static let minimumWidth: CGFloat = 820
+    /// 1240 是照「錄音管理列表能完整顯示 30 字標題」抓的：側欄 220 + 固定欄位/間距/邊距約 630 + 標題約 390。
+    static let width: CGFloat = 1240
+    static let minimumWidth: CGFloat = 1000
     static let minimumHeight: CGFloat = 730
 }
 
@@ -34,7 +35,7 @@ class WindowManager: NSObject {
         window.titleVisibility = .hidden
         window.backgroundColor = .clear
         window.isReleasedWhenClosed = false
-        window.title = "VoiceInk"
+        window.title = "Muninn"
         window.collectionBehavior = [.fullScreenPrimary]
         window.level = .normal
         window.isOpaque = false

@@ -38,11 +38,11 @@ struct DashboardInsightsView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("VoiceInk Insights")
+                Text("Muninn Insights")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(AppTheme.Text.primary)
 
-                Text("A closer look at your VoiceInk usage.")
+                Text("A closer look at your Muninn usage.")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(AppTheme.Text.secondary)
             }

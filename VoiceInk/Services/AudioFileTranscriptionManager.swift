@@ -317,6 +317,20 @@ class AudioTranscriptionManager: ObservableObject {
                     fixedCategory: nil,
                     modelContext: modelContext, enhancementService: enhancementService, aiService: aiService)
             }
+            // M12 會後包:會議匯入完成(importFingerprint 已寫入 Transcription、session 已回填)
+            // → 自動生成會後包。獨立於上面的 post-processor guard —— 沒接 AI provider 時
+            // 也要匯出僅含逐字稿的筆記(aiService nil 走 fallback)。
+            // fire-and-forget:LLM 最壞 2×120s 重試 + Vikunja 逐筆 HTTP 不能佔住這條
+            // 序列佇列(否則後面排隊的錄音全部卡住);結果由會後包自己的通知回報,
+            // 佇列取消也不中止它——會議已匯入完成,筆記必須落地。
+            if case .meetingCapture = item.origin {
+                let aiService = engine.enhancementService?.getAIService()
+                Task {
+                    await PostMeetingPackService.shared.handleMeetingImportCompleted(
+                        transcription: transcription, modelContext: modelContext,
+                        aiService: aiService)
+                }
+            }
 
         } catch {
             if Task.isCancelled || error is CancellationError {

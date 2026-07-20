@@ -62,6 +62,7 @@ class TranscriptionPipeline {
         shouldCancel: () -> Bool,
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
+        deliveryOverride: ((String?) async -> Void)? = nil,
         assistant: AssistantHooks = .inactive
     ) async {
         let model = transcriptionConfiguration.model
@@ -254,6 +255,20 @@ class TranscriptionPipeline {
 
         if shouldCancel() {
             await finishCanceledTranscription()
+            return
+        }
+
+        // 替代出口(語音待辦捕捉等):不貼上游標處,把轉錄文字交給 handler。
+        // **先存檔再交付**——handler 之後的 LLM/網路失敗都不會弄丟這段內容(歷史裡永遠有底)。
+        // 轉錄本身失敗給 nil,由 handler 決定錯誤呈現。
+        if let deliveryOverride {
+            SoundManager.shared.playStopSound()
+            await onDismiss()
+            saveTranscriptionAndPostCompletion()
+            let completedText = transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue
+                ? finalText
+                : nil
+            await deliveryOverride(completedText)
             return
         }
 

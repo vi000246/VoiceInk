@@ -1,0 +1,17 @@
+<svg width="660" height="520" viewBox="176 286 660 520" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <mask id="cut">
+      <rect x="176" y="286" width="660" height="520" fill="#fff"/>
+      <!-- eye punched out (transparent) so it reads as a bird -->
+      <circle cx="404" cy="438" r="19" fill="#000"/>
+    </mask>
+  </defs>
+  <!-- solid raven silhouette (template glyph; macOS uses alpha) -->
+  <g fill="#111111" mask="url(#cut)">
+    <path d="M 690 606 L 806 654 L 786 692 L 682 662 Z"/>
+    <path d="M 452 448 C 344 442 300 512 300 596 C 300 686 396 748 520 750 C 646 752 730 694 732 598 C 733 520 690 470 616 456 C 628 436 628 414 616 396 Z"/>
+    <path d="M 548 500 C 654 516 712 590 694 690 C 636 678 574 626 546 548 Z"/>
+    <path d="M 438 300 C 352 300 292 366 292 452 C 292 536 360 590 452 590 C 548 590 616 534 616 448 C 616 360 548 300 458 300 Z"/>
+    <path d="M 300 440 L 196 462 L 300 484 Q 326 462 300 440 Z"/>
+  </g>
+</svg>

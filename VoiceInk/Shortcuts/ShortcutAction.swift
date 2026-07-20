@@ -18,6 +18,8 @@ enum ShortcutAction: Hashable {
     case toggleCopilotCueExpansion
     case toggleTranslationExpansion
     case toggleHotkeyCheatSheet
+    case voiceCaptureVikunja
+    case showMorningBriefing
     case mode(UUID)
     case recorderPanelEscape
     case recorderPanelMode(Int)
@@ -71,6 +73,10 @@ enum ShortcutAction: Hashable {
             return "toggleTranslationExpansion"
         case .toggleHotkeyCheatSheet:
             return "toggleHotkeyCheatSheet"
+        case .voiceCaptureVikunja:
+            return "voiceCaptureVikunja"
+        case .showMorningBriefing:
+            return "showMorningBriefing"
         case .mode(let id):
             return "mode_\(id.uuidString)"
         case .recorderPanelEscape:
@@ -116,6 +122,10 @@ enum ShortcutAction: Hashable {
             return String(localized: "展開/收合翻譯")
         case .toggleHotkeyCheatSheet:
             return String(localized: "熱鍵一覽表（cheat sheet）")
+        case .voiceCaptureVikunja:
+            return String(localized: "語音記待辦（Vikunja）")
+        case .showMorningBriefing:
+            return String(localized: "晨間簡報")
         case .mode(let id):
             if let config = ModeManager.shared.getConfiguration(with: id) {
                 return String(format: String(localized: "%@ Mode"), config.name)
@@ -147,7 +157,9 @@ enum ShortcutAction: Hashable {
         .togglePresenterScript,
         .toggleCopilotCueExpansion,
         .toggleTranslationExpansion,
-        .toggleHotkeyCheatSheet
+        .toggleHotkeyCheatSheet,
+        .voiceCaptureVikunja,
+        .showMorningBriefing
     ]
 
     static let recorderPanelStoredActions: [Self] = [
@@ -175,7 +187,9 @@ enum ShortcutAction: Hashable {
         // 同理:新動作也要進這裡,否則它的鍵對 ShortcutValidator 的衝突偵測雙向隱形。
         .toggleCopilotCueExpansion,
         .toggleTranslationExpansion,
-        .toggleHotkeyCheatSheet
+        .toggleHotkeyCheatSheet,
+        .voiceCaptureVikunja,
+        .showMorningBriefing
     ]
 
     private static func displayNumber(forRecorderPanelIndex index: Int) -> String {

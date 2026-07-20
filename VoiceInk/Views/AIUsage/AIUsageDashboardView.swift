@@ -25,11 +25,20 @@ struct AIUsageDashboardView: View {
         var id: String { rawValue }
     }
 
+    /// 費用顯示幣別。單價表本身是 USD 計價;TWD 以手動匯率換算(見 `AIModelPricingStore.usdToTwdRate`)。
+    enum Currency: String, CaseIterable, Identifiable {
+        case twd = "NT$"
+        case usd = "US$"
+        var id: String { rawValue }
+    }
+
     @State private var preset: RangePreset = .month
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
     @State private var customEnd = Date()
     @State private var granularity: AIUsageAggregator.Granularity = .day
     @State private var chartMetric: ChartMetric = .tokens
+    /// 預設台幣(使用者要求)。想看原始美元計價一鍵切回。
+    @State private var currency: Currency = .twd
     @State private var events: [AIUsageAggregator.EventRow] = []
     @State private var showPricingEditor = false
     @State private var reloadTick = 0
@@ -175,6 +184,28 @@ struct AIUsageDashboardView: View {
                 }
                 .datePickerStyle(.compact)
             }
+
+            // 幣別 + 手動匯率（TWD 時才顯示匯率欄）。
+            HStack(spacing: 10) {
+                Picker("幣別", selection: $currency) {
+                    ForEach(Currency.allCases) { c in Text(c.rawValue).tag(c) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 120)
+
+                if currency == .twd {
+                    Text("匯率 1 USD =").font(.system(size: 12)).foregroundStyle(.secondary)
+                    TextField("", value: Binding(
+                        get: { pricing.usdToTwdRate },
+                        set: { pricing.setUsdToTwdRate($0) }), format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 56)
+                        .multilineTextAlignment(.trailing)
+                    Text("TWD（手動）").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
         }
     }
 
@@ -182,7 +213,7 @@ struct AIUsageDashboardView: View {
 
     private var summaryCards: some View {
         HStack(spacing: 12) {
-            summaryCard(title: "估算費用", value: Self.usd(summary.cost), accent: true)
+            summaryCard(title: "估算費用", value: formatCost(summary.cost), accent: true)
             summaryCard(title: "輸入 tokens", value: Formatters.formattedCompactNumber(summary.inputTokens))
             summaryCard(title: "輸出 tokens", value: Formatters.formattedCompactNumber(summary.outputTokens))
             summaryCard(title: "呼叫次數", value: Formatters.formattedNumber(summary.calls))
@@ -230,8 +261,9 @@ struct AIUsageDashboardView: View {
                 .chartForegroundStyleScale(["輸入": AppTheme.Accent.primary, "輸出": Color.orange])
                 .frame(height: 220)
             } else {
+                let rate = currency == .twd ? pricing.usdToTwdRate : 1
                 Chart(buckets) { b in
-                    BarMark(x: .value("期間", b.label), y: .value("費用", b.cost))
+                    BarMark(x: .value("期間", b.label), y: .value("費用", b.cost * rate))
                         .foregroundStyle(AppTheme.Accent.primary)
                 }
                 .frame(height: 220)
@@ -274,7 +306,7 @@ struct AIUsageDashboardView: View {
                                     .frame(width: 130, alignment: .trailing)
                             }
                         }
-                        cell(Self.usd(row.cost), width: 90, bold: true)
+                        cell(formatCost(row.cost), width: 90, bold: true)
                     }
                     .padding(.vertical, 3)
                     Divider().opacity(0.4)
@@ -302,7 +334,7 @@ struct AIUsageDashboardView: View {
                         cell(Formatters.formattedNumber(row.calls), width: 60)
                         cell(Formatters.formattedCompactNumber(row.inputTokens), width: 70)
                         cell(Formatters.formattedCompactNumber(row.outputTokens), width: 70)
-                        cell(Self.usd(row.cost), width: 90, bold: true)
+                        cell(formatCost(row.cost), width: 90, bold: true)
                     }
                     .padding(.vertical, 3)
                     Divider().opacity(0.4)
@@ -326,6 +358,10 @@ struct AIUsageDashboardView: View {
             }
             Label("費用為估算值(依單價表計算),實際帳單以供應商為準;不含快取折扣/批次折扣。",
                   systemImage: "dollarsign.circle")
+            if currency == .twd {
+                Label("台幣以手動匯率 1 USD = \(Int(pricing.usdToTwdRate.rounded())) TWD 換算(可在上方調整);「單價」欄仍為供應商的美元原價。",
+                      systemImage: "arrow.left.arrow.right.circle")
+            }
         }
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
@@ -358,11 +394,21 @@ struct AIUsageDashboardView: View {
             .frame(width: width, alignment: .trailing)
     }
 
-    /// 美元字串:一般兩位小數;小於 0.1 顯示四位,避免長期顯示 $0.00。
-    static func usd(_ value: Double) -> String {
-        value >= 0.1 || value == 0
-            ? String(format: "US$%.2f", value)
-            : String(format: "US$%.4f", value)
+    /// 依所選幣別格式化費用（傳入一律是 USD 原值）。
+    /// USD：兩位小數，< 0.1 顯示四位避免長期 $0.00。
+    /// TWD：換算後 ≥ 1 取整數＋千分位，< 1 顯示兩位小數。
+    private func formatCost(_ usdValue: Double) -> String {
+        switch currency {
+        case .usd:
+            return usdValue >= 0.1 || usdValue == 0
+                ? String(format: "US$%.2f", usdValue)
+                : String(format: "US$%.4f", usdValue)
+        case .twd:
+            let twd = usdValue * pricing.usdToTwdRate
+            if twd == 0 { return "NT$0" }
+            if twd < 1 { return String(format: "NT$%.2f", twd) }
+            return "NT$" + Formatters.formattedNumber(Int(twd.rounded()))
+        }
     }
 }
 

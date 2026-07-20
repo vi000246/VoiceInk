@@ -14,7 +14,7 @@ struct MeetingDetectionSettingsView: View {
             Section {
                 Toggle("偵測會議開始（沒在錄音時提示我）",
                        isOn: Binding(get: { store.enabled }, set: { store.setEnabled($0) }))
-                Text("偵測到會議 app 開始使用麥克風、但 VoiceInk 沒在錄會議時，跳一則通知讓你一鍵開始錄製——只提示，永遠不會自動開始錄音。只讀「哪個 app 在用麥克風」與視窗標題比對，**不讀音訊內容、不儲存標題**。")
+                Text("偵測到會議 app 開始使用麥克風、但 Muninn 沒在錄會議時，跳一則通知讓你一鍵開始錄製——只提示，永遠不會自動開始錄音。只讀「哪個 app 在用麥克風」與視窗標題比對，**不讀音訊內容、不儲存標題**。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
