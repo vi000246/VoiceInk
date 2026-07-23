@@ -59,6 +59,22 @@ final class MeetingCopilotController: ObservableObject {
     /// 非 nil 時仍不保證會打 API——翻譯開關的 guard 在 `MeetingLiveTranslator.translate` 內(AC-47)。
     var translator: MeetingLiveTranslator?
 
+    /// M15 承諾偵測器(**只吃 local 聲道**)。nil = 未接線(功能關閉/transcribeLocalMic 關/測試路徑)。
+    var commitmentDetector: CommitmentCueDetector?
+
+    /// M15:一筆承諾記帳完成(UI 端接 quiet toast;引擎層不認得 NotificationManager)。
+    var onCommitmentRecorded: ((MeetingLiveCue) -> Void)?
+
+    /// 本場已記下的承諾數(overlay 狀態列「🤝N」;beginSession 歸零)。
+    @Published private(set) var commitmentCount: Int = 0
+
+    /// 前一段 local committed(承諾偵測的上下文——「這個」「那份」指什麼)。
+    private var lastLocalText: String = ""
+
+    /// 承諾去重窗(秒)。比 cue 的 30s 寬:同一件事在對話裡反覆確認的間隔比連續提問長
+    /// (「我會寄給你」…兩分鐘後「好,那份報告我今天寄」)。
+    static let commitmentDedupWindow: TimeInterval = 120
+
     /// 在途抽取(每個 committed 一個 Task)。測試用 `drainInflight()` 等待。
     private var inflightTasks: [Task<Void, Never>] = []
 
@@ -93,6 +109,8 @@ final class MeetingCopilotController: ObservableObject {
         try? modelContext.save()
         session = s
         cues = []
+        commitmentCount = 0
+        lastLocalText = ""
     }
 
     /// 掛上 M1 的接點。**只掛既有 closure,不改 MeetingLiveTranscriber 本體。**
@@ -102,9 +120,9 @@ final class MeetingCopilotController: ObservableObject {
         transcriber.onRemoteCommitted = { [weak self] text in
             self?.handleRemoteCommitted(text)
         }
-        // local 段只進逐字稿時間軸(不抽 cue)——「我當時說了什麼」是覆盤上下文的另一半。
+        // local 段進逐字稿時間軸(不抽 response cue)+ M15 承諾偵測(detector 有接線才跑)。
         transcriber.onLocalCommitted = { [weak self] text in
-            self?.recordSegment(channel: .local, text: text)
+            self?.handleLocalCommitted(text)
         }
     }
 
@@ -161,6 +179,59 @@ final class MeetingCopilotController: ObservableObject {
             self?.ingest(outcome.cues, sourceText: text, at: Date(), segment: segment)
         }
         inflightTasks.append(task)
+    }
+
+    // MARK: - M15 承諾偵測(local 聲道;remote 的 cue 抽取管線完全不動)
+
+    /// 每段**我自己**的 committed:先照舊落 segment,再跑承諾偵測(detector 有接線才跑)。
+    /// pre-filter 沒中就不開 Task——local 段量大,不值得為每段掛一個 no-op 進 inflight。
+    func handleLocalCommitted(_ text: String) {
+        guard config.copilotEnabled, session != nil else { return }
+        let segment = recordSegment(channel: .local, text: text)
+        let previous = lastLocalText
+        lastLocalText = text
+        guard let detector = commitmentDetector else { return }
+        guard !CommitmentCueDetector.candidates(in: text).isEmpty else { return }
+        logger.notice("🤝 local committed 命中承諾詞表 → 確認: \(text.prefix(60), privacy: .public)")
+        let task = Task { [weak self] in
+            let detection = await detector.detect(committed: text, previousLocal: previous)
+            guard !Task.isCancelled, let detection else { return }
+            self?.recordCommitment(detection, sourceText: text, at: Date(), segment: segment)
+        }
+        inflightTasks.append(task)
+    }
+
+    /// 去重 + persist 一筆承諾。@MainActor(context 非 Sendable)。
+    /// **不進 `cues` 暴露面**(refreshPublishedCues 已過濾)、**不觸發 answerCoordinator**。
+    func recordCommitment(
+        _ detection: CommitmentDetection, sourceText: String, at time: Date,
+        segment: MeetingLiveSegment? = nil
+    ) {
+        guard let session else { return }
+        let existing = (session.cues ?? [])
+            .filter { $0.kind == .commitment }
+            .map { (text: $0.text, askedAt: $0.askedAt) }
+        if MeetingCueDeduplicator.isDuplicate(
+            text: detection.title, at: time, existing: existing,
+            window: Self.commitmentDedupWindow) {
+            logger.notice("🤝 承諾去重丟棄: \(detection.title, privacy: .public)")
+            return
+        }
+        let cue = MeetingLiveCue(
+            session: session,
+            text: detection.title,
+            kind: .commitment,
+            askedAt: time,
+            contextExcerpt: String(sourceText.prefix(300)))
+        cue.dueHint = detection.dueHint
+        cue.commitmentUnconfirmed = detection.unconfirmed
+        cue.sourceSegmentId = segment?.id
+        cue.fastModelName = extractionModelLabel
+        modelContext.insert(cue)
+        try? modelContext.save()
+        commitmentCount += 1
+        logger.notice("🤝 承諾記帳: \(detection.title, privacy: .public)")
+        onCommitmentRecorded?(cue)
     }
 
     /// 把一段對方 committed 推進 recentContext 滑動窗,只留最近 `recentContextWindow` 段。
@@ -234,8 +305,12 @@ final class MeetingCopilotController: ObservableObject {
     }
 
     /// FR-11:informational persist 但預設不暴露;開關切換後呼叫本方法重算。
+    /// M15:commitment **無條件**不進暴露面——它不是待答問題,overlay 待答清單與
+    /// AnswerCoordinator 都不該看到它(帳本頁自己查)。
     func refreshPublishedCues() {
-        let all = (session?.cues ?? []).sorted { $0.askedAt < $1.askedAt }
+        let all = (session?.cues ?? [])
+            .filter { $0.kind != .commitment }
+            .sorted { $0.askedAt < $1.askedAt }
         cues = config.showInformationalCues
             ? all
             : all.filter { $0.kind != .informational }
@@ -300,7 +375,9 @@ final class MeetingCopilotController: ObservableObject {
     /// `MeetingCopilotModels.resolve` 時只需替換這一處。
     static func makeFastCompleter(
         aiService: AIService,
-        config: MeetingCopilotConfigStore
+        config: MeetingCopilotConfigStore,
+        usageFeature: AIUsageFeature = .meetingCue,
+        timeout: TimeInterval = 30
     ) -> ChatCompleting {
         let resolved = AskAIAnswerModel.resolve(
             storedProvider: config.fastProviderName,
@@ -309,6 +386,7 @@ final class MeetingCopilotController: ObservableObject {
             available: aiService.connectedProviders.map(\.rawValue))
         let provider = AIProvider(rawValue: resolved.provider) ?? aiService.selectedProvider
         return MeetingFastChatCompleter(
-            aiService: aiService, provider: provider, modelName: resolved.model)
+            aiService: aiService, provider: provider, modelName: resolved.model,
+            timeout: timeout, usageFeature: usageFeature)
     }
 }

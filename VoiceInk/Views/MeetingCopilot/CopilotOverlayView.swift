@@ -118,6 +118,13 @@ struct CopilotOverlayView: View {
                     .foregroundStyle(Color(red: 0.45, green: 0.72, blue: 1.0))
                     .help("已截 \(screenshots.count) 張,展開任一題按「以截圖重新深答」送出")
             }
+            // M15 承諾帳本:本場已記下的口頭承諾累計。只是個計數(不佔 cue 版面、不搶注意力),
+            // 詳細內容散會後到「會議copilot覆盤」頁的承諾清單處理。
+            if controller.commitmentCount > 0 {
+                Text("🤝\(controller.commitmentCount)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .help("已記下 \(controller.commitmentCount) 筆口頭承諾,散會後可在會議copilot頁建任務或標已處理")
+            }
             if capture.isRecording {
                 // 等寬數字:每秒跳動時字不會左右抖。
                 Text(capture.elapsedText)

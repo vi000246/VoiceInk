@@ -82,6 +82,10 @@ final class MeetingCaptureController: ObservableObject {
             attachCopilotLive()
         }
 
+        // M14 會議脈絡卡：手動開錄也是「會議開始」訊號（第二個觸發入口）。同步 call-out 立即返回、
+        // 生成在背景——絕不拖慢錄音/copilot 啟動；與 M11 偵測共用 gate，同一場會只出一張卡。
+        MeetingContextCardService.shared.noteRecordingStarted(appName: app)
+
         logger.notice("Meeting recording started — \(self.sourceLabel, privacy: .public)")
     }
 
@@ -172,8 +176,9 @@ final class MeetingCaptureController: ObservableObject {
         let overlayVisible = CopilotOverlayWindowManager.shared.isVisibleOnScreen
         let presenterVisible = PresenterScriptWindowManager.shared.isVisibleOnScreen
         let pillVisible = indicator?.isVisibleOnScreen == true
+        let contextCardVisible = MeetingContextCardWindowManager.shared.isVisibleOnScreen
 
-        if overlayVisible || presenterVisible || pillVisible {
+        if overlayVisible || presenterVisible || pillVisible || contextCardVisible {
             // 任一可見 → 快照當下可見狀態並全部收起。
             panicSnapshot = (
                 overlayPinned: CopilotOverlayWindowManager.shared.isPinned,
@@ -183,6 +188,9 @@ final class MeetingCaptureController: ObservableObject {
             CopilotOverlayWindowManager.shared.hideAndUnpin()
             PresenterScriptWindowManager.shared.hideAndUnpin()
             indicator?.hide()
+            // M14 脈絡卡一併收掉,但**不入快照**:它是會前一次性提示,「上次討論/我答應過的」
+            // 在 panic 還原（分享畫面可能還開著）時自動跳回只會再嚇一次,要看的人自己再開。
+            MeetingContextCardWindowManager.shared.hideAndUnpin()
             logger.notice("🫥 panic hide")
         } else if let snap = panicSnapshot {
             // 全不可見 → 依快照把 panic 前確實顯示的那些原樣叫回。

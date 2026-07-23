@@ -24,12 +24,19 @@ enum MeetingCueKind: String, Codable, CaseIterable {
     case aboutMe
     /// 純資訊,不需回應:「我們上週上線了 v2」(FR-11:persist 但預設不暴露)
     case informational
+    /// 我口頭答應的事(M15 承諾帳本;**只來自 local 聲道**的偵測管線)。
+    /// 不進 overlay 待答清單、不觸發三層回答——消費者是承諾帳本頁與會後包候選提示。
+    case commitment
 }
 
 /// cue 的生命週期狀態。M2 只寫入 `.detected`;`.answered` 屬 M3。
 enum MeetingCueStatus: String, Codable {
     case detected
     case answered
+    /// M15 承諾帳本:已建成 Vikunja 任務(僅 commitment cue 使用)。
+    case converted
+    /// M15 承諾帳本:使用者標「已處理」(不建任務;僅 commitment cue 使用)。
+    case dismissed
 }
 
 /// 一場即時會議 session(copilot 啟用時每次 attach 建立一筆)。
@@ -169,6 +176,13 @@ final class MeetingLiveCue {
     var tier3TriggerRaw: String = ""
     /// 深度分析實際用的深思模型("provider/model")。
     var deepThinkModelName: String = ""
+
+    // MARK: - M15 承諾帳本欄位(有預設值 = lightweight migration 安全;僅 commitment cue 使用)
+
+    /// 口頭提到的期限**原文**(例「下週五之前」;只抄不換算——換算屬會後包的 LLM)。空 = 沒提期限。
+    var dueHint: String = ""
+    /// true = 純詞表記帳、未經 LLM 確認(`llmConfirmEnabled` 關閉時)。帳本頁據此顯示提示標籤。
+    var commitmentUnconfirmed: Bool = false
 
     init(
         session: MeetingLiveSession?,

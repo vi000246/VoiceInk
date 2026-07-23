@@ -67,9 +67,19 @@ final class PostMeetingPackService {
         let endedAt = sessions.compactMap(\.endedAt).max()
         let brief = sessions.first(where: { !$0.brief.isEmpty })?.brief ?? ""
 
+        // M15:會中即時偵測到的承諾 cue 當候選提示餵給 LLM(合併去重由 prompt 交代)。
+        let commitmentCues: [MeetingLiveCue] = sessions
+            .flatMap { $0.cues ?? [] }
+            .filter { $0.kind == .commitment }
+            .sorted { $0.askedAt < $1.askedAt }
+        let detectedCommitments: [String] = commitmentCues.map { cue in
+            cue.dueHint.isEmpty ? cue.text : "\(cue.text)(口頭期限:\(cue.dueHint))"
+        }
+
         let extraction = await generate(
             transcript: transcript, appName: appName,
-            startedAt: startedAt, endedAt: endedAt, brief: brief, aiService: aiService)
+            startedAt: startedAt, endedAt: endedAt, brief: brief,
+            detectedCommitments: detectedCommitments, aiService: aiService)
 
         // 寫 vault(vault root 沿用錄音設定)。兩種失敗要分開講:未設定→去設定;
         // bookmark 解析失敗(資料夾搬移/授權被撤銷)→重新選資料夾。混成一句使用者不知道該做哪個。
@@ -165,6 +175,7 @@ final class PostMeetingPackService {
     private func generate(
         transcript: String, appName: String,
         startedAt: Date?, endedAt: Date?, brief: String,
+        detectedCommitments: [String] = [],
         aiService: AIService?
     ) async -> MeetingPackExtraction? {
         guard let aiService else {
@@ -175,7 +186,8 @@ final class PostMeetingPackService {
         let (clipped, truncated) = MeetingPackExtraction.truncate(transcript)
         let userMessage = MeetingPackExtraction.buildUserMessage(
             transcript: clipped, truncated: truncated, appName: appName,
-            startedAt: startedAt, endedAt: endedAt, brief: brief)
+            startedAt: startedAt, endedAt: endedAt, brief: brief,
+            detectedCommitments: detectedCommitments)
         for attempt in 1...2 {
             do {
                 let raw = try await aiService.completeChat(

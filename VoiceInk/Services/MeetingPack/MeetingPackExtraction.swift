@@ -97,6 +97,8 @@ struct MeetingPackExtraction: Equatable {
     """
 
     /// user message:會議メ他資料 + 現在時刻(due_date 換算基準,鏡射 Vikunja 捕捉)+ 逐字稿。
+    /// `detectedCommitments` = 會中即時偵測到的承諾候選(M15;提升 my_commitments 召回率——
+    /// 逐字稿被截尾時,即時記下的承諾仍在候選清單裡)。
     static func buildUserMessage(
         transcript: String,
         truncated: Bool,
@@ -104,6 +106,7 @@ struct MeetingPackExtraction: Equatable {
         startedAt: Date?,
         endedAt: Date?,
         brief: String,
+        detectedCommitments: [String] = [],
         now: Date = Date(),
         timeZone: TimeZone = TimeZone(identifier: "Asia/Taipei") ?? .current
     ) -> String {
@@ -120,6 +123,10 @@ struct MeetingPackExtraction: Equatable {
             lines.append("時間:\(range)")
         }
         if !brief.isEmpty { lines.append("會前 brief:\(brief)") }
+        if !detectedCommitments.isEmpty {
+            lines.append("以下是會中即時偵測到的承諾候選(整理 my_commitments 時請與逐字稿合併、去重;候選可能有誤,與逐字稿矛盾時以逐字稿為準):")
+            for c in detectedCommitments { lines.append("- \(c)") }
+        }
         if truncated { lines.append("(逐字稿過長,中段已省略)") }
         lines.append("逐字稿:")
         lines.append(transcript)

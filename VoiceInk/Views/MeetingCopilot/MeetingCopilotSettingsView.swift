@@ -8,6 +8,7 @@ struct MeetingCopilotSettingsView: View {
     @StateObject private var store = MeetingCopilotConfigStore.shared
     @StateObject private var scriptStore = PresenterScriptStore.shared
     @StateObject private var packStore = MeetingPackConfigStore.shared
+    @StateObject private var ledgerStore = CommitmentLedgerConfigStore.shared
     /// 會後包子資料夾的編輯草稿(失焦/送出才寫回,避免打字中被空值正規化蓋掉)。
     @State private var packSubfolderDraft: String = ""
     @EnvironmentObject private var aiService: AIService
@@ -67,6 +68,7 @@ struct MeetingCopilotSettingsView: View {
             modelSection
             groundingSection
             notesRAGSection
+            commitmentLedgerSection
             presetScriptsSection
             overlaySection
             screenshotSection
@@ -263,6 +265,21 @@ struct MeetingCopilotSettingsView: View {
             }
 
             Text("被問到「你做過什麼」時,從 Obsidian 筆記撈出事實錨點餵給模型,而不是讓它編。開會時會自動增量掃描(只重嵌改過的檔)。Vault 位置、要索引哪些資料夾、以及手動重建索引,都在 Ask AI 頁的齒輪「筆記來源設定」——索引是兩邊共用的,設定只有一個入口。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - 承諾帳本(M15)
+
+    private var commitmentLedgerSection: some View {
+        Section("承諾帳本") {
+            Toggle("記下我口頭答應的事",
+                   isOn: Binding(get: { ledgerStore.enabled }, set: { ledgerStore.setEnabled($0) }))
+            Toggle("AI 確認後才記帳",
+                   isOn: Binding(get: { ledgerStore.llmConfirmEnabled }, set: { ledgerStore.setLLMConfirmEnabled($0) }))
+            Toggle("記帳當下顯示輕量通知",
+                   isOn: Binding(get: { ledgerStore.liveToastEnabled }, set: { ledgerStore.setLiveToastEnabled($0) }))
+            Text("只聽「我自己」的聲道:會議中說出「我會…」「我來處理」這類承諾時,即時記進承諾帳本(會議copilot覆盤頁最上方),散會後可一鍵建成 Vikunja 任務。需開啟上方「同時轉錄我的麥克風」。關閉「AI 確認」時改為純詞表記帳(零 LLM 成本,會標「未經 AI 確認」)。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

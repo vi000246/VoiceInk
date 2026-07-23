@@ -58,9 +58,13 @@ final class ResponseCueExtractorTests: XCTestCase {
         XCTAssertEqual(a.system, b.system)
         XCTAssertEqual(a.user, b.user)
 
-        for kind in MeetingCueKind.allCases {
+        // M15:.commitment 是 local 聲道專用 kind(承諾帳本自己的偵測器),**不屬於**
+        // remote 分類器的契約——它不該出現在這份 prompt 裡,出現了反而是洩漏。
+        for kind in MeetingCueKind.allCases where kind != .commitment {
             XCTAssertTrue(a.system.contains(kind.rawValue), "system prompt 缺 \(kind.rawValue) 定義")
         }
+        XCTAssertFalse(a.system.contains("commitment"),
+                       "commitment 屬 local 承諾偵測器,不得混入 remote 分類器 prompt")
         XCTAssertTrue(a.system.contains("不要只靠問號"), "必須明示陳述句質疑不可漏(umbrella AC-4)")
         XCTAssertTrue(a.user.contains("我對這個寫入效能有點擔心"))
         XCTAssertTrue(a.user.contains("先前在討論 schema"))

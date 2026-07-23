@@ -17,9 +17,13 @@ enum AIUsageFeature: String, CaseIterable {
     case recorderAutomation = "recorder-automation"
     /// 會後自動閉環包(會議匯入完成後的結構化整理)。
     case meetingPack = "meeting-pack"
+    /// 會議脈絡卡(會議開始時的「上次討論到哪」濃縮,M14)。
+    case meetingContextCard = "meeting-context-card"
     case embedding = "embedding"
     /// 語音待辦捕捉(轉錄 → 抽取任務欄位 → 建 Vikunja 任務)。
     case vikunjaCapture = "vikunja-capture"
+    /// 會議承諾偵測(local 聲道的口頭承諾確認;M15 承諾帳本)。
+    case commitmentDetect = "commitment-detect"
     /// 晨間簡報(「今日第一件事」AI 建議)。
     case morningBriefing = "morning-briefing"
     case other = "other"
@@ -34,8 +38,10 @@ enum AIUsageFeature: String, CaseIterable {
         case .meetingTranslation: return "會議即時翻譯"
         case .recorderAutomation: return "錄音自動化"
         case .meetingPack: return "會後包"
+        case .meetingContextCard: return "會議脈絡卡"
         case .embedding: return "語意索引（嵌入）"
         case .vikunjaCapture: return "語音待辦捕捉"
+        case .commitmentDetect: return "承諾偵測"
         case .morningBriefing: return "晨間簡報"
         case .other: return "其他"
         }

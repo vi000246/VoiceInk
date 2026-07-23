@@ -110,6 +110,9 @@ final class AnswerCoordinator: ObservableObject {
     // MARK: - 新 cue:Tier 0 + 預跑 Tier 1
 
     func onNewCue(_ cue: MeetingLiveCue) async {
+        // M15 雙保險:commitment 走承諾帳本,不是待答問題——正常路徑(controller.ingest)
+        // 根本不會把它送進來,這裡再守一道,任何未來的呼叫端都不得對它觸發 tier 回應。
+        guard cue.kind != .commitment else { return }
         // Tier 0(同步,無 LLM,< 0.5s)
         let t0 = Tier0Classifier.classify(cueText: cue.text)
         cue.tier0Keywords = ([t0.domainLabel] + t0.keywords).joined(separator: " · ")
@@ -256,9 +259,9 @@ final class AnswerCoordinator: ObservableObject {
     private var mediumsDone: Set<UUID> = []
 
     /// 深答資格:aboutMe / informational 不進深度分析（延續 M9 FR-67）。informational 本就不會到 coordinator，
-    /// 這裡一併守門是雙保險。
+    /// 這裡一併守門是雙保險。M15:commitment 同樣擋下(承諾不是待答問題)。
     private func deepEligible(_ cue: MeetingLiveCue) -> Bool {
-        cue.kind != .aboutMe && cue.kind != .informational
+        cue.kind != .aboutMe && cue.kind != .informational && cue.kind != .commitment
     }
 
     /// 中度分析(FR-74):即時模型,帶入開口稿草稿。**恆自動接續**開口稿、無開關可關。

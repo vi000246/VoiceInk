@@ -134,6 +134,24 @@ final class MeetingCopilotLiveController {
             config: config)
         controller.translator = translator
 
+        // 5.5. M15 承諾帳本:只聽 local 聲道。transcribeLocalMic 關閉時本來就沒有 local
+        //      committed(接了也不會被呼叫),enabled 關閉時零接線 = local 段零額外 LLM 呼叫。
+        //      copilot 沒開/沒錄音時本功能自然不作用——會後包(M12)仍是事後保底。
+        let ledgerConfig = CommitmentLedgerConfigStore.shared
+        if ledgerConfig.enabled, config.transcribeLocalMic {
+            controller.commitmentDetector = CommitmentCueDetector(
+                chat: MeetingCopilotController.makeFastCompleter(
+                    aiService: aiService, config: config,
+                    usageFeature: .commitmentDetect, timeout: 15),
+                llmConfirmEnabled: ledgerConfig.llmConfirmEnabled)
+            controller.onCommitmentRecorded = { cue in
+                // 記帳當下的極輕量回饋:overlay 的「🤝N」恆更新(@Published),這裡只管 quiet toast。
+                guard CommitmentLedgerConfigStore.shared.liveToastEnabled else { return }
+                NotificationManager.shared.showNotification(
+                    title: "已記下承諾:\(cue.text)", type: .success, duration: 3)
+            }
+        }
+
         // Stage B:把 remote 流的「未定稿尾巴」接到翻譯器的 provisional 即時翻譯。
         // 在 transcriber.start() 之前設好(start 內才建 tick task);翻譯關閉時 observePartialTail
         // 自帶 guard,零成本。只接 remote(對方的話)——local 是我自己說的,不翻。

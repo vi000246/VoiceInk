@@ -1,12 +1,11 @@
 import SwiftUI
 import SwiftData
-import Sparkle
 import AppKit
 import OSLog
 import AppIntents
 import FluidAudio
 
-@main
+// 入口在 AppMain.swift:測試環境走 TestHostApp 空殼,只有真正啟動才會執行這裡。
 struct VoiceInkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     let container: ModelContainer
@@ -155,6 +154,10 @@ struct VoiceInkApp: App {
         // M11 會議開始偵測:輪詢麥克風使用 + 視窗標題,偵測到會議卻沒在錄音時提示。
         // 只提示、永不自動開錄(通知按鈕才呼叫 start());與 live pipeline 零耦合。
         MeetingStartDetector.shared.start()
+        // M14 會議脈絡卡:會議開始(M11 偵測命中/開始錄音)時,把「上次討論到哪、我答應了什麼」
+        // 濃縮成一張浮卡;兩個入口同場去重,生成全在背景。
+        MeetingContextCardService.shared.configure(
+            aiService: aiService, modelContext: resolvedContainer.mainContext)
         // M13 晨間簡報:每天設定時刻主動彈出;app 啟動/系統喚醒時 catch-up 補顯示。
         MorningBriefingService.shared.configure(aiService: aiService)
         MorningBriefingService.shared.start()
@@ -485,32 +488,18 @@ struct VoiceInkApp: App {
     }
 }
 
+/// Sparkle 自動更新已停用。本 fork(Muninn)與上游 appcast 的版本線已分岔——讓它生效
+/// 只會用上游的 build 覆蓋掉本地版本並自動重啟。上游變更改以手動合併程式碼處理,
+/// Info.plist 也已移除 SUFeedURL。
+/// 保留這個型別與三處 UI(選單列 / 主選單 / 設定頁):canCheckForUpdates 恆為 false,
+/// 那些入口一律 disabled,不會有按了沒反應的按鈕。
 class UpdaterViewModel: ObservableObject {
-    private let updaterController: SPUStandardUpdaterController
-
     @Published var canCheckForUpdates = false
     @Published var automaticallyChecksForUpdates = false
 
-    init() {
-        updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    func setAutomaticallyChecksForUpdates(_ value: Bool) {}
 
-        automaticallyChecksForUpdates = updaterController.updater.automaticallyChecksForUpdates
-
-        updaterController.updater.publisher(for: \.canCheckForUpdates)
-            .assign(to: &$canCheckForUpdates)
-
-        updaterController.updater.publisher(for: \.automaticallyChecksForUpdates)
-            .assign(to: &$automaticallyChecksForUpdates)
-    }
-
-    func setAutomaticallyChecksForUpdates(_ value: Bool) {
-        updaterController.updater.automaticallyChecksForUpdates = value
-    }
-
-    func checkForUpdates() {
-        // This is for manual checks - will show UI
-        updaterController.checkForUpdates(nil)
-    }
+    func checkForUpdates() {}
 }
 
 struct CheckForUpdatesView: View {

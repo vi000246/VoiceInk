@@ -5,6 +5,43 @@ import UniformTypeIdentifiers
 
 // MARK: - Row display helpers
 
+// MARK: - 承諾帳本(M15)的純邏輯
+
+/// 承諾帳本的狀態轉移與顯示規則。非 private、吃原始值不吃 @Model —— 供單元測試
+/// (同檔 `MeetingRowDisplay` 的慣例)。
+enum CommitmentLedgerLogic {
+
+    enum Action { case convert, dismiss }
+
+    /// detected → converted / dismissed;已處理者不再轉移(nil = no-op,呼叫端不寫回)。
+    static func transition(from status: MeetingCueStatus, action: Action) -> MeetingCueStatus? {
+        guard status == .detected else { return nil }
+        switch action {
+        case .convert: return .converted
+        case .dismiss: return .dismissed
+        }
+    }
+
+    /// 未處理 = detected(含舊資料的未知 rawValue → fallback detected,與 model accessor 同語意)。
+    static func isPending(statusRaw: String) -> Bool {
+        (MeetingCueStatus(rawValue: statusRaw) ?? .detected) == .detected
+    }
+
+    /// 帳本可見列:預設只顯示未處理;`showProcessed` 開啟顯示全部。輸入須已按新→舊排序。
+    static func visible<C>(_ cues: [C], statusRaw: (C) -> String, showProcessed: Bool) -> [C] {
+        showProcessed ? cues : cues.filter { isPending(statusRaw: statusRaw($0)) }
+    }
+
+    /// 狀態 badge 文案(detected 不顯示 badge → nil)。
+    static func statusLabel(_ status: MeetingCueStatus) -> String? {
+        switch status {
+        case .detected, .answered: return nil
+        case .converted: return "已建任務"
+        case .dismissed: return "已處理"
+        }
+    }
+}
+
 /// 管理頁列的顯示邏輯。非 private、吃原始值不吃 @Model —— 供單元測試
 /// (鏡射 `VoiceRowDisplay`,VoiceLibraryView.swift:207 的檔內非 private enum 慣例)。
 enum MeetingRowDisplay {
@@ -47,6 +84,17 @@ struct MeetingCopilotPageView: View {
     @Query(sort: \MeetingLiveSession.startedAt, order: .reverse)
     private var sessions: [MeetingLiveSession]
 
+    /// M15 承諾帳本:跨場的 commitment cue(新→舊)。字串常數比對——`kindRaw` 是
+    /// String-in-raw,#Predicate 吃不了 enum。
+    @Query(filter: #Predicate<MeetingLiveCue> { $0.kindRaw == "commitment" },
+           sort: \MeetingLiveCue.askedAt, order: .reverse)
+    private var commitmentCues: [MeetingLiveCue]
+    /// 帳本預設只顯示未處理;開啟後含已建任務/已處理。
+    @State private var showProcessedCommitments = false
+    /// 建任務中的 cue(按鈕 spinner/disable;避免連點重複建)。
+    @State private var convertingCueIds: Set<UUID> = []
+    @StateObject private var vikunjaConfig = VikunjaConfigStore.shared
+
     @State private var detailTarget: MeetingLiveSession?
     // 批次刪除（鏡射 RecorderHistoryView 的勾選 + selection bar 模式）。
     @State private var selectedIds: Set<UUID> = []
@@ -66,6 +114,12 @@ struct MeetingCopilotPageView: View {
             }
 
             Divider()
+
+            // M15 承諾帳本:跨場清單,放在會議列表上方——「散會後第一眼」就是待處理的承諾。
+            if !commitmentCues.isEmpty {
+                commitmentLedgerSection
+                Divider()
+            }
 
             if sessions.isEmpty {
                 emptyState
@@ -114,6 +168,134 @@ struct MeetingCopilotPageView: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AppTheme.Border.control, lineWidth: 0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: .black.opacity(0.3), radius: 24, y: 10)
+        }
+    }
+
+    // MARK: - 承諾帳本(M15)
+
+    private var visibleCommitments: [MeetingLiveCue] {
+        CommitmentLedgerLogic.visible(
+            commitmentCues, statusRaw: { $0.statusRaw }, showProcessed: showProcessedCommitments)
+    }
+
+    private var pendingCommitmentCount: Int {
+        commitmentCues.filter { CommitmentLedgerLogic.isPending(statusRaw: $0.statusRaw) }.count
+    }
+
+    private var commitmentLedgerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("🤝 承諾帳本")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(pendingCommitmentCount == 0 ? "全部處理完了" : "\(pendingCommitmentCount) 筆待處理")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("顯示已處理", isOn: $showProcessedCommitments)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            if visibleCommitments.isEmpty {
+                Text("沒有待處理的承諾。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                // 個人尺度(每場數筆)不需要 Lazy;上限高度免得帳本把會議列表擠出畫面。
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(visibleCommitments) { cue in commitmentRow(cue) }
+                    }
+                }
+                .frame(maxHeight: 180)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 24).padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func commitmentRow(_ cue: MeetingLiveCue) -> some View {
+        let pending = CommitmentLedgerLogic.isPending(statusRaw: cue.statusRaw)
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(cue.text).font(.system(size: 12, weight: .medium)).lineLimit(2)
+                    if !cue.dueHint.isEmpty {
+                        Text("⏰ \(cue.dueHint)")
+                            .font(.system(size: 10)).foregroundStyle(.orange)
+                    }
+                    if cue.commitmentUnconfirmed {
+                        Text("詞表記帳,未經 AI 確認")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                            .foregroundStyle(.secondary)
+                            .help("承諾確認(AI)已關閉,這筆是詞表比對的原句——內容請自行過目")
+                    }
+                    if let label = CommitmentLedgerLogic.statusLabel(cue.status) {
+                        Text(label).font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.green.opacity(0.15)))
+                            .foregroundStyle(.green)
+                    }
+                }
+                Text(cue.askedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if pending {
+                Button {
+                    convertToVikunja(cue)
+                } label: {
+                    if convertingCueIds.contains(cue.id) {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("建 Vikunja 任務").font(.system(size: 11))
+                    }
+                }
+                .disabled(!vikunjaConfig.isConnectionReady || convertingCueIds.contains(cue.id))
+                .help(vikunjaConfig.isConnectionReady
+                      ? "以這筆承諾建立 Vikunja 任務"
+                      : "先到 Vikunja 設定完成連線(URL/專案/token)才能建任務")
+                Button("標已處理") { markDismissed(cue) }
+                    .font(.system(size: 11))
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func markDismissed(_ cue: MeetingLiveCue) {
+        guard let next = CommitmentLedgerLogic.transition(from: cue.status, action: .dismiss) else { return }
+        cue.status = next
+        try? modelContext.save()
+    }
+
+    private func convertToVikunja(_ cue: MeetingLiveCue) {
+        guard CommitmentLedgerLogic.transition(from: cue.status, action: .convert) != nil else { return }
+        let config = VikunjaConfigStore.shared
+        guard config.isConnectionReady, let token = config.token, !token.isEmpty else { return }
+        convertingCueIds.insert(cue.id)
+        let service = VikunjaService(baseURL: config.baseURL, token: token)
+        var description = "來源:會議承諾(\(cue.askedAt.formatted(date: .abbreviated, time: .shortened)))"
+        if !cue.dueHint.isEmpty { description += "\n口頭期限:\(cue.dueHint)" }
+        let desc = description
+        Task { @MainActor in
+            defer { convertingCueIds.remove(cue.id) }
+            do {
+                _ = try await service.createTask(
+                    projectId: config.defaultProjectID,
+                    title: cue.text, description: desc,
+                    dueDate: nil, priority: 0)
+                cue.status = .converted
+                try? modelContext.save()
+                NotificationManager.shared.showNotification(
+                    title: "已建立 Vikunja 任務:\(cue.text)", type: .success, duration: 4)
+            } catch {
+                // 失敗不改狀態——這筆仍留在待處理清單,可重試。
+                NotificationManager.shared.showNotification(
+                    title: "Vikunja 建立失敗:\(error.localizedDescription)", type: .error, duration: 6)
+            }
         }
     }
 
@@ -618,6 +800,7 @@ private extension MeetingCueKind {
         case .assignedToMe: return "點名"
         case .aboutMe: return "個人"
         case .informational: return "資訊"
+        case .commitment: return "🤝承諾"
         }
     }
 

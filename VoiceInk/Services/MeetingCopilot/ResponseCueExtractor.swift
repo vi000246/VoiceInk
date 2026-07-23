@@ -153,6 +153,9 @@ final class ResponseCueExtractor {
         return envelope.cues.compactMap { raw in
             let text = raw.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty, let kind = MeetingCueKind(rawValue: raw.kind) else { return nil }
+            // M15:.commitment 是 local 承諾偵測器專用 kind,不在 remote 分類器契約內——
+            // 模型腦補它時整則丟棄(與未知 kind 同待遇),否則會漏進承諾帳本。
+            guard kind != .commitment else { return nil }
             return ExtractedCue(text: text, kind: kind, searchHint: raw.searchHint ?? "")
         }
     }
@@ -185,15 +188,18 @@ final class ResponseCueExtractor {
 // MARK: - 正式 adapter(形狀照抄 AskAIView.LiveChatCompleter,AskAIView.swift:5-15)
 
 /// 把 `ChatCompleting` 轉呼叫 `AIService.completeChat`(fast model,非串流)。
+/// M15:承諾偵測共用同一顆 fast model,只換用量標籤與 timeout(見 makeFastCompleter 參數)。
 struct MeetingFastChatCompleter: ChatCompleting {
     let aiService: AIService
     let provider: AIProvider
     var modelName: String?
+    var timeout: TimeInterval = 30
+    var usageFeature: AIUsageFeature = .meetingCue
 
     func complete(system: String, user: String) async throws -> String {
         try await aiService.completeChat(
             provider: provider, modelName: modelName,
-            messages: [ChatMessage.user(user)], systemPrompt: system, timeout: 30,
-            usageFeature: .meetingCue)
+            messages: [ChatMessage.user(user)], systemPrompt: system, timeout: timeout,
+            usageFeature: usageFeature)
     }
 }

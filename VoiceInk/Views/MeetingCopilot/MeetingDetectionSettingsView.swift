@@ -6,6 +6,8 @@ import AppKit
 /// clone `MeetingCopilotSettingsView` 的 Form + `Binding(get:set:)` 模式（config 是 private(set)）。
 struct MeetingDetectionSettingsView: View {
     @StateObject private var store = MeetingDetectionConfigStore.shared
+    /// M14 會議脈絡卡設定（掛在偵測設定附近：兩者共用「會議開始」這個時刻）。
+    @StateObject private var cardStore = MeetingContextCardConfigStore.shared
     /// 螢幕錄製權限狀態（瀏覽器路徑需要）。onAppear 重讀（使用者可能剛在系統設定裡授權）。
     @State private var screenAccess = CGPreflightScreenCaptureAccess()
 
@@ -63,6 +65,19 @@ struct MeetingDetectionSettingsView: View {
                         in: MeetingDetectionConfigStore.debounceRange, step: 1)
                 }
                 Text("麥克風持續使用超過這個秒數才提示。太短容易誤觸，太長會晚提醒。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("會議脈絡卡") {
+                Toggle("會議開始時準備脈絡卡（上次討論到哪）",
+                       isOn: Binding(get: { cardStore.enabled }, set: { cardStore.setEnabled($0) }))
+                Toggle("生成完成後自動浮出（10 秒沒碰自動收起，滑鼠移上去就保留）",
+                       isOn: Binding(get: { cardStore.autoShow }, set: { cardStore.setAutoShow($0) }))
+                    .disabled(!cardStore.enabled)
+                Toggle("找不到相關資料時也顯示空卡",
+                       isOn: Binding(get: { cardStore.showWhenEmpty }, set: { cardStore.setShowWhenEmpty($0) }))
+                    .disabled(!cardStore.enabled)
+                Text("偵測到會議開始（或你按下開始錄製）時，從舊會議逐字稿與 Obsidian 筆記撈出這個主題上次討論的重點、未結事項與你答應過的事，連同可能相關的 Vikunja 任務浮出一張小卡。關掉自動浮出則改發通知，點通知再開卡。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

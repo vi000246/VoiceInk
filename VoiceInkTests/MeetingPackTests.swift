@@ -126,6 +126,23 @@ final class MeetingPackExtractionTests: XCTestCase {
         XCTAssertTrue(msg.contains("會前 brief:季度規劃"))
         XCTAssertTrue(msg.contains("2026-07-17 10:00 ~ 2026-07-17 11:00"))
         XCTAssertTrue(msg.contains("現在時刻:2026-07-17 11:01"))
+        XCTAssertFalse(msg.contains("承諾候選"), "沒有會中偵測承諾時不得出現候選段")
+    }
+
+    /// M15:會中即時偵測到的承諾當候選提示餵給 LLM(提升 my_commitments 召回率)。
+    func testBuildUserMessageIncludesDetectedCommitments() {
+        let msg = MeetingPackExtraction.buildUserMessage(
+            transcript: "T", truncated: false, appName: "Zoom",
+            startedAt: nil, endedAt: nil, brief: "",
+            detectedCommitments: ["寄效能報告給 Alex(口頭期限:下週五之前)", "更新 wiki"],
+            now: date(2026, 7, 17, 11, 1), timeZone: taipei)
+        XCTAssertTrue(msg.contains("承諾候選"))
+        XCTAssertTrue(msg.contains("- 寄效能報告給 Alex(口頭期限:下週五之前)"))
+        XCTAssertTrue(msg.contains("- 更新 wiki"))
+        // 候選段必須在逐字稿之前(prompt 語意:先給提示、再給原文)。
+        let candidateRange = msg.range(of: "承諾候選")!
+        let transcriptRange = msg.range(of: "逐字稿:")!
+        XCTAssertTrue(candidateRange.lowerBound < transcriptRange.lowerBound)
     }
 
     // MARK: - Markdown 組裝

@@ -94,6 +94,10 @@ final class MeetingStartDetector: ObservableObject {
                 actionButton: ("開始會議錄製", {
                     Task { @MainActor in await MeetingCaptureController.shared.start() }
                 }))
+            // M14 會議脈絡卡：與上面的提示**並行**（內部自行去重＋背景生成，同步入口立即返回，
+            // 絕不影響提示通知；使用者稍後按「開始會議錄製」的第二個觸發點會被同場 gate 吃掉）。
+            MeetingContextCardService.shared.noteMeetingDetected(
+                bundleId: bundleId, displayName: displayName)
         case let .suppressed(bundleId, reason):
             logger.notice("📡 會議偵測抑制（\(reason.rawValue, privacy: .public)）：\(bundleId, privacy: .public)")
         }
