@@ -214,6 +214,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if recordingState == .recording {
             await stopRecordingAndTranscribe()
         } else {
+            let licenseState = LicenseViewModel.evaluateState()
+            guard licenseState.allowsAppUsage else {
+                presentLicenseRequiredNotice(for: licenseState)
+                return
+            }
+
             prepareNewRecording(isAssistantFollowUp: isAssistantFollowUp)
             requestRecordPermission { [self] granted in
                 guard granted else {
@@ -225,6 +231,27 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    /// 試用過期/未授權時擋下新錄音（停止進行中的錄音不受影響，走上面的 stop 分支）。
+    private func presentLicenseRequiredNotice(for state: LicenseViewModel.LicenseState) {
+        let title: String
+        if case .trialExpired = state {
+            title = String(localized: "Trial ended — a Muninn Pro license is required to keep recording")
+        } else {
+            title = String(localized: "License required — start a trial or activate Muninn Pro to record")
+        }
+
+        NotificationManager.shared.showNotification(
+            title: title,
+            type: .error,
+            duration: 5.0,
+            actionButton: (label: String(localized: "Buy License"), action: {
+                if let url = StoreConfig.purchaseURL {
+                    NSWorkspace.shared.open(url)
+                }
+            })
+        )
     }
 
     /// The `.recording` → stop path: hand the recorded file to the pipeline, or finish the

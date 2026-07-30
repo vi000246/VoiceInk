@@ -3,7 +3,7 @@ import IOKit
 import os
 
 class PolarService {
-    private let organizationId = "6f3d781d-a630-4435-9dba-058486f2d936"
+    private let organizationId = StoreConfig.polarOrganizationId
     private let baseURL = "https://api.polar.sh"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "PolarService")
 

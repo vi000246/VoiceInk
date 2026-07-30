@@ -200,7 +200,8 @@ final class TranscriptionDelivery {
 
     private func deliverableText(from text: String) -> String {
         var textToDeliver = text
-        if let restrictionMessage = LicenseViewModel().usageRestrictionMessage {
+        let licenseState = LicenseViewModel.evaluateState()
+        if let restrictionMessage = LicenseViewModel.usageRestrictionMessage(for: licenseState) {
             textToDeliver = """
                 \(restrictionMessage)
                 \n\(textToDeliver)

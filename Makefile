@@ -11,7 +11,13 @@ LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 SIGN_IDENTITY ?= VoiceInk Local
 APP_DEST ?= /Applications/VoiceInk.app
 
-.PHONY: all clean whisper setup build local deploy check healthcheck help dev run
+# Customer (release) build settings. Ad-hoc ("-") by default; for real distribution set
+# RELEASE_SIGN_IDENTITY to a "Developer ID Application: ..." cert and notarize the result.
+RELEASE_SIGN_IDENTITY ?= -
+RELEASE_ENTITLEMENTS ?= $(CURDIR)/VoiceInk/VoiceInk.local.entitlements
+RELEASE_DERIVED_DATA := $(CURDIR)/.release-build
+
+.PHONY: all clean whisper setup build local deploy release check healthcheck help dev run
 
 # Default target
 all: check build
@@ -118,6 +124,30 @@ deploy: check setup
 	echo "Launching ..."; open "$(APP_DEST)"; \
 	echo ""; echo "Deployed (stable-signed): $(APP_DEST)"
 
+# Customer build: Release WITHOUT the LOCAL_BUILD flag, so the trial/licensing system
+# (StoreConfig + PolarService) is active. The app stays inside .release-build/ — copy it
+# out yourself when packaging; do NOT install it locally (it would fight your deployed
+# copy for hotkeys and create duplicate Launchpad icons).
+release: check setup
+	@rm -rf "$(RELEASE_DERIVED_DATA)"
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
+		-derivedDataPath "$(RELEASE_DERIVED_DATA)" \
+		CODE_SIGN_IDENTITY="$(RELEASE_SIGN_IDENTITY)" \
+		CODE_SIGN_STYLE=Manual \
+		CODE_SIGNING_REQUIRED=YES \
+		CODE_SIGNING_ALLOWED=YES \
+		DEVELOPMENT_TEAM="" \
+		PROVISIONING_PROFILE_SPECIFIER="" \
+		CODE_SIGN_ENTITLEMENTS="$(RELEASE_ENTITLEMENTS)" \
+		build
+	@APP_PATH="$(RELEASE_DERIVED_DATA)/Build/Products/Release/VoiceInk.app"; \
+	if [ ! -d "$$APP_PATH" ]; then echo "Error: build product missing at $$APP_PATH"; exit 1; fi; \
+	echo ""; \
+	echo "Release build (licensing ACTIVE — trial/license enforced): $$APP_PATH"; \
+	if [ "$(RELEASE_SIGN_IDENTITY)" = "-" ]; then \
+		echo "WARNING: ad-hoc signed. Before distributing: build with RELEASE_SIGN_IDENTITY='Developer ID Application: ...' and notarize."; \
+	fi
+
 # Run application
 run:
 	@if [ -d "$$HOME/Downloads/VoiceInk.app" ]; then \
@@ -149,6 +179,7 @@ help:
 	@echo "  setup              Copy whisper XCFramework to VoiceInk project"
 	@echo "  build              Build the VoiceInk Xcode project"
 	@echo "  local              Build for local use (no Apple Developer certificate needed)"
+	@echo "  release            Customer build: licensing active (no LOCAL_BUILD flag)"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
 	@echo "  all                Run full build process (default)"

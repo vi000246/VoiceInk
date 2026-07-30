@@ -98,7 +98,7 @@ struct ModeView: View {
                 AppScreenHeader(
                     title: "Modes",
                     infoMessage: "Modes help you set up Muninn for different writing tasks, workflows, and scenarios.",
-                    infoURL: "https://tryvoiceink.com/docs/modes"
+                    infoURL: StoreConfig.docsURLString
                 ) {
                     headerControls
                 }

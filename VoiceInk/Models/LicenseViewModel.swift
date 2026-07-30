@@ -2,6 +2,8 @@ import Foundation
 import AppKit
 import os
 
+private let trialPeriodDays = 7
+
 @MainActor
 class LicenseViewModel: ObservableObject {
     enum LicenseState: Equatable {
@@ -9,6 +11,52 @@ class LicenseViewModel: ObservableObject {
         case trial(daysRemaining: Int)
         case trialExpired
         case licensed
+
+        nonisolated var allowsAppUsage: Bool {
+            switch self {
+            case .licensed, .trial:
+                return true
+            case .unlicensed, .trialExpired:
+                return false
+            }
+        }
+    }
+
+    /// 目前授權狀態的單一真相來源：Keychain 裡的 key/activation/試用起始日。
+    /// 供 VM 本身、錄音入口 gating（VoiceInkEngine）與交付層共用，
+    /// 避免各處自己 new 一個 VM 造成狀態分歧。
+    nonisolated static func evaluateState(now: Date = Date()) -> LicenseState {
+        #if LOCAL_BUILD
+        return .licensed
+        #else
+        let manager = LicenseManager.shared
+        if manager.licenseKey != nil,
+           manager.activationId != nil || !UserDefaults.standard.bool(forKey: "VoiceInkLicenseRequiresActivation") {
+            return .licensed
+        }
+
+        guard let trialStartDate = manager.trialStartDate else {
+            return .unlicensed
+        }
+
+        let daysSinceTrialStart = Calendar.current.dateComponents([.day], from: trialStartDate, to: now).day ?? 0
+        if daysSinceTrialStart >= trialPeriodDays {
+            return .trialExpired
+        }
+        return .trial(daysRemaining: trialPeriodDays - daysSinceTrialStart)
+        #endif
+    }
+
+    nonisolated static func usageRestrictionMessage(for state: LicenseState) -> String? {
+        switch state {
+        case .unlicensed, .trialExpired:
+            return String(
+                format: String(localized: "Your trial has ended. Upgrade to Muninn Pro at %@"),
+                StoreConfig.purchaseURLString
+            )
+        case .trial, .licensed:
+            return nil
+        }
     }
 
     @Published private(set) var licenseState: LicenseState = .unlicensed
@@ -18,23 +66,18 @@ class LicenseViewModel: ObservableObject {
     @Published var validationSuccess: Bool = false
     @Published private(set) var activationsLimit: Int = 0
 
-    private let trialPeriodDays = 7
     private let polarService = PolarService()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "LicenseViewModel")
     private let userDefaults = UserDefaults.standard
     private let licenseManager = LicenseManager.shared
 
     init() {
-        #if LOCAL_BUILD
-        licenseState = .licensed
-        #else
         loadLicenseState()
-        #endif
     }
 
     func startTrial() {
         let didStartTrial = licenseManager.startTrialIfNeeded()
-        refreshTrialState()
+        licenseState = Self.evaluateState()
         NotificationCenter.default.post(name: .licenseStatusChanged, object: nil)
 
         if didStartTrial {
@@ -43,23 +86,15 @@ class LicenseViewModel: ObservableObject {
     }
 
     private func loadLicenseState() {
-        // Check for existing license key
+        // Trust the stored key at startup; server validation only happens on explicit activate.
         if let storedLicenseKey = licenseManager.licenseKey {
             self.licenseKey = storedLicenseKey
-
-            // If we have a license key, trust that it's licensed
-            // Skip server validation on startup
-            if licenseManager.activationId != nil || !userDefaults.bool(forKey: "VoiceInkLicenseRequiresActivation") {
-                licenseState = .licensed
-                activationsLimit = userDefaults.activationsLimit
-                return
-            }
         }
 
-        if let trialStartDate = licenseManager.trialStartDate {
-            refreshTrialState(from: trialStartDate)
-        } else {
-            setUnlicensedState()
+        licenseState = Self.evaluateState()
+
+        if case .licensed = licenseState {
+            activationsLimit = userDefaults.activationsLimit
         }
     }
 
@@ -71,52 +106,16 @@ class LicenseViewModel: ObservableObject {
         return false
     }
 
-    private func setUnlicensedState() {
-        licenseState = .unlicensed
-    }
-
-    private func refreshTrialState() {
-        guard let trialStartDate = licenseManager.trialStartDate else {
-            setUnlicensedState()
-            return
-        }
-
-        refreshTrialState(from: trialStartDate)
-    }
-
-    private func refreshTrialState(from trialStartDate: Date) {
-        let daysSinceTrialStart = Calendar.current.dateComponents([.day], from: trialStartDate, to: Date()).day ?? 0
-
-        if daysSinceTrialStart >= trialPeriodDays {
-            licenseState = .trialExpired
-        } else {
-            licenseState = .trial(daysRemaining: trialPeriodDays - daysSinceTrialStart)
-        }
-    }
-    
     var canUseApp: Bool {
-        switch licenseState {
-        case .licensed, .trial:
-            return true
-        case .unlicensed, .trialExpired:
-            return false
-        }
+        licenseState.allowsAppUsage
     }
 
     var usageRestrictionMessage: String? {
-        switch licenseState {
-        case .unlicensed, .trialExpired:
-            return String(
-                format: String(localized: "Your trial has ended. Upgrade to Muninn Pro at %@"),
-                "tryvoiceink.com/buy"
-            )
-        case .trial, .licensed:
-            return nil
-        }
+        Self.usageRestrictionMessage(for: licenseState)
     }
-    
+
     func openPurchaseLink() {
-        if let url = URL(string: "https://tryvoiceink.com/buy") {
+        if let url = StoreConfig.purchaseURL {
             NSWorkspace.shared.open(url)
         }
     }
@@ -213,7 +212,7 @@ class LicenseViewModel: ObservableObject {
             logger.error("🔑 Unexpected license error: \(error, privacy: .public)")
             validationMessage = String(
                 format: String(localized: "An unexpected error occurred. Please try again or contact support at %@"),
-                "support@tryvoiceink.com"
+                StoreConfig.supportEmail
             )
         }
         

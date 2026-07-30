@@ -44,7 +44,7 @@ struct DashboardModelUsageCard: View {
     }
 
     private func openRecommendedModels() {
-        if let url = URL(string: "https://tryvoiceink.com/docs/recommended-models") {
+        if let url = URL(string: StoreConfig.docsURLString) {
             NSWorkspace.shared.open(url)
         }
     }

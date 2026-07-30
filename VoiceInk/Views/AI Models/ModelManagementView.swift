@@ -287,7 +287,7 @@ struct ModelManagementView: View {
 
             InfoTip(
                 "Add a custom fine-tuned whisper model to use with Muninn. Select the downloaded .bin file.",
-                learnMoreURL: "https://tryvoiceink.com/docs/custom-local-whisper-models"
+                learnMoreURL: StoreConfig.docsURLString
             )
             .help("Read more about custom local models")
         }

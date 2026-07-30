@@ -75,8 +75,8 @@ struct LicenseManagementView: View {
                 EmailSupport.openSupportEmail()
                 dismissReportPanel()
             },
-            onDiscord: {
-                openURL("https://discord.gg/xryDy57nYD")
+            onGitHub: {
+                openURL(StoreConfig.issuesURLString)
                 dismissReportPanel()
             }
         )
@@ -242,39 +242,12 @@ struct LicenseManagementView: View {
             spacing: 10
         ) {
             ResourceLinkRow(
-                title: "Recommended Models",
-                subtitle: "Find the best transcription setup",
-                systemImage: "sparkles",
-                tint: neutralIconColor
-            ) {
-                openURL("https://tryvoiceink.com/recommended-models")
-            }
-
-            ResourceLinkRow(
-                title: "Affiliate Program",
-                subtitle: "Earn 30% from referrals",
-                systemImage: "link.badge.plus",
-                tint: neutralIconColor
-            ) {
-                openURL("https://tryvoiceink.com/affiliate")
-            }
-
-            ResourceLinkRow(
-                title: "Documentation",
-                subtitle: "Setup, features, and settings",
+                title: "Source Code & Docs",
+                subtitle: "GPL-3.0 source, setup, and features",
                 systemImage: "book.fill",
                 tint: neutralIconColor
             ) {
-                openURL("https://tryvoiceink.com/docs")
-            }
-
-            ResourceLinkRow(
-                title: "Videos & Guides",
-                subtitle: "Walkthroughs and product updates",
-                systemImage: "video.fill",
-                tint: neutralIconColor
-            ) {
-                openURL("https://www.youtube.com/@tryvoiceink/videos")
+                openURL(StoreConfig.sourceRepoURLString)
             }
 
             if isLicensed {
@@ -284,7 +257,7 @@ struct LicenseManagementView: View {
                     systemImage: "list.bullet.clipboard.fill",
                     tint: neutralIconColor
                 ) {
-                    openURL("https://github.com/Beingpax/VoiceInk/releases")
+                    openURL(StoreConfig.changelogURLString)
                 }
             } else {
                 ResourceLinkRow(
@@ -339,7 +312,7 @@ struct LicenseManagementView: View {
     }
 
     private func openLicensePortal() {
-        openURL("https://polar.sh/beingpax/portal/request")
+        openURL(StoreConfig.licensePortalURLString)
     }
 
     private func openURL(_ urlString: String) {
@@ -524,7 +497,7 @@ struct LicenseProMark: View {
 private struct ReportFeedbackBottomPanel: View {
     let onClose: () -> Void
     let onEmail: () -> Void
-    let onDiscord: () -> Void
+    let onGitHub: () -> Void
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -535,7 +508,7 @@ private struct ReportFeedbackBottomPanel: View {
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("Have feedback, a bug report, or something that feels off? Send a note with system information by email, or join Discord for community discussion. Every report helps make Muninn more reliable and easier to use.")
+                    Text("Have feedback, a bug report, or something that feels off? Send a note with system information by email, or open an issue on GitHub. Every report helps make Muninn more reliable and easier to use.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -558,10 +531,10 @@ private struct ReportFeedbackBottomPanel: View {
                     )
 
                     ReportPanelButton(
-                        title: "Join Discord",
-                        systemImage: "bubble.left.and.bubble.right.fill",
+                        title: "GitHub Issues",
+                        systemImage: "ladybug.fill",
                         iconColor: AppTheme.Text.secondary,
-                        action: onDiscord
+                        action: onGitHub
                     )
                 }
                 .frame(maxWidth: 380)
